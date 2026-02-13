@@ -32,7 +32,6 @@ local EPSILON = 0.0001
 local activeRoutes: { [string]: ActiveRouteState } = {}
 local groundOffsetByNpcId: { [string]: number } = {}
 local laneOffsetByNpcId: { [string]: number } = {}
-local lastVisualUpdateAtByNpcId: { [string]: number } = {}
 
 local GROUND_IGNORE_TAGS = {
 	Config.TAG_WAYPOINT,
@@ -70,12 +69,17 @@ local function unfreezeTracks(npc: ClientNPC): ()
 		return
 	end
 
-	local walkScale = getWalkSpeedScale(npc)
+	local lowMultiplierRaw = tonumber(Config.LOD_LOW_ANIMATION_SPEED_MULTIPLIER)
+	local lowMultiplier = if lowMultiplierRaw then math.clamp(lowMultiplierRaw, 0, 1) else 0.55
+	local tierMultiplier = if npc.lodTier == "low" then lowMultiplier else 1
+	local walkScale = getWalkSpeedScale(npc) * tierMultiplier
+	local idleScale = tierMultiplier
+
 	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
 		if npc.walkTrack and track == npc.walkTrack then
 			track:AdjustSpeed(walkScale)
 		else
-			track:AdjustSpeed(1)
+			track:AdjustSpeed(idleScale)
 		end
 	end
 end
@@ -100,51 +104,6 @@ local function getLodRenderDistance(): number
 		return freezeDistance
 	end
 	return math.max(freezeDistance, raw)
-end
-
-local function getLodLowUpdateInterval(): number
-	local hz = tonumber(Config.LOD_LOW_UPDATE_RATE)
-	if hz == nil or hz <= 0 then
-		return 0
-	end
-	return 1 / hz
-end
-
-local function getLodFrozenUpdateInterval(): number
-	local hz = tonumber(Config.LOD_FROZEN_UPDATE_RATE)
-	if hz == nil or hz <= 0 then
-		return 0
-	end
-	return 1 / hz
-end
-
-local function getVisualUpdateIntervalForTier(tier: LODTier): number
-	if tier == "near" then
-		return 0
-	end
-	if tier == "low" then
-		return getLodLowUpdateInterval()
-	end
-	if tier == "mid" then
-		return getLodFrozenUpdateInterval()
-	end
-	return math.huge
-end
-
-local function shouldApplyVisualUpdate(npc: ClientNPC, nowTime: number): boolean
-	local interval = getVisualUpdateIntervalForTier(npc.lodTier)
-	if interval <= 0 then
-		lastVisualUpdateAtByNpcId[npc.id] = nowTime
-		return true
-	end
-
-	local lastUpdate = lastVisualUpdateAtByNpcId[npc.id]
-	if lastUpdate == nil or nowTime - lastUpdate >= interval then
-		lastVisualUpdateAtByNpcId[npc.id] = nowTime
-		return true
-	end
-
-	return false
 end
 
 local function getLaneOffsetMax(): number
@@ -648,7 +607,6 @@ local function completeRoute(state: ActiveRouteState): ()
 	activeRoutes[state.npc.id] = nil
 	groundOffsetByNpcId[state.npc.id] = nil
 	laneOffsetByNpcId[state.npc.id] = nil
-	lastVisualUpdateAtByNpcId[state.npc.id] = nil
 	state.onRouteComplete(state.npc)
 end
 
@@ -845,7 +803,6 @@ function NPCMover.startRoute(
 	npc.lodTier = npc.lodTier or "near"
 	getGroundOffset(npc)
 	ensureLaneOffset(npc)
-	lastVisualUpdateAtByNpcId[npc.id] = 0
 
 	local state: ActiveRouteState = {
 		npc = npc,
@@ -864,7 +821,6 @@ function NPCMover.stop(npcId: string): ()
 	activeRoutes[npcId] = nil
 	groundOffsetByNpcId[npcId] = nil
 	laneOffsetByNpcId[npcId] = nil
-	lastVisualUpdateAtByNpcId[npcId] = nil
 end
 
 function NPCMover.fastForward(npc: ClientNPC): ()
@@ -919,49 +875,50 @@ function NPCMover.update(dt: number): ()
 				npc.lastPosition = position
 
 				if previousTier ~= nextTier then
-					if (previousTier == "near" or previousTier == "low" or previousTier == "mid") and nextTier == "far" then
+					if nextTier == "far" then
 						if npc.model then
 							npc.model.Parent = nil
 						end
 						stopAllTracks(npc)
-					elseif previousTier == "far" and (nextTier == "mid" or nextTier == "low" or nextTier == "near") then
+					elseif nextTier == "mid" then
 						if npc.model then
 							npc.model.Parent = Workspace
 						end
-						NPCMover.fastForward(npc)
-						if nextTier == "mid" then
-							stopAllTracks(npc)
-						else
-							state.onStepChanged(npc, step)
-							unfreezeTracks(npc)
+						if previousTier == "far" then
+							NPCMover.fastForward(npc)
 						end
-					elseif (previousTier == "near" or previousTier == "low") and nextTier == "mid" then
 						stopAllTracks(npc)
-					elseif previousTier == "mid" and (nextTier == "near" or nextTier == "low") then
-						state.onStepChanged(npc, step)
+					else
+						if npc.model then
+							npc.model.Parent = Workspace
+						end
+						if previousTier == "far" or previousTier == "mid" then
+							NPCMover.fastForward(npc)
+							state.onStepChanged(npc, step)
+						end
 						unfreezeTracks(npc)
 					end
 
 					npc.lodTier = nextTier
-					lastVisualUpdateAtByNpcId[npc.id] = 0
+				elseif nextTier == "near" or nextTier == "low" then
+					-- Keep animation pacing in sync when LOD tier stays low/near.
+					unfreezeTracks(npc)
 				end
 
 				if step.action == "walk" and npc.lodTier ~= "far" then
 					if npc.model and npc.model.Parent == nil then
 						npc.model.Parent = Workspace
 					end
-					if shouldApplyVisualUpdate(npc, nowTime) then
-						local movementDirection = getMovementDirection(previousPosition, position)
-						applyWalkPivot(npc, position, toward, dt, movementDirection)
-					end
+					local movementDirection = getMovementDirection(previousPosition, position)
+					applyWalkPivot(npc, position, toward, dt, movementDirection)
 				end
-				end
-			end
-
-			if activeRoutes[npcId] == nil then
-				-- removed during callbacks/route completion
 			end
 		end
+
+		if activeRoutes[npcId] == nil then
+			-- removed during callbacks/route completion
+		end
+	end
 end
 
 return NPCMover
