@@ -117,10 +117,15 @@ return {
     -- LOD (LEVEL OF DETAIL) / DISTANCE CULLING
     -- ==============================================
 
-    -- Distance in studs within which NPCs get full animation playback.
-    -- Beyond this but within LOD_RENDER_DISTANCE: model visible, animation frozen.
-    -- Range: 50-300. Lower = better performance, less visual fidelity at mid-range.
+    -- Distance in studs for full-rate movement updates + full animation playback.
+    -- Beyond this, NPCs move in lower visual update-rate mode first.
+    -- Range: 50-300.
     LOD_ANIMATION_DISTANCE = 150,
+
+    -- Distance in studs where NPCs switch from low-rate mode to frozen-animation mode.
+    -- Must be >= LOD_ANIMATION_DISTANCE and <= LOD_RENDER_DISTANCE.
+    -- Range: 150-800.
+    LOD_FREEZE_DISTANCE = 350,
 
     -- Distance in studs within which NPCs are rendered at all.
     -- Beyond this: model hidden, PivotTo skipped, only route timer runs.
@@ -129,9 +134,18 @@ return {
     -- For small dense maps, set higher (800+) to keep all NPCs visible.
     LOD_RENDER_DISTANCE = 500,
 
-    -- Freeze animations for NPCs behind the camera (promotes to Mid tier).
-    -- NPCs behind you get their limbs frozen but model stays visible.
-    -- When you turn around, animation resumes instantly (1 frame, imperceptible).
+    -- Visual update rate (Hz) for the low-rate LOD tier.
+    -- Animations still play; movement/rotation updates are throttled.
+    -- Range: 6-30.
+    LOD_LOW_UPDATE_RATE = 12,
+
+    -- Visual update rate (Hz) for the frozen-animation LOD tier.
+    -- Lower values save more CPU but increase visible stepping.
+    -- Range: 2-12.
+    LOD_FROZEN_UPDATE_RATE = 4,
+
+    -- Downgrade behind-camera NPCs out of full-detail tier.
+    -- They still render, but use reduced LOD behavior until back in view.
     -- true = enabled (recommended). false = only distance-based LOD.
     LOD_FRUSTUM_CULLING = true,
 

@@ -32,6 +32,7 @@ local EPSILON = 0.0001
 local activeRoutes: { [string]: ActiveRouteState } = {}
 local groundOffsetByNpcId: { [string]: number } = {}
 local laneOffsetByNpcId: { [string]: number } = {}
+local lastVisualUpdateAtByNpcId: { [string]: number } = {}
 
 local GROUND_IGNORE_TAGS = {
 	Config.TAG_WAYPOINT,
@@ -81,6 +82,69 @@ end
 
 local function getCurrentStep(npc: ClientNPC): RouteStep?
 	return npc.route[npc.currentStepIndex]
+end
+
+local function getLodFreezeDistance(): number
+	local animationDistance = math.max(0, tonumber(Config.LOD_ANIMATION_DISTANCE) or 0)
+	local raw = tonumber(Config.LOD_FREEZE_DISTANCE)
+	if raw == nil then
+		return animationDistance
+	end
+	return math.max(animationDistance, raw)
+end
+
+local function getLodRenderDistance(): number
+	local freezeDistance = getLodFreezeDistance()
+	local raw = tonumber(Config.LOD_RENDER_DISTANCE)
+	if raw == nil then
+		return freezeDistance
+	end
+	return math.max(freezeDistance, raw)
+end
+
+local function getLodLowUpdateInterval(): number
+	local hz = tonumber(Config.LOD_LOW_UPDATE_RATE)
+	if hz == nil or hz <= 0 then
+		return 0
+	end
+	return 1 / hz
+end
+
+local function getLodFrozenUpdateInterval(): number
+	local hz = tonumber(Config.LOD_FROZEN_UPDATE_RATE)
+	if hz == nil or hz <= 0 then
+		return 0
+	end
+	return 1 / hz
+end
+
+local function getVisualUpdateIntervalForTier(tier: LODTier): number
+	if tier == "near" then
+		return 0
+	end
+	if tier == "low" then
+		return getLodLowUpdateInterval()
+	end
+	if tier == "mid" then
+		return getLodFrozenUpdateInterval()
+	end
+	return math.huge
+end
+
+local function shouldApplyVisualUpdate(npc: ClientNPC, nowTime: number): boolean
+	local interval = getVisualUpdateIntervalForTier(npc.lodTier)
+	if interval <= 0 then
+		lastVisualUpdateAtByNpcId[npc.id] = nowTime
+		return true
+	end
+
+	local lastUpdate = lastVisualUpdateAtByNpcId[npc.id]
+	if lastUpdate == nil or nowTime - lastUpdate >= interval then
+		lastVisualUpdateAtByNpcId[npc.id] = nowTime
+		return true
+	end
+
+	return false
 end
 
 local function getLaneOffsetMax(): number
@@ -584,6 +648,7 @@ local function completeRoute(state: ActiveRouteState): ()
 	activeRoutes[state.npc.id] = nil
 	groundOffsetByNpcId[state.npc.id] = nil
 	laneOffsetByNpcId[state.npc.id] = nil
+	lastVisualUpdateAtByNpcId[state.npc.id] = nil
 	state.onRouteComplete(state.npc)
 end
 
@@ -624,7 +689,7 @@ local function advanceRouteByTime(state: ActiveRouteState, nowTime: number): boo
 		end
 
 		applyStationaryPoseIfNeeded(npc, nextStep)
-		if npc.lodTier == "near" then
+		if npc.lodTier == "near" or npc.lodTier == "low" then
 			state.onStepChanged(npc, nextStep)
 		end
 	end
@@ -674,8 +739,9 @@ local function determineLodTier(lastPosition: Vector3): LODTier
 	local distance = toNpc.Magnitude
 	local lookDot = toNpc:Dot(camera.CFrame.LookVector)
 	local behindCamera = Config.LOD_FRUSTUM_CULLING and lookDot < 0
-	local animationDistance = tonumber(Config.LOD_ANIMATION_DISTANCE) or 0
-	local renderDistance = tonumber(Config.LOD_RENDER_DISTANCE) or 0
+	local animationDistance = math.max(0, tonumber(Config.LOD_ANIMATION_DISTANCE) or 0)
+	local freezeDistance = getLodFreezeDistance()
+	local renderDistance = getLodRenderDistance()
 
 	if distance > renderDistance then
 		return "far"
@@ -683,6 +749,10 @@ local function determineLodTier(lastPosition: Vector3): LODTier
 
 	if distance < animationDistance and not behindCamera then
 		return "near"
+	end
+
+	if distance < freezeDistance then
+		return "low"
 	end
 
 	return "mid"
@@ -775,6 +845,7 @@ function NPCMover.startRoute(
 	npc.lodTier = npc.lodTier or "near"
 	getGroundOffset(npc)
 	ensureLaneOffset(npc)
+	lastVisualUpdateAtByNpcId[npc.id] = 0
 
 	local state: ActiveRouteState = {
 		npc = npc,
@@ -793,6 +864,7 @@ function NPCMover.stop(npcId: string): ()
 	activeRoutes[npcId] = nil
 	groundOffsetByNpcId[npcId] = nil
 	laneOffsetByNpcId[npcId] = nil
+	lastVisualUpdateAtByNpcId[npcId] = nil
 end
 
 function NPCMover.fastForward(npc: ClientNPC): ()
@@ -847,46 +919,49 @@ function NPCMover.update(dt: number): ()
 				npc.lastPosition = position
 
 				if previousTier ~= nextTier then
-					if (previousTier == "near" or previousTier == "mid") and nextTier == "far" then
+					if (previousTier == "near" or previousTier == "low" or previousTier == "mid") and nextTier == "far" then
 						if npc.model then
 							npc.model.Parent = nil
 						end
 						stopAllTracks(npc)
-					elseif previousTier == "far" and (nextTier == "mid" or nextTier == "near") then
+					elseif previousTier == "far" and (nextTier == "mid" or nextTier == "low" or nextTier == "near") then
 						if npc.model then
 							npc.model.Parent = Workspace
 						end
 						NPCMover.fastForward(npc)
-						if nextTier == "near" then
+						if nextTier == "mid" then
+							stopAllTracks(npc)
+						else
 							state.onStepChanged(npc, step)
 							unfreezeTracks(npc)
-						else
-							stopAllTracks(npc)
 						end
-					elseif previousTier == "near" and nextTier == "mid" then
+					elseif (previousTier == "near" or previousTier == "low") and nextTier == "mid" then
 						stopAllTracks(npc)
-					elseif previousTier == "mid" and nextTier == "near" then
+					elseif previousTier == "mid" and (nextTier == "near" or nextTier == "low") then
 						state.onStepChanged(npc, step)
 						unfreezeTracks(npc)
 					end
 
 					npc.lodTier = nextTier
+					lastVisualUpdateAtByNpcId[npc.id] = 0
 				end
 
-					if step.action == "walk" and npc.lodTier ~= "far" then
-						if npc.model and npc.model.Parent == nil then
-							npc.model.Parent = Workspace
-						end
+				if step.action == "walk" and npc.lodTier ~= "far" then
+					if npc.model and npc.model.Parent == nil then
+						npc.model.Parent = Workspace
+					end
+					if shouldApplyVisualUpdate(npc, nowTime) then
 						local movementDirection = getMovementDirection(previousPosition, position)
 						applyWalkPivot(npc, position, toward, dt, movementDirection)
 					end
 				end
+				end
 			end
 
-		if activeRoutes[npcId] == nil then
-			-- removed during callbacks/route completion
+			if activeRoutes[npcId] == nil then
+				-- removed during callbacks/route completion
+			end
 		end
-	end
 end
 
 return NPCMover

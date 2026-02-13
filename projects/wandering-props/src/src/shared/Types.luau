@@ -48,7 +48,7 @@ export type SyncNPCData = {
 }
 
 -- Client-side runtime NPC state (managed by NPCClient/NPCMover).
-export type LODTier = "near" | "mid" | "far"
+export type LODTier = "near" | "low" | "mid" | "far"
 
 export type ClientNPC = {
     id: string,
