@@ -50,12 +50,16 @@ Read in this order:
 - `fd3c0a3` - active client NPC models are now parented under `Workspace.WanderingPropsActiveNPCs`
 - `c5b821f` - low LOD now reduces animation speed (not movement update rate) and default LOD distance thresholds are higher
 - `13281b7` - handoff/state docs updated for POI/spawn/LOD follow-up refinement checkpoints
+- `54b5695` - handoff docs synced post-push so latest checkpoint refs stay current
+- `c3afac7` - POI traversal now skips intermediate social transit nodes, filters spawn/despawn from POI pool, and uses fallback random social seats
+- `f1d26b7` - spawn loop now forces solo recovery attempts while below minimum population
+- `31f6824` - LOD re-parenting now keeps NPCs under `Workspace.WanderingPropsActiveNPCs`
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `13281b7`
+- Latest checkpoint commit on branch: `31f6824`
 
 ## Next Validation Focus
 

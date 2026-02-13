@@ -29,6 +29,10 @@
 - `fd3c0a3` - `NPCClient` now keeps active NPC models under `Workspace.WanderingPropsActiveNPCs`.
 - `c5b821f` - LOD low tier now affects animation speed only (no movement-update throttling), and default LOD distances were increased (`300/700/1100`).
 - `13281b7` - Handoff/state checkpoint sections updated to include this follow-up refinement pass.
+- `54b5695` - Handoff docs synced post-push to keep latest checkpoint refs aligned with branch head.
+- `c3afac7` - POI traversal now avoids intermediate social transit stops, excludes spawn/despawn-tagged nodes from POI selection, and supports random-seat social fallback when reservations fail.
+- `f1d26b7` - Spawn recovery now forces solo spawns while below minimum population.
+- `31f6824` - `NPCMover` now re-parents LOD-restored models to `Workspace.WanderingPropsActiveNPCs` instead of root `Workspace`.
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
@@ -91,6 +95,7 @@ These are **not** currently present after rollback:
 - Spawn stall warnings now require consecutive no-progress cycles before emitting.
 - Dead-end POI/despawn traversal now has a constrained backtrack fallback instead of hard-failing when no alternative exit exists.
 - Social seat capacity now supports one-seat POIs when capacity cap is positive.
+- Social POI seating now has a fallback random-seat path when timed reservation fails, and non-social route legs skip intermediate social transit nodes.
 - Ground snap ignores whole player/NPC models on hit, reducing climb-on-character artifacts.
 - LOD pipeline now supports `near -> low -> mid -> far`; `low` reduces animation speed only, `mid` freezes animation, `far` hides models.
 - The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.
