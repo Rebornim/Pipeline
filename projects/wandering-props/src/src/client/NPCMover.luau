@@ -29,6 +29,7 @@ type ActiveRouteState = {
 local NPCMover = {}
 
 local EPSILON = 0.0001
+local ACTIVE_NPCS_FOLDER_NAME = "WanderingPropsActiveNPCs"
 local activeRoutes: { [string]: ActiveRouteState } = {}
 local groundOffsetByNpcId: { [string]: number } = {}
 local laneOffsetByNpcId: { [string]: number } = {}
@@ -86,6 +87,21 @@ end
 
 local function getCurrentStep(npc: ClientNPC): RouteStep?
 	return npc.route[npc.currentStepIndex]
+end
+
+local function getActiveNPCsFolder(): Folder
+	local existing = Workspace:FindFirstChild(ACTIVE_NPCS_FOLDER_NAME)
+	if existing and existing:IsA("Folder") then
+		return existing
+	end
+	if existing then
+		existing:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = ACTIVE_NPCS_FOLDER_NAME
+	folder.Parent = Workspace
+	return folder
 end
 
 local function getLodFreezeDistance(): number
@@ -882,7 +898,7 @@ function NPCMover.update(dt: number): ()
 						stopAllTracks(npc)
 					elseif nextTier == "mid" then
 						if npc.model then
-							npc.model.Parent = Workspace
+							npc.model.Parent = getActiveNPCsFolder()
 						end
 						if previousTier == "far" then
 							NPCMover.fastForward(npc)
@@ -890,7 +906,7 @@ function NPCMover.update(dt: number): ()
 						stopAllTracks(npc)
 					else
 						if npc.model then
-							npc.model.Parent = Workspace
+							npc.model.Parent = getActiveNPCsFolder()
 						end
 						if previousTier == "far" or previousTier == "mid" then
 							NPCMover.fastForward(npc)
@@ -907,7 +923,7 @@ function NPCMover.update(dt: number): ()
 
 				if step.action == "walk" and npc.lodTier ~= "far" then
 					if npc.model and npc.model.Parent == nil then
-						npc.model.Parent = Workspace
+						npc.model.Parent = getActiveNPCsFolder()
 					end
 					local movementDirection = getMovementDirection(previousPosition, position)
 					applyWalkPivot(npc, position, toward, dt, movementDirection)
