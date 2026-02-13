@@ -204,6 +204,16 @@ local function shouldIgnoreGroundHit(hitPart: BasePart): boolean
 	return false
 end
 
+local function addGroundIgnoreTarget(ignoredInstances: { Instance }, hitPart: BasePart): ()
+	local model = hitPart:FindFirstAncestorOfClass("Model")
+	if model then
+		table.insert(ignoredInstances, model)
+		return
+	end
+
+	table.insert(ignoredInstances, hitPart)
+end
+
 local function cubicBezier(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, alpha: number): Vector3
 	local inv = 1 - alpha
 	return p0 * (inv * inv * inv)
@@ -498,7 +508,7 @@ local function snapWalkPositionToGround(npc: ClientNPC, rawPosition: Vector3): V
 		end
 
 		if shouldIgnoreGroundHit(result.Instance) then
-			table.insert(ignoredInstances, result.Instance)
+			addGroundIgnoreTarget(ignoredInstances, result.Instance)
 		else
 			break
 		end
