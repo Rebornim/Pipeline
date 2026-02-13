@@ -41,12 +41,16 @@ Read in this order:
 - `78067fc` - handoff risk notes aligned with current diagnostics/cleanup behavior
 - `1bbf359` - route-build failure detail now included in spawn stall diagnostics (no spawn logic change)
 - `77adc88` - spawn stall warnings now require consecutive no-progress cycles to reduce single-cycle noise
+- `dbfa3f7` - social seat reservations now allow 1-seat POIs; dead-end POI/despawn routes can backtrack only when no alternative exists
+- `55cca66` - ground-snap raycast ignore logic expanded to whole hit models to prevent NPCs climbing onto players
+- `01d75f2` - calmer default walk speed + less rigid group formations (alternating offsets with jitter)
+- `b5ce7b6` - staged LOD pipeline added: low-rate updates, frozen mid tier, and far-distance cull
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `77adc88`
+- Latest checkpoint commit on branch: `b5ce7b6`
 
 ## Next Validation Focus
 

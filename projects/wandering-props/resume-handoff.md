@@ -20,6 +20,10 @@
 - `78067fc` - Handoff known-risk section updated to reflect current checkpoint behavior.
 - `1bbf359` - `RouteBuilder` now reports empty-route failure detail that `PopulationController` includes in spawn-cycle stall warnings for clearer root-cause diagnostics.
 - `77adc88` - `PopulationController` now warns only after consecutive no-progress spawn cycles, reducing noise from occasional sparse-topology miss cycles.
+- `dbfa3f7` - Social POIs now allow at least one active seat reservation when capacity cap is positive, and route legs now allow immediate backtrack only as a dead-end fallback.
+- `55cca66` - `NPCMover` ground snap now excludes whole hit models (players/NPCs), reducing pop-up elevation when crossing characters.
+- `01d75f2` - Group follower offsets now alternate sides with jitter; default movement pacing tuned calmer (`BASE_WALK_SPEED=8`, `GROUP_SIZE_MAX=3`).
+- `b5ce7b6` - Client LOD now has three visual stages: low-rate updates (`low`), frozen-animation distant tier (`mid`), then hidden (`far`).
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
@@ -80,12 +84,17 @@ These are **not** currently present after rollback:
 - The new spawn instrumentation is diagnostics-only and does not alter spawn attempt budgets or route selection logic.
 - Spawn stall warnings now include route-builder context (`no_reachable_despawn`, POIs accepted/skipped counts) when route generation fails.
 - Spawn stall warnings now require consecutive no-progress cycles before emitting.
+- Dead-end POI/despawn traversal now has a constrained backtrack fallback instead of hard-failing when no alternative exit exists.
+- Social seat capacity now supports one-seat POIs when capacity cap is positive.
+- Ground snap ignores whole player/NPC models on hit, reducing climb-on-character artifacts.
+- LOD pipeline now supports `near -> low -> mid -> far` rather than immediate freeze after full-detail distance.
 - The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.
 
 ## Known Risks At This Checkpoint
 
 - Long-run animation stability still needs soak confirmation, but per-NPC track cleanup now destroys stale tracks on reuse.
 - Spawn consistency can still degrade when route generation repeatedly returns no usable routes, but cycle-level warnings now include route-level skip/failure breakdowns.
+- LOD tuning may need map-specific adjustment (`LOD_FREEZE_DISTANCE`, `LOD_LOW_UPDATE_RATE`, `LOD_FROZEN_UPDATE_RATE`) to balance stepping artifacts vs. performance.
 - Social/Scenic behavior may still feel inconsistent depending on multi-tag node setup and graph topology.
 
 ## Studio Setup Reminders
