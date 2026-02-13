@@ -1,5 +1,6 @@
 --!strict
 
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local configModule = ReplicatedStorage:WaitForChild("Config", 10)
@@ -96,6 +97,29 @@ local function resolveScenicLookPosition(poiNode: GraphNode): Vector3?
 
 	local targetPart = targets[math.random(1, #targets)]
 	return randomPointInPart(targetPart)
+end
+
+local function isTaggedAs(node: GraphNode, tag: string): boolean
+	return CollectionService:HasTag(node.part, tag)
+end
+
+local function resolvePoiArrivalPosition(poiNode: GraphNode): Vector3
+	local randomize = poiNode.part:GetAttribute("RandomizePOIPoint")
+	if randomize == false then
+		return poiNode.part.Position
+	end
+
+	if poiNode.isZone then
+		return NodeGraph.resolvePosition(poiNode)
+	end
+
+	local halfSize = poiNode.part.Size * 0.5
+	local localOffset = Vector3.new(
+		(math.random() * 2 - 1) * halfSize.X,
+		0,
+		(math.random() * 2 - 1) * halfSize.Z
+	)
+	return (poiNode.part.CFrame * CFrame.new(localOffset)).Position
 end
 
 local function randomInt(minValue: number, maxValue: number): number
@@ -283,16 +307,21 @@ end
 
 local function getAllPOINodes(): { GraphNode }
 	local result: { GraphNode } = {}
+	local seenByPart: { [Part]: boolean } = {}
 
-	for _, node in ipairs(NodeGraph.getNodesByTag(Config.TAG_SCENIC)) do
-		table.insert(result, node)
+	local function appendUnique(nodes: { GraphNode }): ()
+		for _, node in ipairs(nodes) do
+			if seenByPart[node.part] then
+				continue
+			end
+			seenByPart[node.part] = true
+			table.insert(result, node)
+		end
 	end
-	for _, node in ipairs(NodeGraph.getNodesByTag(Config.TAG_BUSY)) do
-		table.insert(result, node)
-	end
-	for _, node in ipairs(NodeGraph.getNodesByTag(Config.TAG_SOCIAL)) do
-		table.insert(result, node)
-	end
+
+	appendUnique(NodeGraph.getNodesByTag(Config.TAG_SCENIC))
+	appendUnique(NodeGraph.getNodesByTag(Config.TAG_BUSY))
+	appendUnique(NodeGraph.getNodesByTag(Config.TAG_SOCIAL))
 
 	return result
 end
@@ -496,7 +525,10 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 			)
 		end
 
-		if poiNode.tag == Config.TAG_SOCIAL then
+		local isSocialPOI = isTaggedAs(poiNode, Config.TAG_SOCIAL)
+		local isScenicPOI = isTaggedAs(poiNode, Config.TAG_SCENIC)
+
+		if isSocialPOI then
 			local sitDuration = randomFloat(Config.SOCIAL_SIT_MIN, Config.SOCIAL_SIT_MAX)
 			local predictedPositions = resolveSegmentPositions(path, nil)
 			local predictedArrivalTime = tick()
@@ -530,11 +562,11 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 			continue
 		end
 
-		local poiPositions = resolveSegmentPositions(path, nil)
+		local poiPositions = resolveSegmentPositions(path, resolvePoiArrivalPosition(poiNode))
 		lastPosition, elapsedTime = appendWalkPositions(route, poiPositions, lastPosition, elapsedTime)
 
 		local finalStep = route[#route]
-		if finalStep and poiNode.tag == Config.TAG_SCENIC then
+		if finalStep and isScenicPOI then
 			local idleDuration = randomFloat(Config.SCENIC_IDLE_MIN, Config.SCENIC_IDLE_MAX)
 			finalStep.action = "idle"
 			finalStep.duration = idleDuration
