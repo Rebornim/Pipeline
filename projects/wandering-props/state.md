@@ -45,12 +45,16 @@ Read in this order:
 - `55cca66` - ground-snap raycast ignore logic expanded to whole hit models to prevent NPCs climbing onto players
 - `01d75f2` - calmer default walk speed + less rigid group formations (alternating offsets with jitter)
 - `b5ce7b6` - staged LOD pipeline added: low-rate updates, frozen mid tier, and far-distance cull
+- `9424c8b` - POI handling now checks live tags on node parts and randomizes non-seat POI arrival points within the POI part
+- `ea324f4` - spawn attempts now retry alternate spawn-route candidates and increase attempt budget when below minimum population
+- `fd3c0a3` - active client NPC models are now parented under `Workspace.WanderingPropsActiveNPCs`
+- `c5b821f` - low LOD now reduces animation speed (not movement update rate) and default LOD distance thresholds are higher
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `b5ce7b6`
+- Latest checkpoint commit on branch: `c5b821f`
 
 ## Next Validation Focus
 

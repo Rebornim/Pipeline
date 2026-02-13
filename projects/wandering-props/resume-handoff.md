@@ -24,6 +24,10 @@
 - `55cca66` - `NPCMover` ground snap now excludes whole hit models (players/NPCs), reducing pop-up elevation when crossing characters.
 - `01d75f2` - Group follower offsets now alternate sides with jitter; default movement pacing tuned calmer (`BASE_WALK_SPEED=8`, `GROUP_SIZE_MAX=3`).
 - `b5ce7b6` - Client LOD now has three visual stages: low-rate updates (`low`), frozen-animation distant tier (`mid`), then hidden (`far`).
+- `9424c8b` - `RouteBuilder` now uses live part tags for Scenic/Social POI behavior and randomizes non-seat POI arrival points within POI part bounds.
+- `ea324f4` - `PopulationController` now retries alternate spawn-route candidates per spawn action and increases attempt budget while below minimum population.
+- `fd3c0a3` - `NPCClient` now keeps active NPC models under `Workspace.WanderingPropsActiveNPCs`.
+- `c5b821f` - LOD low tier now affects animation speed only (no movement-update throttling), and default LOD distances were increased (`300/700/1100`).
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
@@ -87,7 +91,7 @@ These are **not** currently present after rollback:
 - Dead-end POI/despawn traversal now has a constrained backtrack fallback instead of hard-failing when no alternative exit exists.
 - Social seat capacity now supports one-seat POIs when capacity cap is positive.
 - Ground snap ignores whole player/NPC models on hit, reducing climb-on-character artifacts.
-- LOD pipeline now supports `near -> low -> mid -> far` rather than immediate freeze after full-detail distance.
+- LOD pipeline now supports `near -> low -> mid -> far`; `low` reduces animation speed only, `mid` freezes animation, `far` hides models.
 - The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.
 
 ## Known Risks At This Checkpoint
