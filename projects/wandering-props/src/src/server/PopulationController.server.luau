@@ -47,6 +47,8 @@ local syncEvent: RemoteEvent
 local npcIdCounter = 0
 local groupIdCounter = 0
 local warnedNoModelTemplates = false
+local lastSpawnStallWarnAt = 0
+local SPAWN_STALL_WARN_COOLDOWN = 30
 
 local function debugLog(message: string): ()
 	if Config.DEBUG_ENABLED then
@@ -187,6 +189,27 @@ local function getRandomModelIndex(): number?
 	return math.random(1, modelCount)
 end
 
+local function incrementReasonCount(reasonCounts: { [string]: number }, reason: string?): ()
+	local key = if reason and reason ~= "" then reason else "unknown"
+	reasonCounts[key] = (reasonCounts[key] or 0) + 1
+end
+
+local function formatReasonCounts(reasonCounts: { [string]: number }): string
+	local reasons: { string } = {}
+	for reason in pairs(reasonCounts) do
+		table.insert(reasons, reason)
+	end
+
+	table.sort(reasons)
+
+	local parts: { string } = table.create(#reasons)
+	for _, reason in ipairs(reasons) do
+		table.insert(parts, ("%s=%d"):format(reason, reasonCounts[reason]))
+	end
+
+	return table.concat(parts, ", ")
+end
+
 local function buildSpawnPayload(record: NPCRecord): SpawnPayload
 	return {
 		id = record.id,
@@ -250,22 +273,22 @@ local function registerAndBroadcast(
 	return true
 end
 
-local function spawnSolo(): boolean
+local function spawnSolo(): (boolean, string?)
 	local spawnNode = getRandomNodeByTag(Config.TAG_SPAWN)
 	if not spawnNode then
-		return false
+		return false, "no_spawn_nodes"
 	end
 
 	local route, reservedSeats = RouteBuilder.buildRoute(spawnNode)
 	if #route == 0 then
-		return false
+		return false, "solo_empty_route"
 	end
 	local modelIndex = getRandomModelIndex()
 	if not modelIndex then
-		return false
+		return false, "no_model_templates"
 	end
 
-	return registerAndBroadcast(
+	local spawned = registerAndBroadcast(
 		generateId(),
 		nil,
 		modelIndex,
@@ -274,12 +297,17 @@ local function spawnSolo(): boolean
 		reservedSeats,
 		nil
 	)
+	if not spawned then
+		return false, "solo_register_rejected"
+	end
+
+	return true, nil
 end
 
-local function spawnGroup(remainingCapacity: number): boolean
+local function spawnGroup(remainingCapacity: number): (boolean, string?)
 	local spawnNode = getRandomNodeByTag(Config.TAG_SPAWN)
 	if not spawnNode then
-		return false
+		return false, "no_spawn_nodes"
 	end
 
 	local minSize = math.max(1, math.floor(tonumber(Config.GROUP_SIZE_MIN) or 1))
@@ -293,19 +321,21 @@ local function spawnGroup(remainingCapacity: number): boolean
 
 	local groupRoutes = RouteBuilder.buildGroupRoute(spawnNode, groupSize)
 	if #groupRoutes == 0 then
-		return false
+		return false, "group_empty_route"
 	end
 
 	local groupId = generateGroupId()
 	local sharedSpeed = getRandomSpeed()
 	local spawnDelay = math.max(0, tonumber(Config.GROUP_FOLLOWER_DELAY) or 0)
 	local spawnedAny = false
+	local memberFailureReasons: { [string]: number } = {}
 
 	for index, member in ipairs(groupRoutes) do
 		local npcId = generateId()
 		local delaySeconds = if index == 1 then nil else spawnDelay * (index - 1)
 		local modelIndex = getRandomModelIndex()
 		if not modelIndex then
+			incrementReasonCount(memberFailureReasons, "no_model_templates")
 			continue
 		end
 
@@ -318,10 +348,21 @@ local function spawnGroup(remainingCapacity: number): boolean
 			member.reservedSeats,
 			delaySeconds
 		)
+		if not spawned then
+			incrementReasonCount(memberFailureReasons, "group_register_rejected")
+		end
 		spawnedAny = spawnedAny or spawned
 	end
 
-	return spawnedAny
+	if spawnedAny then
+		return true, nil
+	end
+
+	local groupedReasons = formatReasonCounts(memberFailureReasons)
+	if groupedReasons ~= "" then
+		return false, "group_failed(" .. groupedReasons .. ")"
+	end
+	return false, "group_no_members_spawned"
 end
 
 local function handlePlayerAdded(player: Player): ()
@@ -359,6 +400,7 @@ local function runMainLoop(): ()
 		local spawnedActions = 0
 		local attemptBudget = math.max(4, spawnsPerCycle * 4)
 		local attempts = 0
+		local failureReasons: { [string]: number } = {}
 
 		while NPCRegistry.getCount() < targetPop and spawnedActions < spawnsPerCycle and attempts < attemptBudget do
 			attempts += 1
@@ -368,14 +410,33 @@ local function runMainLoop(): ()
 			end
 
 			local spawned = false
+			local failureReason: string? = nil
 			if math.random() < groupSpawnChance then
-				spawned = spawnGroup(remaining)
+				spawned, failureReason = spawnGroup(remaining)
 			else
-				spawned = spawnSolo()
+				spawned, failureReason = spawnSolo()
 			end
 
 			if spawned then
 				spawnedActions += 1
+			else
+				incrementReasonCount(failureReasons, failureReason)
+			end
+		end
+
+		if NPCRegistry.getCount() < targetPop and spawnedActions == 0 and attempts > 0 then
+			local nowTime = tick()
+			if nowTime - lastSpawnStallWarnAt >= SPAWN_STALL_WARN_COOLDOWN then
+				lastSpawnStallWarnAt = nowTime
+				warn(
+					("[WanderingProps/PopulationController] Spawn cycle made no progress (current=%d, target=%d, attempts=%d, budget=%d). Reasons: %s"):format(
+						NPCRegistry.getCount(),
+						targetPop,
+						attempts,
+						attemptBudget,
+						formatReasonCounts(failureReasons)
+					)
+				)
 			end
 		end
 	end
