@@ -386,6 +386,11 @@ local function findReachableDespawnPathWithFirstHopConstraint(
 		local basePath = NodeGraph.getPath(fromNode.part, despawnNode.part)
 		local path = if basePath then buildTraversalPath(basePath) else nil
 		if path then
+			if #path < 2 then
+				-- Ignore "already at despawn" zero-hop paths; POI routes should
+				-- leave the destination before they can terminate.
+				continue
+			end
 			if disallowedFirstHopPart and #path >= 2 and path[2].part == disallowedFirstHopPart then
 				continue
 			end
@@ -672,18 +677,20 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 	if #finalPositions == 0 and route[#route].action ~= "walk" then
 		table.insert(route, {
 			position = route[#route].position,
-			action = "despawn",
+			action = "walk",
 			duration = nil,
 			faceCFrame = nil,
 			sitCFrame = nil,
 		})
-	else
-		local terminalStep = route[#route]
-		terminalStep.action = "despawn"
-		terminalStep.duration = nil
-		terminalStep.faceCFrame = nil
-		terminalStep.sitCFrame = nil
 	end
+
+	table.insert(route, {
+		position = route[#route].position,
+		action = "despawn",
+		duration = nil,
+		faceCFrame = nil,
+		sitCFrame = nil,
+	})
 
 	if #route < 2 or route[1].action == "despawn" then
 		return
