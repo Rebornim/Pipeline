@@ -43,6 +43,7 @@ local REMOTES_FOLDER_NAME = "WanderingPropsRemotes"
 local SPAWN_EVENT_NAME = "WP_SpawnNPC"
 local DESPAWN_EVENT_NAME = "WP_DespawnNPC"
 local SYNC_EVENT_NAME = "WP_SyncState"
+local ACTIVE_NPCS_FOLDER_NAME = "WanderingPropsActiveNPCs"
 
 local activeNPCs: { [string]: ClientNPC } = {}
 
@@ -68,6 +69,21 @@ local function cloneRoute(route: { RouteStep }): { RouteStep }
 		copy[index] = cloneStep(step)
 	end
 	return copy
+end
+
+local function ensureActiveNPCsFolder(): Folder
+	local existing = Workspace:FindFirstChild(ACTIVE_NPCS_FOLDER_NAME)
+	if existing and existing:IsA("Folder") then
+		return existing
+	end
+	if existing then
+		existing:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = ACTIVE_NPCS_FOLDER_NAME
+	folder.Parent = Workspace
+	return folder
 end
 
 local function tryAcquireModel(modelIndex: number): Model?
@@ -191,7 +207,7 @@ local function handleSpawn(payload: SpawnPayload): ()
 	end
 
 	model:PivotTo(CFrame.new(payload.route[1].position))
-	model.Parent = Workspace
+	model.Parent = ensureActiveNPCsFolder()
 
 	local animator = resolveAnimator(model)
 	if not animator then
@@ -233,7 +249,7 @@ local function handleSync(payload: SyncPayload): ()
 		end
 
 		model:PivotTo(CFrame.new(syncData.currentPosition))
-		model.Parent = Workspace
+		model.Parent = ensureActiveNPCsFolder()
 
 		local animator = resolveAnimator(model)
 		if not animator then
@@ -258,6 +274,7 @@ local function handleSync(payload: SyncPayload): ()
 end
 
 ModelPool.init()
+ensureActiveNPCsFolder()
 
 local remotes = ReplicatedStorage:WaitForChild(REMOTES_FOLDER_NAME, 10)
 if not remotes or not remotes:IsA("Folder") then
