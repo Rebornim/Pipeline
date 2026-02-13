@@ -39,12 +39,13 @@ Read in this order:
 - `0a8b2f6` - spawn-cycle failure diagnostics added in `PopulationController` (no spawn logic change)
 - `648c267` - animation track cleanup hardened in `NPCAnimator` to prevent pooled-model track buildup
 - `78067fc` - handoff risk notes aligned with current diagnostics/cleanup behavior
+- `1bbf359` - route-build failure detail now included in spawn stall diagnostics (no spawn logic change)
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `78067fc`
+- Latest checkpoint commit on branch: `1bbf359`
 
 ## Next Validation Focus
 

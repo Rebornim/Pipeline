@@ -18,8 +18,9 @@
 - `0a8b2f6` - `PopulationController` now records per-cycle spawn failure reasons and emits a throttled warning when a spawn cycle makes zero progress while under target population.
 - `648c267` - `NPCAnimator` now destroys animation tracks during setup/cleanup to avoid long-run track accumulation on pooled models.
 - `78067fc` - Handoff known-risk section updated to reflect current checkpoint behavior.
+- `1bbf359` - `RouteBuilder` now reports empty-route failure detail that `PopulationController` includes in spawn-cycle stall warnings for clearer root-cause diagnostics.
 
-Validation performed after each patch: `rojo build default.project.json`.
+Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
 ## Git Remote
 
@@ -76,12 +77,13 @@ These are **not** currently present after rollback:
 ## Current Additions vs Rolled-Back Experiments
 
 - The new spawn instrumentation is diagnostics-only and does not alter spawn attempt budgets or route selection logic.
+- Spawn stall warnings now include route-builder context (`no_reachable_despawn`, POIs accepted/skipped counts) when route generation fails.
 - The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.
 
 ## Known Risks At This Checkpoint
 
 - Long-run animation stability still needs soak confirmation, but per-NPC track cleanup now destroys stale tracks on reuse.
-- Spawn consistency can still degrade when route generation repeatedly returns no usable routes, but cycle-level failure reasons now surface in warnings.
+- Spawn consistency can still degrade when route generation repeatedly returns no usable routes, but cycle-level warnings now include route-level skip/failure breakdowns.
 - Social/Scenic behavior may still feel inconsistent depending on multi-tag node setup and graph topology.
 
 ## Studio Setup Reminders
