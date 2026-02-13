@@ -34,6 +34,8 @@
 - `f1d26b7` - Spawn recovery now forces solo spawns while below minimum population.
 - `31f6824` - `NPCMover` now re-parents LOD-restored models to `Workspace.WanderingPropsActiveNPCs` instead of root `Workspace`.
 - `d4445f2` - Handoff/state checkpoint lists updated for this social/scenic and spawn-recovery follow-up set.
+- `fef5c95` - Handoff/state sync commit after follow-up push.
+- `0df5ada` - POI dwell behavior hardened: `RouteBuilder` now inserts explicit `idle`/`sit` dwell steps, and `NPCMover` no longer carries overflow into POI dwell timing.
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
@@ -97,6 +99,7 @@ These are **not** currently present after rollback:
 - Dead-end POI/despawn traversal now has a constrained backtrack fallback instead of hard-failing when no alternative exit exists.
 - Social seat capacity now supports one-seat POIs when capacity cap is positive.
 - Social POI seating now has a fallback random-seat path when timed reservation fails, and non-social route legs skip intermediate social transit nodes.
+- POI dwell steps are now explicit route steps, and POI dwell timers reset on entry to avoid immediate skip from prior walk overflow.
 - Ground snap ignores whole player/NPC models on hit, reducing climb-on-character artifacts.
 - LOD pipeline now supports `near -> low -> mid -> far`; `low` reduces animation speed only, `mid` freezes animation, `far` hides models.
 - The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.

@@ -55,12 +55,14 @@ Read in this order:
 - `f1d26b7` - spawn loop now forces solo recovery attempts while below minimum population
 - `31f6824` - LOD re-parenting now keeps NPCs under `Workspace.WanderingPropsActiveNPCs`
 - `d4445f2` - handoff/state docs updated for social/scenic and spawn-recovery follow-up checkpoints
+- `fef5c95` - handoff/state docs synced after prior social/scenic follow-up push
+- `0df5ada` - POI stops now use explicit idle/sit dwell steps and POI dwell timing ignores carry-over overflow
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `d4445f2`
+- Latest checkpoint commit on branch: `0df5ada`
 
 ## Next Validation Focus
 
