@@ -248,10 +248,20 @@ local function buildTraversalPath(basePath: { GraphNode }): { GraphNode }
 	return collapseImmediateBacktracks(injectWander(basePath))
 end
 
-local function resolveSegmentPositions(path: { GraphNode }, finalOverride: Vector3?): { Vector3 }
+local function resolveSegmentPositions(
+	path: { GraphNode },
+	finalOverride: Vector3?,
+	skipIntermediateSocialNodes: boolean?
+): { Vector3 }
 	local positions: { Vector3 } = {}
 	for i = 2, #path do
-		table.insert(positions, NodeGraph.resolvePosition(path[i]))
+		local node = path[i]
+		local isIntermediate = i < #path
+		if skipIntermediateSocialNodes and isIntermediate and isTaggedAs(node, Config.TAG_SOCIAL) then
+			continue
+		end
+
+		table.insert(positions, NodeGraph.resolvePosition(node))
 	end
 
 	if finalOverride then
@@ -311,6 +321,9 @@ local function getAllPOINodes(): { GraphNode }
 
 	local function appendUnique(nodes: { GraphNode }): ()
 		for _, node in ipairs(nodes) do
+			if isTaggedAs(node, Config.TAG_SPAWN) or isTaggedAs(node, Config.TAG_DESPAWN) then
+				continue
+			end
 			if seenByPart[node.part] then
 				continue
 			end
@@ -530,20 +543,29 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 
 		if isSocialPOI then
 			local sitDuration = randomFloat(Config.SOCIAL_SIT_MIN, Config.SOCIAL_SIT_MAX)
-			local predictedPositions = resolveSegmentPositions(path, nil)
+			local predictedPositions = resolveSegmentPositions(path, nil, false)
 			local predictedArrivalTime = tick()
 				+ elapsedTime
 				+ estimateTravelDuration(lastPosition, predictedPositions, math.max(Config.BASE_WALK_SPEED, EPSILON))
 			local reservedSeat = SeatManager.reserveSeat(poiNode.part, predictedArrivalTime, sitDuration, nil)
+			local hasTimeReservation = reservedSeat ~= nil
 			if not reservedSeat then
-				skippedNoSeat += 1
-				debugLog(("Skipping social POI without available seat: %s"):format(poiNode.part:GetFullName()))
-				continue
+				local fallbackSeats = poiNode.seats
+				if fallbackSeats and #fallbackSeats > 0 then
+					reservedSeat = fallbackSeats[math.random(1, #fallbackSeats)]
+					debugLog(("Using fallback random social seat for %s"):format(poiNode.part:GetFullName()))
+				else
+					skippedNoSeat += 1
+					debugLog(("Skipping social POI without available seat: %s"):format(poiNode.part:GetFullName()))
+					continue
+				end
 			end
 
-			table.insert(reservedSeats, reservedSeat)
+			if hasTimeReservation then
+				table.insert(reservedSeats, reservedSeat)
+			end
 
-			local socialPositions = resolveSegmentPositions(path, reservedSeat.Position)
+			local socialPositions = resolveSegmentPositions(path, reservedSeat.Position, false)
 			lastPosition, elapsedTime = appendWalkPositions(route, socialPositions, lastPosition, elapsedTime)
 
 			local finalStep = route[#route]
@@ -562,7 +584,7 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 			continue
 		end
 
-		local poiPositions = resolveSegmentPositions(path, resolvePoiArrivalPosition(poiNode))
+		local poiPositions = resolveSegmentPositions(path, resolvePoiArrivalPosition(poiNode), true)
 		lastPosition, elapsedTime = appendWalkPositions(route, poiPositions, lastPosition, elapsedTime)
 
 		local finalStep = route[#route]
@@ -606,7 +628,7 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 			)
 	end
 
-	local finalPositions = resolveSegmentPositions(despawnPath, nil)
+	local finalPositions = resolveSegmentPositions(despawnPath, nil, true)
 	lastPosition, elapsedTime = appendWalkPositions(route, finalPositions, lastPosition, elapsedTime)
 
 	if #route == 0 then
