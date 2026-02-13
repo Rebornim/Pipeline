@@ -172,9 +172,12 @@ function SeatManager.reserveSeat(
 		return nil
 	end
 
-	-- Exact architecture rule:
-	-- maxOccupied = math.floor(#seats * capacityCap)
 	local maxOccupied = math.floor(#seats * socialRecord.capacityCap)
+	-- For tiny setups (for example, one-seat social POIs), permit at least one
+	-- occupant when capacity cap is positive so social POIs remain usable.
+	if socialRecord.capacityCap > 0 then
+		maxOccupied = math.max(1, maxOccupied)
+	end
 	if maxOccupied <= 0 then
 		return nil
 	end

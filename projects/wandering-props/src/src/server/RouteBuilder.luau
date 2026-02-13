@@ -116,6 +116,25 @@ local function copyNodes(nodes: { GraphNode }): { GraphNode }
 	return copy
 end
 
+local function hasAlternativeFirstHop(
+	fromNode: GraphNode,
+	targetNode: GraphNode,
+	disallowedFirstHopPart: Part
+): boolean
+	for _, neighbor in ipairs(fromNode.connections) do
+		if neighbor.part == disallowedFirstHopPart then
+			continue
+		end
+
+		local pathFromNeighbor = NodeGraph.getPath(neighbor.part, targetNode.part)
+		if pathFromNeighbor and #pathFromNeighbor >= 1 then
+			return true
+		end
+	end
+
+	return false
+end
+
 local function shuffleNodes(nodes: { GraphNode }): ()
 	for i = #nodes, 2, -1 do
 		local j = math.random(1, i)
@@ -311,7 +330,10 @@ local function pickWeightedPOIs(count: number): { GraphNode }
 	return picked
 end
 
-local function findReachableDespawnPath(fromNode: GraphNode, disallowedFirstHopPart: Part?): { GraphNode }?
+local function findReachableDespawnPathWithFirstHopConstraint(
+	fromNode: GraphNode,
+	disallowedFirstHopPart: Part?
+): { GraphNode }?
 	local despawnNodes = copyNodes(NodeGraph.getNodesByTag(Config.TAG_DESPAWN))
 	if #despawnNodes == 0 then
 		return nil
@@ -326,6 +348,29 @@ local function findReachableDespawnPath(fromNode: GraphNode, disallowedFirstHopP
 				continue
 			end
 			return path
+		end
+	end
+
+	return nil
+end
+
+local function findReachableDespawnPath(fromNode: GraphNode, disallowedFirstHopPart: Part?): { GraphNode }?
+	local strictPath = findReachableDespawnPathWithFirstHopConstraint(fromNode, disallowedFirstHopPart)
+	if strictPath then
+		return strictPath
+	end
+
+	if disallowedFirstHopPart then
+		-- Dead-end fallback: if immediate backtracking is the only way out, allow it.
+		local fallbackPath = findReachableDespawnPathWithFirstHopConstraint(fromNode, nil)
+		if fallbackPath then
+			debugLog(
+				("Allowing immediate-backtrack despawn fallback from %s via %s"):format(
+					fromNode.part:GetFullName(),
+					disallowedFirstHopPart:GetFullName()
+				)
+			)
+			return fallbackPath
 		end
 	end
 
@@ -437,9 +482,18 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 
 		local path = buildTraversalPath(basePath)
 		if previousHopPart and #path >= 2 and path[2].part == previousHopPart then
-			skippedBacktrack += 1
-			debugLog(("Skipping immediate-backtrack POI leg at %s"):format(poiNode.part:GetFullName()))
-			continue
+			if hasAlternativeFirstHop(currentNode, poiNode, previousHopPart) then
+				skippedBacktrack += 1
+				debugLog(("Skipping immediate-backtrack POI leg at %s"):format(poiNode.part:GetFullName()))
+				continue
+			end
+
+			debugLog(
+				("Allowing immediate-backtrack POI fallback from %s to %s"):format(
+					currentNode.part:GetFullName(),
+					poiNode.part:GetFullName()
+				)
+			)
 		end
 
 		if poiNode.tag == Config.TAG_SOCIAL then
