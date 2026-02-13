@@ -33,6 +33,17 @@ Read in this order:
 - Studio behavior is still inconsistent in some test setups.
 - Most recent user intent: continue from rollback baseline with controlled, minimal changes.
 
+## Checkpoint Commits (2026-02-13)
+
+- `c4058c1` - rollback baseline checkpoint before Phase 3 resume work
+- `0a8b2f6` - spawn-cycle failure diagnostics added in `PopulationController` (no spawn logic change)
+- `648c267` - animation track cleanup hardened in `NPCAnimator` to prevent pooled-model track buildup
+
+## Next Validation Focus
+
+1. Run Studio sessions and watch for new spawn-cycle warning output to identify dominant failure reasons.
+2. Run an extended soak test (multi-hour) to confirm animation tracks do not accumulate over pooled NPC reuse.
+
 ## Notes
 
 - Do not bulk-rewrite modules.

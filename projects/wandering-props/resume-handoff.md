@@ -12,6 +12,14 @@
   - `"Sure, and I dont think the scenic POI or social POIs are working..."`
 - Any changes made after that point were intentionally removed.
 
+## New Checkpoints After Resume (Friday, February 13, 2026)
+
+- `c4058c1` - Git baseline commit for the rollback state before new Phase 3 work.
+- `0a8b2f6` - `PopulationController` now records per-cycle spawn failure reasons and emits a throttled warning when a spawn cycle makes zero progress while under target population.
+- `648c267` - `NPCAnimator` now destroys animation tracks during setup/cleanup to avoid long-run track accumulation on pooled models.
+
+Validation performed after each patch: `rojo build default.project.json`.
+
 ## Files Implemented
 
 - `projects/wandering-props/src/default.project.json`
@@ -57,6 +65,11 @@ These are **not** currently present after rollback:
 - Increased spawn attempt budget (`12x`) patch.
 - Ground-surface top-only zone position patch in `NodeGraph`.
 - Idle/sit per-frame pose reapply branch in `NPCMover.update`.
+
+## Current Additions vs Rolled-Back Experiments
+
+- The new spawn instrumentation is diagnostics-only and does not alter spawn attempt budgets or route selection logic.
+- The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.
 
 ## Known Risks At This Checkpoint
 
