@@ -28,6 +28,7 @@
 - `ea324f4` - `PopulationController` now retries alternate spawn-route candidates per spawn action and increases attempt budget while below minimum population.
 - `fd3c0a3` - `NPCClient` now keeps active NPC models under `Workspace.WanderingPropsActiveNPCs`.
 - `c5b821f` - LOD low tier now affects animation speed only (no movement-update throttling), and default LOD distances were increased (`300/700/1100`).
+- `13281b7` - Handoff/state checkpoint sections updated to include this follow-up refinement pass.
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 

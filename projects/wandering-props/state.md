@@ -49,12 +49,13 @@ Read in this order:
 - `ea324f4` - spawn attempts now retry alternate spawn-route candidates and increase attempt budget when below minimum population
 - `fd3c0a3` - active client NPC models are now parented under `Workspace.WanderingPropsActiveNPCs`
 - `c5b821f` - low LOD now reduces animation speed (not movement update rate) and default LOD distance thresholds are higher
+- `13281b7` - handoff/state docs updated for POI/spawn/LOD follow-up refinement checkpoints
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `c5b821f`
+- Latest checkpoint commit on branch: `13281b7`
 
 ## Next Validation Focus
 
