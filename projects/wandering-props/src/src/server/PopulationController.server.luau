@@ -51,6 +51,7 @@ local lastSpawnStallWarnAt = 0
 local SPAWN_STALL_WARN_COOLDOWN = 30
 local SPAWN_STALL_WARN_MIN_CONSECUTIVE_CYCLES = 2
 local consecutiveSpawnNoProgressCycles = 0
+local SPAWN_ROUTE_RETRIES_PER_ATTEMPT = 3
 
 local function debugLog(message: string): ()
 	if Config.DEBUG_ENABLED then
@@ -276,43 +277,46 @@ local function registerAndBroadcast(
 end
 
 local function spawnSolo(): (boolean, string?)
-	local spawnNode = getRandomNodeByTag(Config.TAG_SPAWN)
-	if not spawnNode then
-		return false, "no_spawn_nodes"
+	local lastFailureReason = "no_spawn_nodes"
+
+	for _ = 1, SPAWN_ROUTE_RETRIES_PER_ATTEMPT do
+		local spawnNode = getRandomNodeByTag(Config.TAG_SPAWN)
+		if not spawnNode then
+			return false, "no_spawn_nodes"
+		end
+
+		local route, reservedSeats, routeFailureReason = RouteBuilder.buildRoute(spawnNode)
+		if #route == 0 then
+			local detail = if routeFailureReason and routeFailureReason ~= "" then routeFailureReason else "unknown"
+			lastFailureReason = "solo_empty_route(" .. detail .. ")"
+			continue
+		end
+
+		local modelIndex = getRandomModelIndex()
+		if not modelIndex then
+			return false, "no_model_templates"
+		end
+
+		local spawned = registerAndBroadcast(
+			generateId(),
+			nil,
+			modelIndex,
+			getRandomSpeed(),
+			route,
+			reservedSeats,
+			nil
+		)
+		if spawned then
+			return true, nil
+		end
+
+		lastFailureReason = "solo_register_rejected"
 	end
 
-	local route, reservedSeats, routeFailureReason = RouteBuilder.buildRoute(spawnNode)
-	if #route == 0 then
-		local detail = if routeFailureReason and routeFailureReason ~= "" then routeFailureReason else "unknown"
-		return false, "solo_empty_route(" .. detail .. ")"
-	end
-	local modelIndex = getRandomModelIndex()
-	if not modelIndex then
-		return false, "no_model_templates"
-	end
-
-	local spawned = registerAndBroadcast(
-		generateId(),
-		nil,
-		modelIndex,
-		getRandomSpeed(),
-		route,
-		reservedSeats,
-		nil
-	)
-	if not spawned then
-		return false, "solo_register_rejected"
-	end
-
-	return true, nil
+	return false, lastFailureReason
 end
 
 local function spawnGroup(remainingCapacity: number): (boolean, string?)
-	local spawnNode = getRandomNodeByTag(Config.TAG_SPAWN)
-	if not spawnNode then
-		return false, "no_spawn_nodes"
-	end
-
 	local minSize = math.max(1, math.floor(tonumber(Config.GROUP_SIZE_MIN) or 1))
 	local maxSize = math.max(minSize, math.floor(tonumber(Config.GROUP_SIZE_MAX) or minSize))
 	local targetSize = math.random(minSize, maxSize)
@@ -322,10 +326,27 @@ local function spawnGroup(remainingCapacity: number): (boolean, string?)
 		return spawnSolo()
 	end
 
-	local groupRoutes, groupFailureReason = RouteBuilder.buildGroupRoute(spawnNode, groupSize)
-	if #groupRoutes == 0 then
+	local chosenRoutes: { { route: { RouteStep }, reservedSeats: { Part } } }? = nil
+	local lastFailureReason = "group_empty_route(unknown)"
+
+	for _ = 1, SPAWN_ROUTE_RETRIES_PER_ATTEMPT do
+		local spawnNode = getRandomNodeByTag(Config.TAG_SPAWN)
+		if not spawnNode then
+			return false, "no_spawn_nodes"
+		end
+
+		local groupRoutes, groupFailureReason = RouteBuilder.buildGroupRoute(spawnNode, groupSize)
+		if #groupRoutes > 0 then
+			chosenRoutes = groupRoutes
+			break
+		end
+
 		local detail = if groupFailureReason and groupFailureReason ~= "" then groupFailureReason else "unknown"
-		return false, "group_empty_route(" .. detail .. ")"
+		lastFailureReason = "group_empty_route(" .. detail .. ")"
+	end
+
+	if not chosenRoutes then
+		return false, lastFailureReason
 	end
 
 	local groupId = generateGroupId()
@@ -334,7 +355,7 @@ local function spawnGroup(remainingCapacity: number): (boolean, string?)
 	local spawnedAny = false
 	local memberFailureReasons: { [string]: number } = {}
 
-	for index, member in ipairs(groupRoutes) do
+	for index, member in ipairs(chosenRoutes) do
 		local npcId = generateId()
 		local delaySeconds = if index == 1 then nil else spawnDelay * (index - 1)
 		local modelIndex = getRandomModelIndex()
@@ -403,6 +424,10 @@ local function runMainLoop(): ()
 		local targetPop = getTargetPopulation()
 		local spawnedActions = 0
 		local attemptBudget = math.max(4, spawnsPerCycle * 4)
+		local minPopulation = math.max(0, math.floor(tonumber(Config.MIN_POPULATION) or 0))
+		if NPCRegistry.getCount() < minPopulation then
+			attemptBudget = math.max(attemptBudget, spawnsPerCycle * 8, 16)
+		end
 		local attempts = 0
 		local failureReasons: { [string]: number } = {}
 
