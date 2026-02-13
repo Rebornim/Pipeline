@@ -54,12 +54,13 @@ Read in this order:
 - `c3afac7` - POI traversal now skips intermediate social transit nodes, filters spawn/despawn from POI pool, and uses fallback random social seats
 - `f1d26b7` - spawn loop now forces solo recovery attempts while below minimum population
 - `31f6824` - LOD re-parenting now keeps NPCs under `Workspace.WanderingPropsActiveNPCs`
+- `d4445f2` - handoff/state docs updated for social/scenic and spawn-recovery follow-up checkpoints
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `31f6824`
+- Latest checkpoint commit on branch: `d4445f2`
 
 ## Next Validation Focus
 

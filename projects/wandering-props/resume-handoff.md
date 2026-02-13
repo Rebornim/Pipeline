@@ -33,6 +33,7 @@
 - `c3afac7` - POI traversal now avoids intermediate social transit stops, excludes spawn/despawn-tagged nodes from POI selection, and supports random-seat social fallback when reservations fail.
 - `f1d26b7` - Spawn recovery now forces solo spawns while below minimum population.
 - `31f6824` - `NPCMover` now re-parents LOD-restored models to `Workspace.WanderingPropsActiveNPCs` instead of root `Workspace`.
+- `d4445f2` - Handoff/state checkpoint lists updated for this social/scenic and spawn-recovery follow-up set.
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
