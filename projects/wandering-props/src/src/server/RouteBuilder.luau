@@ -576,6 +576,17 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 				sitCFrame = reservedSeat.CFrame,
 			})
 			elapsedTime += sitDuration
+
+			-- Re-enter walk mode from the seated location so the next segment
+			-- has a proper movement start anchor (prevents immediate despawn).
+			table.insert(route, {
+				position = lastPosition,
+				action = "walk",
+				duration = nil,
+				faceCFrame = nil,
+				sitCFrame = nil,
+			})
+
 			if #path >= 2 then
 				previousHopPart = path[#path - 1].part
 			end
@@ -607,6 +618,15 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 				sitCFrame = nil,
 			})
 			elapsedTime += idleDuration
+
+			-- Re-enter walk mode from the scenic stop before routing onward.
+			table.insert(route, {
+				position = lastPosition,
+				action = "walk",
+				duration = nil,
+				faceCFrame = nil,
+				sitCFrame = nil,
+			})
 		end
 
 		if #path >= 2 then
