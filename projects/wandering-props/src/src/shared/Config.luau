@@ -29,11 +29,11 @@ return {
 
     -- Base NPC walk speed in studs/second.
     -- Range: 4-16. Roblox default Humanoid walk is 16.
-    BASE_WALK_SPEED = 10,
+    BASE_WALK_SPEED = 8,
 
     -- +/- random variation added to base speed per NPC.
     -- Range: 0-4. Example: base 8 +/- 2 = speeds from 6 to 10.
-    WALK_SPEED_VARIATION = 1.5,
+    WALK_SPEED_VARIATION = 1,
 
     -- Speed (studs/sec) at which the walk animation was authored.
     -- Used to scale animation playback rate: animSpeed = npcSpeed / this.
@@ -182,11 +182,15 @@ return {
 
     -- Max group size (including leader).
     -- Range: 3-5.
-    GROUP_SIZE_MAX = 4,
+    GROUP_SIZE_MAX = 3,
 
     -- Lateral offset in studs for group followers relative to path direction.
     -- Range: 2-6. How far apart group members walk side-by-side.
     GROUP_FOLLOWER_OFFSET = 3,
+
+    -- Random per-follower offset jitter in studs to break rigid formations.
+    -- Range: 0-2. Set to 0 for deterministic lanes.
+    GROUP_FOLLOWER_JITTER = 0.75,
 
     -- Seconds delay between leader and each successive follower starting movement.
     -- Range: 0.2-1.5. Creates staggered formation feel.

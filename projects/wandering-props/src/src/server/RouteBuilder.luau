@@ -645,7 +645,13 @@ function RouteBuilder.buildGroupRoute(
 	})
 
 	for followerIndex = 1, groupSize - 1 do
-		local offsetAmount = Config.GROUP_FOLLOWER_OFFSET * followerIndex
+		local laneIndex = math.ceil(followerIndex / 2)
+		local side = if followerIndex % 2 == 1 then 1 else -1
+		local baseOffset = math.max(0, tonumber(Config.GROUP_FOLLOWER_OFFSET) or 0) * laneIndex
+		local jitterMax = math.max(0, tonumber(Config.GROUP_FOLLOWER_JITTER) or 0)
+		local jitter = if jitterMax > 0 then (math.random() * 2 - 1) * jitterMax else 0
+		local offsetAmount = side * baseOffset + jitter
+
 		table.insert(groupRoutes, {
 			route = offsetRoute(leaderRoute, offsetAmount),
 			reservedSeats = {},
