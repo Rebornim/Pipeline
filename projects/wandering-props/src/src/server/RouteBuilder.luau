@@ -44,6 +44,7 @@ type RouteStep = {
 local RouteBuilder = {}
 
 local EPSILON = 0.0001
+local MIN_DESPAWN_PATH_DISTANCE = 12
 
 local function debugLog(message: string): ()
 	if Config.DEBUG_ENABLED then
@@ -101,6 +102,10 @@ end
 
 local function isTaggedAs(node: GraphNode, tag: string): boolean
 	return CollectionService:HasTag(node.part, tag)
+end
+
+local function isTaggedAsAnyPOI(node: GraphNode): boolean
+	return isTaggedAs(node, Config.TAG_SCENIC) or isTaggedAs(node, Config.TAG_BUSY) or isTaggedAs(node, Config.TAG_SOCIAL)
 end
 
 local function resolvePoiArrivalPosition(poiNode: GraphNode): Vector3
@@ -251,13 +256,13 @@ end
 local function resolveSegmentPositions(
 	path: { GraphNode },
 	finalOverride: Vector3?,
-	skipIntermediateSocialNodes: boolean?
+	skipIntermediatePOINodes: boolean?
 ): { Vector3 }
 	local positions: { Vector3 } = {}
 	for i = 2, #path do
 		local node = path[i]
 		local isIntermediate = i < #path
-		if skipIntermediateSocialNodes and isIntermediate and isTaggedAs(node, Config.TAG_SOCIAL) then
+		if skipIntermediatePOINodes and isIntermediate and isTaggedAsAnyPOI(node) then
 			continue
 		end
 
@@ -381,8 +386,15 @@ local function findReachableDespawnPathWithFirstHopConstraint(
 		return nil
 	end
 
+	local fallbackPath: { GraphNode }? = nil
+	local fallbackDistance = -1
+
 	shuffleNodes(despawnNodes)
 	for _, despawnNode in ipairs(despawnNodes) do
+		if isTaggedAsAnyPOI(despawnNode) then
+			continue
+		end
+
 		local basePath = NodeGraph.getPath(fromNode.part, despawnNode.part)
 		local path = if basePath then buildTraversalPath(basePath) else nil
 		if path then
@@ -394,11 +406,24 @@ local function findReachableDespawnPathWithFirstHopConstraint(
 			if disallowedFirstHopPart and #path >= 2 and path[2].part == disallowedFirstHopPart then
 				continue
 			end
-			return path
+
+			local distance = 0
+			for i = 2, #path do
+				distance += (path[i].position - path[i - 1].position).Magnitude
+			end
+
+			if distance >= MIN_DESPAWN_PATH_DISTANCE then
+				return path
+			end
+
+			if distance > fallbackDistance then
+				fallbackPath = path
+				fallbackDistance = distance
+			end
 		end
 	end
 
-	return nil
+	return fallbackPath
 end
 
 local function findReachableDespawnPath(fromNode: GraphNode, disallowedFirstHopPart: Part?): { GraphNode }?
@@ -548,7 +573,7 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 
 		if isSocialPOI then
 			local sitDuration = randomFloat(Config.SOCIAL_SIT_MIN, Config.SOCIAL_SIT_MAX)
-			local predictedPositions = resolveSegmentPositions(path, nil, false)
+			local predictedPositions = resolveSegmentPositions(path, nil, true)
 			local predictedArrivalTime = tick()
 				+ elapsedTime
 				+ estimateTravelDuration(lastPosition, predictedPositions, math.max(Config.BASE_WALK_SPEED, EPSILON))
@@ -570,7 +595,7 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 				table.insert(reservedSeats, reservedSeat)
 			end
 
-			local socialPositions = resolveSegmentPositions(path, reservedSeat.Position, false)
+			local socialPositions = resolveSegmentPositions(path, reservedSeat.Position, true)
 			lastPosition, elapsedTime = appendWalkPositions(route, socialPositions, lastPosition, elapsedTime)
 
 			table.insert(route, {
