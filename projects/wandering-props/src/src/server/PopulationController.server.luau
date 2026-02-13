@@ -49,6 +49,8 @@ local groupIdCounter = 0
 local warnedNoModelTemplates = false
 local lastSpawnStallWarnAt = 0
 local SPAWN_STALL_WARN_COOLDOWN = 30
+local SPAWN_STALL_WARN_MIN_CONSECUTIVE_CYCLES = 2
+local consecutiveSpawnNoProgressCycles = 0
 
 local function debugLog(message: string): ()
 	if Config.DEBUG_ENABLED then
@@ -426,13 +428,22 @@ local function runMainLoop(): ()
 			end
 		end
 
-		if NPCRegistry.getCount() < targetPop and spawnedActions == 0 and attempts > 0 then
+		local currentPopulation = NPCRegistry.getCount()
+		local isNoProgressCycle = currentPopulation < targetPop and spawnedActions == 0 and attempts > 0
+		if isNoProgressCycle then
+			consecutiveSpawnNoProgressCycles += 1
+		else
+			consecutiveSpawnNoProgressCycles = 0
+		end
+
+		if isNoProgressCycle and consecutiveSpawnNoProgressCycles >= SPAWN_STALL_WARN_MIN_CONSECUTIVE_CYCLES then
 			local nowTime = tick()
 			if nowTime - lastSpawnStallWarnAt >= SPAWN_STALL_WARN_COOLDOWN then
 				lastSpawnStallWarnAt = nowTime
 				warn(
-					("[WanderingProps/PopulationController] Spawn cycle made no progress (current=%d, target=%d, attempts=%d, budget=%d). Reasons: %s"):format(
-						NPCRegistry.getCount(),
+					("[WanderingProps/PopulationController] Spawn cycle made no progress for %d consecutive cycles (current=%d, target=%d, attempts=%d, budget=%d). Reasons: %s"):format(
+						consecutiveSpawnNoProgressCycles,
+						currentPopulation,
 						targetPop,
 						attempts,
 						attemptBudget,
