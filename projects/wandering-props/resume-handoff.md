@@ -17,8 +17,15 @@
 - `c4058c1` - Git baseline commit for the rollback state before new Phase 3 work.
 - `0a8b2f6` - `PopulationController` now records per-cycle spawn failure reasons and emits a throttled warning when a spawn cycle makes zero progress while under target population.
 - `648c267` - `NPCAnimator` now destroys animation tracks during setup/cleanup to avoid long-run track accumulation on pooled models.
+- `78067fc` - Handoff known-risk section updated to reflect current checkpoint behavior.
 
 Validation performed after each patch: `rojo build default.project.json`.
+
+## Git Remote
+
+- Repo: `git@github.com:Rebornim/Pipeline.git`
+- Branch: `main`
+- Use this for rollback anchors and future checkpoint pushes.
 
 ## Files Implemented
 

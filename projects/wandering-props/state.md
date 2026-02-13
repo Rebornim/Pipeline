@@ -38,6 +38,13 @@ Read in this order:
 - `c4058c1` - rollback baseline checkpoint before Phase 3 resume work
 - `0a8b2f6` - spawn-cycle failure diagnostics added in `PopulationController` (no spawn logic change)
 - `648c267` - animation track cleanup hardened in `NPCAnimator` to prevent pooled-model track buildup
+- `78067fc` - handoff risk notes aligned with current diagnostics/cleanup behavior
+
+## Git Remote
+
+- Repo: `git@github.com:Rebornim/Pipeline.git`
+- Branch: `main`
+- Latest checkpoint commit on branch: `78067fc`
 
 ## Next Validation Focus
 
