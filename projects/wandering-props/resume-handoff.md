@@ -19,6 +19,7 @@
 - `648c267` - `NPCAnimator` now destroys animation tracks during setup/cleanup to avoid long-run track accumulation on pooled models.
 - `78067fc` - Handoff known-risk section updated to reflect current checkpoint behavior.
 - `1bbf359` - `RouteBuilder` now reports empty-route failure detail that `PopulationController` includes in spawn-cycle stall warnings for clearer root-cause diagnostics.
+- `77adc88` - `PopulationController` now warns only after consecutive no-progress spawn cycles, reducing noise from occasional sparse-topology miss cycles.
 
 Validation performed after each patch: `rojo build default.project.json --output /tmp/wandering-props.rbxlx`.
 
@@ -78,6 +79,7 @@ These are **not** currently present after rollback:
 
 - The new spawn instrumentation is diagnostics-only and does not alter spawn attempt budgets or route selection logic.
 - Spawn stall warnings now include route-builder context (`no_reachable_despawn`, POIs accepted/skipped counts) when route generation fails.
+- Spawn stall warnings now require consecutive no-progress cycles before emitting.
 - The animator change is track lifecycle cleanup (destroy-on-cleanup), not the previously rolled-back track-cache reuse patch.
 
 ## Known Risks At This Checkpoint

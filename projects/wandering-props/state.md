@@ -40,12 +40,13 @@ Read in this order:
 - `648c267` - animation track cleanup hardened in `NPCAnimator` to prevent pooled-model track buildup
 - `78067fc` - handoff risk notes aligned with current diagnostics/cleanup behavior
 - `1bbf359` - route-build failure detail now included in spawn stall diagnostics (no spawn logic change)
+- `77adc88` - spawn stall warnings now require consecutive no-progress cycles to reduce single-cycle noise
 
 ## Git Remote
 
 - Repo: `git@github.com:Rebornim/Pipeline.git`
 - Branch: `main`
-- Latest checkpoint commit on branch: `1bbf359`
+- Latest checkpoint commit on branch: `77adc88`
 
 ## Next Validation Focus
 
