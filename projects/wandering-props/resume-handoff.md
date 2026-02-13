@@ -73,8 +73,8 @@ These are **not** currently present after rollback:
 
 ## Known Risks At This Checkpoint
 
-- Long-run animation track accumulation may reappear (because animator track-cache fix was rolled back).
-- Spawn consistency can still fail silently when route generation repeatedly returns no usable routes.
+- Long-run animation stability still needs soak confirmation, but per-NPC track cleanup now destroys stale tracks on reuse.
+- Spawn consistency can still degrade when route generation repeatedly returns no usable routes, but cycle-level failure reasons now surface in warnings.
 - Social/Scenic behavior may still feel inconsistent depending on multi-tag node setup and graph topology.
 
 ## Studio Setup Reminders
