@@ -440,7 +440,8 @@ local function runMainLoop(): ()
 
 			local spawned = false
 			local failureReason: string? = nil
-			if math.random() < groupSpawnChance then
+			local shouldForceSolo = NPCRegistry.getCount() < minPopulation
+			if not shouldForceSolo and math.random() < groupSpawnChance then
 				spawned, failureReason = spawnGroup(remaining)
 			else
 				spawned, failureReason = spawnSolo()
