@@ -279,9 +279,10 @@ local function spawnSolo(): (boolean, string?)
 		return false, "no_spawn_nodes"
 	end
 
-	local route, reservedSeats = RouteBuilder.buildRoute(spawnNode)
+	local route, reservedSeats, routeFailureReason = RouteBuilder.buildRoute(spawnNode)
 	if #route == 0 then
-		return false, "solo_empty_route"
+		local detail = if routeFailureReason and routeFailureReason ~= "" then routeFailureReason else "unknown"
+		return false, "solo_empty_route(" .. detail .. ")"
 	end
 	local modelIndex = getRandomModelIndex()
 	if not modelIndex then
@@ -319,9 +320,10 @@ local function spawnGroup(remainingCapacity: number): (boolean, string?)
 		return spawnSolo()
 	end
 
-	local groupRoutes = RouteBuilder.buildGroupRoute(spawnNode, groupSize)
+	local groupRoutes, groupFailureReason = RouteBuilder.buildGroupRoute(spawnNode, groupSize)
 	if #groupRoutes == 0 then
-		return false, "group_empty_route"
+		local detail = if groupFailureReason and groupFailureReason ~= "" then groupFailureReason else "unknown"
+		return false, "group_empty_route(" .. detail .. ")"
 	end
 
 	local groupId = generateGroupId()

@@ -50,6 +50,24 @@ local function debugLog(message: string): ()
 	end
 end
 
+local function formatRouteFailureReason(
+	reason: string,
+	poiAccepted: number,
+	skippedNoExit: number,
+	skippedUnreachable: number,
+	skippedBacktrack: number,
+	skippedNoSeat: number
+): string
+	return ("%s(poiAccepted=%d, skipped_no_exit=%d, skipped_unreachable=%d, skipped_backtrack=%d, skipped_no_seat=%d)"):format(
+		reason,
+		poiAccepted,
+		skippedNoExit,
+		skippedUnreachable,
+		skippedBacktrack,
+		skippedNoSeat
+	)
+end
+
 local function randomFloat(minValue: number, maxValue: number): number
 	if maxValue < minValue then
 		minValue, maxValue = maxValue, minValue
@@ -372,9 +390,9 @@ local function offsetRoute(route: { RouteStep }, offsetAmount: number): { RouteS
 	return result
 end
 
-function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part })
+function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }, string?)
 	if not spawnNode or not spawnNode.part then
-		return {}, {}
+		return {}, {}, "invalid_spawn_node"
 	end
 
 	local route: { RouteStep } = {}
@@ -397,21 +415,29 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 	local poiMax = math.max(poiMin, math.floor(Config.ROUTE_POI_MAX))
 	local poiCount = randomInt(poiMin, poiMax)
 	local selectedPOIs = pickWeightedPOIs(poiCount)
+	local poiAccepted = 0
+	local skippedNoExit = 0
+	local skippedUnreachable = 0
+	local skippedBacktrack = 0
+	local skippedNoSeat = 0
 
 	for _, poiNode in ipairs(selectedPOIs) do
 		if not hasReachableDespawn(poiNode) then
+			skippedNoExit += 1
 			debugLog(("Skipping POI without reachable despawn exit: %s"):format(poiNode.part:GetFullName()))
 			continue
 		end
 
 		local basePath = NodeGraph.getPath(currentNode.part, poiNode.part)
 		if not basePath then
+			skippedUnreachable += 1
 			debugLog(("Skipping unreachable POI %s"):format(poiNode.part:GetFullName()))
 			continue
 		end
 
 		local path = buildTraversalPath(basePath)
 		if previousHopPart and #path >= 2 and path[2].part == previousHopPart then
+			skippedBacktrack += 1
 			debugLog(("Skipping immediate-backtrack POI leg at %s"):format(poiNode.part:GetFullName()))
 			continue
 		end
@@ -424,6 +450,7 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 				+ estimateTravelDuration(lastPosition, predictedPositions, math.max(Config.BASE_WALK_SPEED, EPSILON))
 			local reservedSeat = SeatManager.reserveSeat(poiNode.part, predictedArrivalTime, sitDuration, nil)
 			if not reservedSeat then
+				skippedNoSeat += 1
 				debugLog(("Skipping social POI without available seat: %s"):format(poiNode.part:GetFullName()))
 				continue
 			end
@@ -445,6 +472,7 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 				previousHopPart = path[#path - 1].part
 			end
 			currentNode = poiNode
+			poiAccepted += 1
 			continue
 		end
 
@@ -473,19 +501,40 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 			previousHopPart = path[#path - 1].part
 		end
 		currentNode = poiNode
+		poiAccepted += 1
 	end
 
 	local despawnPath = findReachableDespawnPath(currentNode, previousHopPart)
 	if not despawnPath then
 		debugLog(("No reachable despawn from node %s; returning empty route"):format(currentNode.part:GetFullName()))
-		return {}, {}
+		return
+			{},
+			{},
+			formatRouteFailureReason(
+				"no_reachable_despawn",
+				poiAccepted,
+				skippedNoExit,
+				skippedUnreachable,
+				skippedBacktrack,
+				skippedNoSeat
+			)
 	end
 
 	local finalPositions = resolveSegmentPositions(despawnPath, nil)
 	lastPosition, elapsedTime = appendWalkPositions(route, finalPositions, lastPosition, elapsedTime)
 
 	if #route == 0 then
-		return {}, {}
+		return
+			{},
+			{},
+			formatRouteFailureReason(
+				"empty_route_after_path_resolution",
+				poiAccepted,
+				skippedNoExit,
+				skippedUnreachable,
+				skippedBacktrack,
+				skippedNoSeat
+			)
 	end
 
 	if #finalPositions == 0 and route[#route].action ~= "walk" then
@@ -505,21 +554,34 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 	end
 
 	if #route < 2 or route[1].action == "despawn" then
-		return {}, {}
+		return
+			{},
+			{},
+			formatRouteFailureReason(
+				"invalid_terminal_route",
+				poiAccepted,
+				skippedNoExit,
+				skippedUnreachable,
+				skippedBacktrack,
+				skippedNoSeat
+			)
 	end
 
-	return route, reservedSeats
+	return route, reservedSeats, nil
 end
 
 function RouteBuilder.buildGroupRoute(
 	spawnNode: GraphNode,
 	groupSize: number
-): { { route: { RouteStep }, reservedSeats: { Part } } }
+): ({ { route: { RouteStep }, reservedSeats: { Part } } }, string?)
 	groupSize = math.max(1, math.floor(groupSize))
 
-	local leaderRoute, leaderSeats = RouteBuilder.buildRoute(spawnNode)
+	local leaderRoute, leaderSeats, leaderFailureReason = RouteBuilder.buildRoute(spawnNode)
 	if #leaderRoute == 0 then
-		return {}
+		if leaderFailureReason and leaderFailureReason ~= "" then
+			return {}, "leader_" .. leaderFailureReason
+		end
+		return {}, "leader_empty_route"
 	end
 
 	local groupRoutes: { { route: { RouteStep }, reservedSeats: { Part } } } = {}
@@ -536,7 +598,7 @@ function RouteBuilder.buildGroupRoute(
 		})
 	end
 
-	return groupRoutes
+	return groupRoutes, nil
 end
 
 return RouteBuilder
