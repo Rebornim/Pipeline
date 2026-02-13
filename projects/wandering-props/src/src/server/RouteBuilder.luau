@@ -568,13 +568,13 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 			local socialPositions = resolveSegmentPositions(path, reservedSeat.Position, false)
 			lastPosition, elapsedTime = appendWalkPositions(route, socialPositions, lastPosition, elapsedTime)
 
-			local finalStep = route[#route]
-			if finalStep then
-				finalStep.action = "sit"
-				finalStep.duration = sitDuration
-				finalStep.sitCFrame = reservedSeat.CFrame
-				finalStep.faceCFrame = nil
-			end
+			table.insert(route, {
+				position = lastPosition,
+				action = "sit",
+				duration = sitDuration,
+				faceCFrame = nil,
+				sitCFrame = reservedSeat.CFrame,
+			})
 			elapsedTime += sitDuration
 			if #path >= 2 then
 				previousHopPart = path[#path - 1].part
@@ -587,21 +587,25 @@ function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }
 		local poiPositions = resolveSegmentPositions(path, resolvePoiArrivalPosition(poiNode), true)
 		lastPosition, elapsedTime = appendWalkPositions(route, poiPositions, lastPosition, elapsedTime)
 
-		local finalStep = route[#route]
-		if finalStep and isScenicPOI then
+		if isScenicPOI then
 			local idleDuration = randomFloat(Config.SCENIC_IDLE_MIN, Config.SCENIC_IDLE_MAX)
-			finalStep.action = "idle"
-			finalStep.duration = idleDuration
-			finalStep.sitCFrame = nil
+			local faceCFrame: CFrame? = nil
 
 			local lookAtPosition = resolveScenicLookPosition(poiNode)
 			if lookAtPosition then
-				local flatTarget = Vector3.new(lookAtPosition.X, finalStep.position.Y, lookAtPosition.Z)
-				if (flatTarget - finalStep.position).Magnitude > EPSILON then
-					finalStep.faceCFrame = CFrame.lookAt(finalStep.position, flatTarget)
+				local flatTarget = Vector3.new(lookAtPosition.X, lastPosition.Y, lookAtPosition.Z)
+				if (flatTarget - lastPosition).Magnitude > EPSILON then
+					faceCFrame = CFrame.lookAt(lastPosition, flatTarget)
 				end
 			end
 
+			table.insert(route, {
+				position = lastPosition,
+				action = "idle",
+				duration = idleDuration,
+				faceCFrame = faceCFrame,
+				sitCFrame = nil,
+			})
 			elapsedTime += idleDuration
 		end
 

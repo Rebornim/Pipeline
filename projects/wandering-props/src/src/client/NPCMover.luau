@@ -649,12 +649,18 @@ local function advanceRouteByTime(state: ActiveRouteState, nowTime: number): boo
 
 		local overflow = math.max(0, (nowTime - npc.stepStartTime) - stepDuration)
 		npc.currentStepIndex += 1
-		npc.stepStartTime = nowTime - overflow
 
 		local nextStep = getCurrentStep(npc)
 		if not nextStep then
 			completeRoute(state)
 			return true
+		end
+
+		if nextStep.action == "idle" or nextStep.action == "sit" then
+			-- Always grant full POI dwell duration even if walk timing overflowed.
+			npc.stepStartTime = nowTime
+		else
+			npc.stepStartTime = nowTime - overflow
 		end
 
 		if nextStep.action == "despawn" then
