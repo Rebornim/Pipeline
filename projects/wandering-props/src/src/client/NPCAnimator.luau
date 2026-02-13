@@ -70,6 +70,18 @@ local function stopTrack(track: AnimationTrack?): ()
 	end
 end
 
+local function destroyTrack(track: AnimationTrack?): ()
+	if not track then
+		return
+	end
+
+	if track.IsPlaying then
+		track:Stop(0.1)
+	end
+
+	track:Destroy()
+end
+
 local function playTrack(track: AnimationTrack, speed: number): ()
 	if not track.IsPlaying then
 		track:Play(0.1, 1, 1)
@@ -91,9 +103,12 @@ function NPCAnimator.setup(npc: ClientNPC): ()
 		return
 	end
 
-	stopTrack(npc.walkTrack)
-	stopTrack(npc.idleTrack)
-	stopTrack(npc.sitTrack)
+	destroyTrack(npc.walkTrack)
+	destroyTrack(npc.idleTrack)
+	destroyTrack(npc.sitTrack)
+	npc.walkTrack = nil
+	npc.idleTrack = nil
+	npc.sitTrack = nil
 
 	npc.walkTrack = createTrack(animator, Config.ANIM_WALK)
 	npc.idleTrack = createTrack(animator, Config.ANIM_IDLE)
@@ -163,9 +178,12 @@ function NPCAnimator.playSit(npc: ClientNPC): ()
 end
 
 function NPCAnimator.stopAll(npc: ClientNPC): ()
-	stopTrack(npc.walkTrack)
-	stopTrack(npc.idleTrack)
-	stopTrack(npc.sitTrack)
+	destroyTrack(npc.walkTrack)
+	destroyTrack(npc.idleTrack)
+	destroyTrack(npc.sitTrack)
+	npc.walkTrack = nil
+	npc.idleTrack = nil
+	npc.sitTrack = nil
 
 	local state = getRuntimeState(npc)
 	state.frozen = false
