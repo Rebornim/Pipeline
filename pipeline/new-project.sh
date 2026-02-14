@@ -28,17 +28,16 @@ mkdir -p "$PROJECT_DIR/src/src/shared"
 cat > "$PROJECT_DIR/state.md" << 'STATE'
 # Project State
 
-**Phase:** 1
+**Stage:** Idea
 **Status:** not-started
+**Pipeline Version:** v3
 **Last Updated:** (auto-update this)
 
 ## Resume Notes
-<!-- If you stopped mid-phase, write exactly where you left off here -->
+<!-- If you stopped mid-pass, write exactly where you left off here -->
+<!-- Include: which pass, which step (design/build/prove), what's done, what's next -->
 
 STATE
-
-# Copy testing report template
-cp "$PIPELINE_ROOT/pipeline/templates/testing-report.md" "$PROJECT_DIR/testing-report.md"
 
 # Create default Rojo project file
 cat > "$PROJECT_DIR/src/default.project.json" << 'ROJO'
@@ -70,7 +69,6 @@ echo ""
 echo "Structure:"
 echo "  $PROJECT_DIR/"
 echo "  ├── state.md"
-echo "  ├── testing-report.md  (fill this out during Phase 3 testing)"
 echo "  └── src/"
 echo "      ├── default.project.json"
 echo "      └── src/"
@@ -78,5 +76,5 @@ echo "          ├── server/"
 echo "          ├── client/"
 echo "          └── shared/"
 echo ""
-echo "Next: Open Claude Code in $PIPELINE_ROOT and start Phase 1."
-echo "  Tell Claude: \"Starting Phase 1 for $1\""
+echo "Next: Open Claude Code in $PIPELINE_ROOT and start the Idea stage."
+echo "  Tell Claude: \"Starting idea for $1\""

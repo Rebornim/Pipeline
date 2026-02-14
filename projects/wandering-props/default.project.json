@@ -4,18 +4,18 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "WanderingProps": {
-        "$path": "src/shared"
+        "$path": "src/src/shared"
       }
     },
     "ServerScriptService": {
       "WanderingProps": {
-        "$path": "src/server"
+        "$path": "src/src/server"
       }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "WanderingProps": {
-          "$path": "src/client"
+          "$path": "src/src/client"
         }
       }
     }

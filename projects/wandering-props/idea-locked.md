@@ -9,7 +9,7 @@ Ambient NPC system that makes game worlds feel alive. NPCs wander, visit points 
 
 ## NPC Rigs & Visuals
 - R15 rigs with AnimationController + Animator, **no Humanoid**
-- 14 pre-built NPC models, randomly selected at spawn
+- Runtime discovers all `Model` children under `ReplicatedStorage.WanderingPropModels` and randomly selects one at spawn
 - Animations: walk, idle, sit
 - No collision with players or other NPCs
 - No sound (v1)
@@ -23,6 +23,14 @@ Ambient NPC system that makes game worlds feel alive. NPCs wander, visit points 
 - **Server decides routes, clients handle movement and animation locally** to minimize replication overhead
 - Slight walk speed variation per NPC for natural feel
 - **Random wandering:** At random intervals mid-route, an NPC may deviate to a nearby off-path node, then resume its route. Validates reachability before committing — tries two random spots, if neither reachable, continues normal route.
+- Client movement uses ground-snap raycasts to keep NPCs grounded across slopes/ramps; snap ignores tagged navigation parts and hit character models (players/NPCs) to reduce climb-on-character artifacts
+- Immediate backtracking is blocked by default, but allowed as a dead-end fallback for POI/despawn legs so endpoint nodes remain routable
+
+## LOD Behavior
+- `near`: full movement + full animation
+- `low`: full movement + reduced animation frame rate
+- `mid`: movement still updates, animation stops
+- `far`: model hidden/unparented; route timing continues
 
 ## Points of Interest (3 types)
 
@@ -49,13 +57,8 @@ Each POI type has a **template** — a pre-built part buyers place in Studio and
 - Configurable min/max population
 - NPCs spawn at designated **spawn points** (hidden from view — e.g., inside buildings)
 - NPCs despawn at designated **despawn points** (also hidden)
-- Each NPC spawns with a route: 1–3 POIs (selected by weight), then walks to a despawn point
+- Each NPC spawns with a route: 2–4 POIs (selected randomly by weight), then walks to a despawn point
 - POI weights create natural density — more popular POIs attract more NPCs
-
-## Group Spawning
-- Configurable chance for a group (2–4 NPCs) to spawn together
-- Groups share a route and walk in formation (leader-follower with offsets so they look like an intentional group, not NPCs that happen to be walking together)
-- Uncommon compared to solo NPCs (configurable ratio)
 
 ## Day/Night Cycle (Optional)
 - Configurable hook for games with day/night systems
@@ -78,7 +81,7 @@ Each POI type has a **template** — a pre-built part buyers place in Studio and
 - Players cannot push, block, or interfere with NPCs in any way
 
 ## Integration
-- Fully isolated system. No dependencies on other game systems.
+- Fully isolated system. No dependencies on other game systems. (v1)
 - Only external connection: optional day/night cycle hook via config
 
 ## Key Design Decisions (established in Phase 1)

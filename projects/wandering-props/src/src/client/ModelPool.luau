@@ -1,203 +1,145 @@
 --!strict
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
 
-local configModule = ReplicatedStorage:WaitForChild("Config", 10)
-assert(configModule and configModule:IsA("ModuleScript"), "WanderingProps ModelPool: ReplicatedStorage.Config not found")
-
-local Config = require(configModule)
+local sharedFolder = ReplicatedStorage:WaitForChild("WanderingProps")
+local Config = require(sharedFolder:WaitForChild("Config"))
 
 local ModelPool = {}
 
-local MODEL_FOLDER_NAME = "WanderingPropModels"
-local MODEL_INDEX_ATTRIBUTE = "WP_ModelIndex"
-local STORAGE_CFRAME = CFrame.new(0, -10000, 0)
-
+local templates: { Model } = {}
+local buckets: { [number]: { Model } } = {}
+local inUse: { [Model]: boolean } = {}
+local inBucket: { [Model]: boolean } = {}
 local initialized = false
-local templatesByIndex: { [number]: Model } = {}
-local poolByIndex: { [number]: { Model } } = {}
 
-local function debugLog(message: string): ()
-	if Config.DEBUG_ENABLED then
-		warn(("[WanderingProps/ModelPool] %s"):format(message))
-	end
+local function stopAnimations(model: Model): ()
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("Animator") then
+            for _, track in ipairs(descendant:GetPlayingAnimationTracks()) do
+                track:Stop(0)
+            end
+        end
+    end
 end
 
-local function destroyCurrentPool(): ()
-	for _, bucket in pairs(poolByIndex) do
-		for _, model in ipairs(bucket) do
-			model:Destroy()
-		end
-	end
+local function resetModel(model: Model): ()
+    stopAnimations(model)
+
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            descendant.Anchored = true
+            descendant.CanCollide = false
+            descendant.CanTouch = false
+            descendant.CanQuery = false
+            descendant.LocalTransparencyModifier = 0
+            descendant.AssemblyLinearVelocity = Vector3.zero
+            descendant.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+
+    model.Parent = nil
 end
 
-local function stopModelAnimations(model: Model): ()
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("Animator") then
-			for _, track in ipairs(descendant:GetPlayingAnimationTracks()) do
-				track:Stop(0)
-			end
-		end
-	end
+local function cloneTemplate(index: number): Model
+    local template = templates[index] or templates[1]
+    assert(template, "[WP/ModelPool] No model templates available")
+
+    local clone = template:Clone()
+    clone:SetAttribute("WP_ModelIndex", index)
+    resetModel(clone)
+    return clone
 end
 
-local function enforceNonCollidableModel(model: Model): ()
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.CanCollide = false
-			descendant.CanTouch = false
-			descendant.CanQuery = false
-		end
-	end
-end
+function ModelPool.init(models: { Model }, poolSize: number?): ()
+    templates = {}
+    buckets = {}
+    inUse = {}
+    inBucket = {}
 
-local function resetModelForPool(model: Model): ()
-	stopModelAnimations(model)
-	enforceNonCollidableModel(model)
-	pcall(function()
-		model:PivotTo(STORAGE_CFRAME)
-	end)
-	model.Parent = nil
-end
+    for i, model in ipairs(models) do
+        templates[i] = model
+        buckets[i] = {}
+    end
 
-local function getPoolSizePerModel(modelCount: number): number
-	local maxPopulation = math.max(0, math.floor(tonumber(Config.MAX_POPULATION) or 0))
-	local clampedModelCount = math.max(1, modelCount)
-	local buffer = math.max(0, math.floor(tonumber(Config.MODEL_POOL_BUFFER) or 0))
+    if #templates == 0 then
+        initialized = false
+        return
+    end
 
-	-- Runtime model count is derived from ReplicatedStorage.WanderingPropModels.
-	return math.ceil(maxPopulation / clampedModelCount) + buffer
-end
+    local requestedPoolSize = poolSize
+    if requestedPoolSize == nil then
+        local maxPop = math.max(1, math.floor(tonumber(Config.MAX_POPULATION) or 1))
+        requestedPoolSize = math.ceil(maxPop / #templates) + math.max(0, math.floor(tonumber(Config.MODEL_POOL_BUFFER) or 2))
+    end
 
-local function getTemplate(modelIndex: number): (Model?, number?)
-	local direct = templatesByIndex[modelIndex]
-	if direct then
-		return direct, modelIndex
-	end
+    local sizePerModel = math.max(1, math.floor(requestedPoolSize))
+    for index = 1, #templates do
+        local bucket = buckets[index]
+        for _ = 1, sizePerModel do
+            local clone = cloneTemplate(index)
+            table.insert(bucket, clone)
+            inBucket[clone] = true
+        end
+    end
 
-	for index = 1, #templatesByIndex do
-		local template = templatesByIndex[index]
-		if not template then
-			continue
-		end
-		return template, index
-	end
-
-	return nil, nil
-end
-
-local function collectTemplateModels(modelsFolder: Instance): { Model }
-	local templateModels: { Model } = {}
-	for _, child in ipairs(modelsFolder:GetChildren()) do
-		if child:IsA("Model") then
-			table.insert(templateModels, child)
-		end
-	end
-
-	table.sort(templateModels, function(a, b)
-		return a.Name < b.Name
-	end)
-
-	return templateModels
-end
-
-function ModelPool.init(): ()
-	destroyCurrentPool()
-
-	templatesByIndex = {}
-	poolByIndex = {}
-	initialized = false
-
-	local modelsFolder = ReplicatedStorage:FindFirstChild(MODEL_FOLDER_NAME)
-	if not modelsFolder then
-		warn(("[WanderingProps/ModelPool] ReplicatedStorage.%s not found"):format(MODEL_FOLDER_NAME))
-		return
-	end
-
-	local templateModels = collectTemplateModels(modelsFolder)
-	if #templateModels == 0 then
-		warn(("[WanderingProps/ModelPool] ReplicatedStorage.%s has no Model children"):format(MODEL_FOLDER_NAME))
-		return
-	end
-
-	local modelCount = #templateModels
-	local poolSizePerModel = getPoolSizePerModel(modelCount)
-
-	for modelIndex, templateModel in ipairs(templateModels) do
-		templatesByIndex[modelIndex] = templateModel
-		poolByIndex[modelIndex] = {}
-
-		for _ = 1, poolSizePerModel do
-			local clone = templateModel:Clone()
-			clone:SetAttribute(MODEL_INDEX_ATTRIBUTE, modelIndex)
-			clone.Name = templateModel.Name
-			resetModelForPool(clone)
-			table.insert(poolByIndex[modelIndex], clone)
-		end
-	end
-
-	initialized = true
-	local variantCount = 0
-	for _ in pairs(templatesByIndex) do
-		variantCount += 1
-	end
-	debugLog(("Initialized pools for %d model variants"):format(variantCount))
+    initialized = true
 end
 
 function ModelPool.acquire(modelIndex: number): Model
-	if not initialized then
-		ModelPool.init()
-	end
+    if not initialized then
+        ModelPool.init(templates)
+    end
 
-	local normalizedIndex = math.floor(modelIndex)
-	local bucket = poolByIndex[normalizedIndex]
-	if bucket and #bucket > 0 then
-		local pooledModel = table.remove(bucket)
-		enforceNonCollidableModel(pooledModel)
-		pooledModel.Parent = Workspace
-		return pooledModel
-	end
+    local index = math.max(1, math.floor(modelIndex))
+    local bucket = buckets[index]
+    if bucket then
+        while #bucket > 0 do
+            local model = table.remove(bucket)
+            inBucket[model] = nil
+            if inUse[model] then
+                warn("[WP/ModelPool] Duplicate pooled model reference detected; discarding stale entry.")
+            else
+                inUse[model] = true
+                return model
+            end
+        end
+    end
 
-	local template, sourceIndex = getTemplate(normalizedIndex)
-	assert(template, "[WanderingProps/ModelPool] No model templates available for acquire()")
-
-	debugLog(("Pool exhausted for model %d; cloning fallback"):format(normalizedIndex))
-	local fallback = template:Clone()
-	local appliedIndex = sourceIndex or normalizedIndex
-	fallback:SetAttribute(MODEL_INDEX_ATTRIBUTE, appliedIndex)
-	fallback.Name = template.Name
-	enforceNonCollidableModel(fallback)
-	fallback.Parent = Workspace
-	return fallback
+    local created = cloneTemplate(index)
+    inUse[created] = true
+    return created
 end
 
 function ModelPool.release(model: Model): ()
-	if not initialized then
-		ModelPool.init()
-	end
+    if not initialized then
+        model:Destroy()
+        return
+    end
 
-	resetModelForPool(model)
+    if inBucket[model] then
+        warn("[WP/ModelPool] Double release ignored (model already in pool).")
+        return
+    end
 
-	local attributeIndex = model:GetAttribute(MODEL_INDEX_ATTRIBUTE)
-	local index = if typeof(attributeIndex) == "number" then math.floor(attributeIndex) else nil
-	if not index then
-		local nameNumber = tonumber(model.Name)
-		if nameNumber then
-			index = math.floor(nameNumber)
-		end
-	end
-	if not index then
-		index = 1
-	end
+    if not inUse[model] then
+        warn("[WP/ModelPool] Release received for model not tracked as in use; destroying to avoid aliasing.")
+        model:Destroy()
+        return
+    end
 
-	local bucket = poolByIndex[index]
-	if not bucket then
-		bucket = {}
-		poolByIndex[index] = bucket
-	end
+    inUse[model] = nil
 
-	table.insert(bucket, model)
+    local attr = model:GetAttribute("WP_ModelIndex")
+    local index = if typeof(attr) == "number" then math.max(1, math.floor(attr)) else 1
+
+    if not buckets[index] then
+        buckets[index] = {}
+    end
+
+    resetModel(model)
+    table.insert(buckets[index], model)
+    inBucket[model] = true
 end
 
 return ModelPool

@@ -1,6 +1,6 @@
 # Pipeline Action Map — What You Do
 
-## One-Time Setup Per System
+## Setup
 ```bash
 cd ~/roblox-pipeline
 bash pipeline/new-project.sh <system-name>
@@ -8,93 +8,99 @@ bash pipeline/new-project.sh <system-name>
 
 ---
 
-## Phase 1: Idea (You + Claude)
+## Idea (You + Claude)
 
-1. Open new Claude Code conversation from `~/roblox-pipeline/`
-2. Tell Claude: **"Starting Phase 1 for <system-name>"**
-3. Describe your idea (rough is fine — Claude will ask questions)
-4. Answer Claude's questions, push back if you disagree
-5. When Claude says exit criteria are met, tell it: **"Lock it"**
+1. Open Claude Code from `~/roblox-pipeline/`
+2. Tell Claude: **"Starting idea for <system-name>"**
+3. Describe your idea, answer questions, push back if you disagree
+4. When done: **"Lock it"**
 
-**You're done when:** `idea-locked.md` exists in your project folder.
-
----
-
-## Phase 2: Architecture (Claude, mostly hands-off for you)
-
-1. Same or new Claude conversation
-2. Tell Claude: **"Starting Phase 2 for <system-name>"**
-3. Claude designs architecture and runs critic review automatically
-4. Claude may ask you to choose between options — pick one
-5. When critic approves, Claude locks the architecture
-
-**You're done when:** Claude says "Hand this to Codex."
+**Done when:** `idea-locked.md` exists.
 
 ---
 
-## Phase 3: Build & Refine
+## Roadmap (Claude, mostly hands-off)
 
-### Step A — Build (Codex CLI)
+1. Tell Claude: **"Build the roadmap for <system-name>"**
+2. Claude divides features into ordered passes
+3. Review the passes — reprioritize if you want
+4. Approve
+
+**Done when:** `feature-passes.md` exists.
+
+---
+
+## Passes (repeat for each pass)
+
+### Design (Claude)
+1. Tell Claude: **"Design pass N for <system-name>"**
+2. Claude reads existing code, designs this pass, runs critic
+3. When approved: Claude writes `pass-N-design.md`
+
+**Done when:** Claude says "Hand this to Codex."
+
+### Build (Codex CLI)
 1. Open Codex CLI
-2. Tell Codex: **"Starting phase 3 of the pipeline"**
-   - Codex reads `state.md`, finds the project, reads the architecture, and starts building mechanic by mechanic
-   - Codex will stop after each mechanic and tell you to go to Claude for review
-3. Follow Codex's prompts — it will tell you when to switch to Claude
+2. Tell Codex: **"Build pass N for <system-name>"**
+3. Codex builds step by step, stops after each for Claude review
+4. Follow Codex's prompts — switch to Claude when told
 
-### Step B — Test (You, in Roblox Studio)
-1. Run `rojo serve` in `projects/<system-name>/src/`
-2. Connect in Studio, test the game
-3. **Open `pipeline/templates/testing-report.md`** — copy it to your project folder
-4. Test EACH mechanic from idea-locked.md one by one
-5. For each mechanic: works / broken / wrong behavior / feels off / missing
-6. Fill out the testing report
+### Test (You, in Studio)
+1. `rojo serve` in `projects/<system-name>/src/`
+2. Connect in Studio
+3. **Check output window** — startup errors? Diagnostics running?
+4. **Run golden tests** from `golden-tests.md`:
+   - This pass's tests (new stuff works)
+   - Previous passes' tests (nothing broke)
+5. Note what diagnostics output says
 
-### Step C — Config Tuning (You, NO AI needed)
-1. Open the config ModuleScript in the code
-2. For anything that "feels off" — find the config value and change it
-3. Re-test that mechanic
-4. Write down what you changed in the testing report
-5. **Exhaust config options before going back to AI**
+### Config Tuning (You, no AI needed)
+1. Open Config.luau
+2. Adjust values for anything that feels off
+3. Re-test
+4. **Exhaust config before going back to AI**
 
-### Step D — Report Issues (You → Codex)
-1. Any remaining issues that config can't fix: categorize them
-   - **Bug:** doesn't work
-   - **Wrong Behavior:** works but does the wrong thing
-   - **Feels Off:** config couldn't fix it, needs code change
-   - **Missing Feature:** not implemented yet
-2. Send categorized issues to Codex
-3. Codex fixes them
-4. **Go back to Step B** — re-test only the affected mechanics
-5. Repeat B→C→D until all mechanics show PASS
+### Fix Issues (You → Codex)
+1. Check diagnostics output — **include it in your report**
+2. Categorize: Bug / Wrong Behavior / Feels Off / Missing
+3. Send ONE issue at a time to Codex
+4. Codex fixes, you re-test
+5. Repeat until all golden tests pass
 
-### Step E — Final Review (Claude)
-1. Switch to Claude: **"Final review for <system-name>"**
-2. Claude runs critic review on all code
-3. If issues: relay to Codex → fix → Claude re-reviews
-4. When Claude approves: done
+### Prove (Claude)
+1. When all golden tests pass (this pass + previous):
+   Tell Claude: **"Prove pass N for <system-name>"**
+2. Claude runs critic review
+3. If issues: Codex fixes → Claude re-reviews
+4. When approved: pass is locked, move to next pass
 
-### Step F — Ship
-1. Fill out `build-notes.md` (or have Claude do it)
-2. System is complete
+---
+
+## Ship
+
+When all passes are proven:
+1. Tell Claude: **"Ship <system-name>"**
+2. Claude does final review, writes build-notes.md
+3. Done
 
 ---
 
 ## If Rate Limit Hits
-- Stop. The AI already saved state.
-- When limit resets, open new conversation.
-- Say: **"Resuming <phase> for <system-name>"**
-- AI reads state.md and picks up where it left off.
+
+- Stop. AI saved state.
+- When limit resets: **"Resuming pass N [design/build/prove] for <system-name>"**
 
 ---
 
-## If You Get Stuck on the Same Issue 3+ Times
-- Stop iterating with Codex.
-- Switch to Claude: **"I'm stuck on [mechanic]. Here's what's happening: [details]"**
-- It might be an architecture problem, not a code problem. Claude will figure it out.
+## If Stuck 3+ Times on Same Issue
+
+- Stop iterating with Codex
+- Tell Claude: **"Stuck on [issue] in pass N. Diagnostics show: [output]"**
+- May be a design issue, not a code issue
 
 ---
 
 ## The Pattern
 ```
-Claude plans → Codex builds → You test & tune config → Codex fixes categorized issues → Claude reviews
+Idea → Roadmap → [Design → Build → Prove] × N → Ship
 ```

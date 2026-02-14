@@ -1,0 +1,774 @@
+--!strict
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local configModule = ReplicatedStorage:WaitForChild("Config", 10)
+assert(configModule and configModule:IsA("ModuleScript"), "WanderingProps RouteBuilder: ReplicatedStorage.Config not found")
+
+local typesModule = ReplicatedStorage:WaitForChild("Types", 10)
+assert(typesModule and typesModule:IsA("ModuleScript"), "WanderingProps RouteBuilder: ReplicatedStorage.Types not found")
+
+local nodeGraphModule = script.Parent:WaitForChild("NodeGraph", 10)
+assert(nodeGraphModule and nodeGraphModule:IsA("ModuleScript"), "WanderingProps RouteBuilder: NodeGraph module not found")
+
+local seatManagerModule = script.Parent:WaitForChild("SeatManager", 10)
+assert(seatManagerModule and seatManagerModule:IsA("ModuleScript"), "WanderingProps RouteBuilder: SeatManager module not found")
+
+local Config = require(configModule)
+local _Types = require(typesModule)
+local NodeGraph = require(nodeGraphModule)
+local SeatManager = require(seatManagerModule)
+
+type GraphNode = {
+	part: Part,
+	tag: string,
+	position: Vector3,
+	isZone: boolean,
+	size: Vector3?,
+	connections: { GraphNode },
+	weight: number?,
+	viewTargets: { Part }?,
+	seats: { Part }?,
+	capacityCap: number?,
+}
+
+type RouteStep = {
+	position: Vector3,
+	action: "walk" | "idle" | "sit" | "despawn",
+	duration: number?,
+	faceCFrame: CFrame?,
+	sitCFrame: CFrame?,
+}
+
+local RouteBuilder = {}
+
+local EPSILON = 0.0001
+local MIN_DESPAWN_PATH_DISTANCE = 12
+
+local function debugLog(message: string): ()
+	if Config.DEBUG_ENABLED then
+		warn(("[WanderingProps/RouteBuilder] %s"):format(message))
+	end
+end
+
+local function formatRouteFailureReason(
+	reason: string,
+	poiAccepted: number,
+	skippedNoExit: number,
+	skippedUnreachable: number,
+	skippedBacktrack: number,
+	skippedNoSeat: number
+): string
+	return ("%s(poiAccepted=%d, skipped_no_exit=%d, skipped_unreachable=%d, skipped_backtrack=%d, skipped_no_seat=%d)"):format(
+		reason,
+		poiAccepted,
+		skippedNoExit,
+		skippedUnreachable,
+		skippedBacktrack,
+		skippedNoSeat
+	)
+end
+
+local function randomFloat(minValue: number, maxValue: number): number
+	if maxValue < minValue then
+		minValue, maxValue = maxValue, minValue
+	end
+	if math.abs(maxValue - minValue) < EPSILON then
+		return minValue
+	end
+	return minValue + math.random() * (maxValue - minValue)
+end
+
+local function randomPointInPart(part: Part): Vector3
+	local halfSize = part.Size * 0.5
+	local randomOffset = Vector3.new(
+		(math.random() * 2 - 1) * halfSize.X,
+		(math.random() * 2 - 1) * halfSize.Y,
+		(math.random() * 2 - 1) * halfSize.Z
+	)
+	return (part.CFrame * CFrame.new(randomOffset)).Position
+end
+
+local function resolveScenicLookPosition(poiNode: GraphNode): Vector3?
+	local targets = poiNode.viewTargets
+	if not targets or #targets == 0 then
+		return nil
+	end
+
+	local targetPart = targets[math.random(1, #targets)]
+	return randomPointInPart(targetPart)
+end
+
+local function isTaggedAs(node: GraphNode, tag: string): boolean
+	return CollectionService:HasTag(node.part, tag)
+end
+
+local function isTaggedAsAnyPOI(node: GraphNode): boolean
+	return isTaggedAs(node, Config.TAG_SCENIC) or isTaggedAs(node, Config.TAG_BUSY) or isTaggedAs(node, Config.TAG_SOCIAL)
+end
+
+local function resolvePoiArrivalPosition(poiNode: GraphNode): Vector3
+	local randomize = poiNode.part:GetAttribute("RandomizePOIPoint")
+	if randomize == false then
+		return poiNode.part.Position
+	end
+
+	if poiNode.isZone then
+		return NodeGraph.resolvePosition(poiNode)
+	end
+
+	local halfSize = poiNode.part.Size * 0.5
+	local localOffset = Vector3.new(
+		(math.random() * 2 - 1) * halfSize.X,
+		0,
+		(math.random() * 2 - 1) * halfSize.Z
+	)
+	return (poiNode.part.CFrame * CFrame.new(localOffset)).Position
+end
+
+local function randomInt(minValue: number, maxValue: number): number
+	if maxValue < minValue then
+		minValue, maxValue = maxValue, minValue
+	end
+	if minValue == maxValue then
+		return minValue
+	end
+	return math.random(minValue, maxValue)
+end
+
+local function copyNodes(nodes: { GraphNode }): { GraphNode }
+	local copy: { GraphNode } = table.create(#nodes)
+	for i, node in ipairs(nodes) do
+		copy[i] = node
+	end
+	return copy
+end
+
+local function hasAlternativeFirstHop(
+	fromNode: GraphNode,
+	targetNode: GraphNode,
+	disallowedFirstHopPart: Part
+): boolean
+	for _, neighbor in ipairs(fromNode.connections) do
+		if neighbor.part == disallowedFirstHopPart then
+			continue
+		end
+
+		local pathFromNeighbor = NodeGraph.getPath(neighbor.part, targetNode.part)
+		if pathFromNeighbor and #pathFromNeighbor >= 1 then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function shuffleNodes(nodes: { GraphNode }): ()
+	for i = #nodes, 2, -1 do
+		local j = math.random(1, i)
+		nodes[i], nodes[j] = nodes[j], nodes[i]
+	end
+end
+
+local function appendPathNodesUnique(destination: { GraphNode }, source: { GraphNode }, startIndex: number): ()
+	for i = startIndex, #source do
+		local node = source[i]
+		local last = destination[#destination]
+		if not last or last.part ~= node.part then
+			table.insert(destination, node)
+		end
+	end
+end
+
+local function collapseImmediateBacktracks(path: { GraphNode }): { GraphNode }
+	if #path <= 2 then
+		return path
+	end
+
+	local collapsed: { GraphNode } = {}
+	for _, node in ipairs(path) do
+		local count = #collapsed
+		if count >= 2 and collapsed[count - 1].part == node.part then
+			table.remove(collapsed, count)
+			continue
+		end
+
+		local last = collapsed[count]
+		if not last or last.part ~= node.part then
+			table.insert(collapsed, node)
+		end
+	end
+
+	return collapsed
+end
+
+local function injectWander(path: { GraphNode }): { GraphNode }
+	if #path <= 1 then
+		return path
+	end
+
+	if Config.WANDER_CHANCE <= 0 or Config.WANDER_MAX_HOPS <= 0 then
+		return path
+	end
+
+	local expanded: { GraphNode } = { path[1] }
+
+	for index = 1, #path - 1 do
+		local fromNode = path[index]
+		local toNode = path[index + 1]
+		local insertedDeviation = false
+
+		if math.random() < Config.WANDER_CHANCE then
+			local candidates = NodeGraph.getNearbyNodes(fromNode.part, Config.WANDER_MAX_HOPS)
+			for attempt = 1, math.min(2, #candidates) do
+				local candidateIndex = math.random(1, #candidates)
+				local candidate = table.remove(candidates, candidateIndex)
+
+				if candidate.part ~= fromNode.part and candidate.part ~= toNode.part then
+					local pathToCandidate = NodeGraph.getPath(fromNode.part, candidate.part)
+					local pathBackToMain = NodeGraph.getPath(candidate.part, toNode.part)
+					if pathToCandidate and pathBackToMain then
+						appendPathNodesUnique(expanded, pathToCandidate, 2)
+						appendPathNodesUnique(expanded, pathBackToMain, 2)
+						insertedDeviation = true
+						break
+					end
+				end
+			end
+		end
+
+		if not insertedDeviation then
+			local last = expanded[#expanded]
+			if not last or last.part ~= toNode.part then
+				table.insert(expanded, toNode)
+			end
+		end
+	end
+
+	return expanded
+end
+
+local function buildTraversalPath(basePath: { GraphNode }): { GraphNode }
+	return collapseImmediateBacktracks(injectWander(basePath))
+end
+
+local function resolveSegmentPositions(
+	path: { GraphNode },
+	finalOverride: Vector3?,
+	skipIntermediatePOINodes: boolean?
+): { Vector3 }
+	local positions: { Vector3 } = {}
+	for i = 2, #path do
+		local node = path[i]
+		local isIntermediate = i < #path
+		if skipIntermediatePOINodes and isIntermediate and isTaggedAsAnyPOI(node) then
+			continue
+		end
+
+		table.insert(positions, NodeGraph.resolvePosition(node))
+	end
+
+	if finalOverride then
+		if #positions == 0 then
+			table.insert(positions, finalOverride)
+		else
+			positions[#positions] = finalOverride
+		end
+	end
+
+	return positions
+end
+
+local function estimateTravelDuration(fromPosition: Vector3, positions: { Vector3 }, speed: number): number
+	if speed <= 0 then
+		return 0
+	end
+
+	local duration = 0
+	local lastPosition = fromPosition
+	for _, position in ipairs(positions) do
+		duration += (position - lastPosition).Magnitude / speed
+		lastPosition = position
+	end
+	return duration
+end
+
+local function appendWalkPositions(
+	route: { RouteStep },
+	positions: { Vector3 },
+	lastPosition: Vector3,
+	elapsedTime: number
+): (Vector3, number)
+	local baseSpeed = math.max(Config.BASE_WALK_SPEED, EPSILON)
+
+	for _, position in ipairs(positions) do
+		local distance = (position - lastPosition).Magnitude
+		elapsedTime += distance / baseSpeed
+
+		table.insert(route, {
+			position = position,
+			action = "walk",
+			duration = nil,
+			faceCFrame = nil,
+			sitCFrame = nil,
+		})
+
+		lastPosition = position
+	end
+
+	return lastPosition, elapsedTime
+end
+
+local function getAllPOINodes(): { GraphNode }
+	local result: { GraphNode } = {}
+	local seenByPart: { [Part]: boolean } = {}
+
+	local function appendUnique(nodes: { GraphNode }): ()
+		for _, node in ipairs(nodes) do
+			if isTaggedAs(node, Config.TAG_SPAWN) or isTaggedAs(node, Config.TAG_DESPAWN) then
+				continue
+			end
+			if seenByPart[node.part] then
+				continue
+			end
+			seenByPart[node.part] = true
+			table.insert(result, node)
+		end
+	end
+
+	appendUnique(NodeGraph.getNodesByTag(Config.TAG_SCENIC))
+	appendUnique(NodeGraph.getNodesByTag(Config.TAG_BUSY))
+	appendUnique(NodeGraph.getNodesByTag(Config.TAG_SOCIAL))
+
+	return result
+end
+
+local function pickWeightedPOIs(count: number): { GraphNode }
+	local pool = getAllPOINodes()
+	local picked: { GraphNode } = {}
+
+	count = math.min(count, #pool)
+	for _ = 1, count do
+		local totalWeight = 0
+		for _, node in ipairs(pool) do
+			totalWeight += math.max(node.weight or 1, 0)
+		end
+
+		local chosenIndex = 1
+		if totalWeight > 0 then
+			local roll = math.random() * totalWeight
+			local running = 0
+			for index, node in ipairs(pool) do
+				running += math.max(node.weight or 1, 0)
+				if roll <= running then
+					chosenIndex = index
+					break
+				end
+			end
+		else
+			chosenIndex = math.random(1, #pool)
+		end
+
+		local chosen = table.remove(pool, chosenIndex)
+		table.insert(picked, chosen)
+	end
+
+	return picked
+end
+
+local function findReachableDespawnPathWithFirstHopConstraint(
+	fromNode: GraphNode,
+	disallowedFirstHopPart: Part?
+): { GraphNode }?
+	local despawnNodes = copyNodes(NodeGraph.getNodesByTag(Config.TAG_DESPAWN))
+	if #despawnNodes == 0 then
+		return nil
+	end
+
+	local fallbackPath: { GraphNode }? = nil
+	local fallbackDistance = -1
+
+	shuffleNodes(despawnNodes)
+	for _, despawnNode in ipairs(despawnNodes) do
+		if isTaggedAsAnyPOI(despawnNode) then
+			continue
+		end
+
+		local basePath = NodeGraph.getPath(fromNode.part, despawnNode.part)
+		local path = if basePath then buildTraversalPath(basePath) else nil
+		if path then
+			if #path < 2 then
+				-- Ignore "already at despawn" zero-hop paths; POI routes should
+				-- leave the destination before they can terminate.
+				continue
+			end
+			if disallowedFirstHopPart and #path >= 2 and path[2].part == disallowedFirstHopPart then
+				continue
+			end
+
+			local distance = 0
+			for i = 2, #path do
+				distance += (path[i].position - path[i - 1].position).Magnitude
+			end
+
+			if distance >= MIN_DESPAWN_PATH_DISTANCE then
+				return path
+			end
+
+			if distance > fallbackDistance then
+				fallbackPath = path
+				fallbackDistance = distance
+			end
+		end
+	end
+
+	return fallbackPath
+end
+
+local function findReachableDespawnPath(fromNode: GraphNode, disallowedFirstHopPart: Part?): { GraphNode }?
+	local strictPath = findReachableDespawnPathWithFirstHopConstraint(fromNode, disallowedFirstHopPart)
+	if strictPath then
+		return strictPath
+	end
+
+	if disallowedFirstHopPart then
+		-- Dead-end fallback: if immediate backtracking is the only way out, allow it.
+		local fallbackPath = findReachableDespawnPathWithFirstHopConstraint(fromNode, nil)
+		if fallbackPath then
+			debugLog(
+				("Allowing immediate-backtrack despawn fallback from %s via %s"):format(
+					fromNode.part:GetFullName(),
+					disallowedFirstHopPart:GetFullName()
+				)
+			)
+			return fallbackPath
+		end
+	end
+
+	return nil
+end
+
+local function hasReachableDespawn(fromNode: GraphNode): boolean
+	return findReachableDespawnPath(fromNode) ~= nil
+end
+
+local function cloneRoute(route: { RouteStep }): { RouteStep }
+	local copy: { RouteStep } = table.create(#route)
+	for i, step in ipairs(route) do
+		copy[i] = {
+			position = step.position,
+			action = step.action,
+			duration = step.duration,
+			faceCFrame = step.faceCFrame,
+			sitCFrame = step.sitCFrame,
+		}
+	end
+	return copy
+end
+
+local function offsetRoute(route: { RouteStep }, offsetAmount: number): { RouteStep }
+	local result: { RouteStep } = table.create(#route)
+
+	for index, step in ipairs(route) do
+		local previousStep = route[index - 1]
+		local nextStep = route[index + 1]
+		local direction = Vector3.new(1, 0, 0)
+
+		if nextStep then
+			local raw = nextStep.position - step.position
+			local flat = Vector3.new(raw.X, 0, raw.Z)
+			if flat.Magnitude > EPSILON then
+				direction = flat.Unit
+			end
+		elseif previousStep then
+			local raw = step.position - previousStep.position
+			local flat = Vector3.new(raw.X, 0, raw.Z)
+			if flat.Magnitude > EPSILON then
+				direction = flat.Unit
+			end
+		end
+
+		local lateral = Vector3.new(-direction.Z, 0, direction.X) * offsetAmount
+		local isDespawnStep = step.action == "despawn"
+		if isDespawnStep then
+			lateral = Vector3.zero
+		end
+
+		result[index] = {
+			position = step.position + lateral,
+			action = step.action,
+			duration = step.duration,
+			faceCFrame = if step.faceCFrame then step.faceCFrame + lateral else nil,
+			sitCFrame = if step.sitCFrame then step.sitCFrame + lateral else nil,
+		}
+	end
+
+	return result
+end
+
+function RouteBuilder.buildRoute(spawnNode: GraphNode): ({ RouteStep }, { Part }, string?)
+	if not spawnNode or not spawnNode.part then
+		return {}, {}, "invalid_spawn_node"
+	end
+
+	local route: { RouteStep } = {}
+	local reservedSeats: { Part } = {}
+
+	local currentNode = spawnNode
+	local previousHopPart: Part? = nil
+	local lastPosition = NodeGraph.resolvePosition(spawnNode)
+	local elapsedTime = 0
+
+	table.insert(route, {
+		position = lastPosition,
+		action = "walk",
+		duration = nil,
+		faceCFrame = nil,
+		sitCFrame = nil,
+	})
+
+	local poiMin = math.max(0, math.floor(Config.ROUTE_POI_MIN))
+	local poiMax = math.max(poiMin, math.floor(Config.ROUTE_POI_MAX))
+	local poiCount = randomInt(poiMin, poiMax)
+	local selectedPOIs = pickWeightedPOIs(poiCount)
+	local poiAccepted = 0
+	local skippedNoExit = 0
+	local skippedUnreachable = 0
+	local skippedBacktrack = 0
+	local skippedNoSeat = 0
+
+	for _, poiNode in ipairs(selectedPOIs) do
+		if not hasReachableDespawn(poiNode) then
+			skippedNoExit += 1
+			debugLog(("Skipping POI without reachable despawn exit: %s"):format(poiNode.part:GetFullName()))
+			continue
+		end
+
+		local basePath = NodeGraph.getPath(currentNode.part, poiNode.part)
+		if not basePath then
+			skippedUnreachable += 1
+			debugLog(("Skipping unreachable POI %s"):format(poiNode.part:GetFullName()))
+			continue
+		end
+
+		local path = buildTraversalPath(basePath)
+		if previousHopPart and #path >= 2 and path[2].part == previousHopPart then
+			if hasAlternativeFirstHop(currentNode, poiNode, previousHopPart) then
+				skippedBacktrack += 1
+				debugLog(("Skipping immediate-backtrack POI leg at %s"):format(poiNode.part:GetFullName()))
+				continue
+			end
+
+			debugLog(
+				("Allowing immediate-backtrack POI fallback from %s to %s"):format(
+					currentNode.part:GetFullName(),
+					poiNode.part:GetFullName()
+				)
+			)
+		end
+
+		local isSocialPOI = isTaggedAs(poiNode, Config.TAG_SOCIAL)
+		local isScenicPOI = isTaggedAs(poiNode, Config.TAG_SCENIC)
+
+		if isSocialPOI then
+			local sitDuration = randomFloat(Config.SOCIAL_SIT_MIN, Config.SOCIAL_SIT_MAX)
+			local predictedPositions = resolveSegmentPositions(path, nil, true)
+			local predictedArrivalTime = tick()
+				+ elapsedTime
+				+ estimateTravelDuration(lastPosition, predictedPositions, math.max(Config.BASE_WALK_SPEED, EPSILON))
+			local reservedSeat = SeatManager.reserveSeat(poiNode.part, predictedArrivalTime, sitDuration, nil)
+			local hasTimeReservation = reservedSeat ~= nil
+			if not reservedSeat then
+				local fallbackSeats = poiNode.seats
+				if fallbackSeats and #fallbackSeats > 0 then
+					reservedSeat = fallbackSeats[math.random(1, #fallbackSeats)]
+					debugLog(("Using fallback random social seat for %s"):format(poiNode.part:GetFullName()))
+				else
+					skippedNoSeat += 1
+					debugLog(("Skipping social POI without available seat: %s"):format(poiNode.part:GetFullName()))
+					continue
+				end
+			end
+
+			if hasTimeReservation then
+				table.insert(reservedSeats, reservedSeat)
+			end
+
+			local socialPositions = resolveSegmentPositions(path, reservedSeat.Position, true)
+			lastPosition, elapsedTime = appendWalkPositions(route, socialPositions, lastPosition, elapsedTime)
+
+			table.insert(route, {
+				position = lastPosition,
+				action = "sit",
+				duration = sitDuration,
+				faceCFrame = nil,
+				sitCFrame = reservedSeat.CFrame,
+			})
+			elapsedTime += sitDuration
+
+			-- Re-enter walk mode from the seated location so the next segment
+			-- has a proper movement start anchor (prevents immediate despawn).
+			table.insert(route, {
+				position = lastPosition,
+				action = "walk",
+				duration = nil,
+				faceCFrame = nil,
+				sitCFrame = nil,
+			})
+
+			if #path >= 2 then
+				previousHopPart = path[#path - 1].part
+			end
+			currentNode = poiNode
+			poiAccepted += 1
+			continue
+		end
+
+		local poiPositions = resolveSegmentPositions(path, resolvePoiArrivalPosition(poiNode), true)
+		lastPosition, elapsedTime = appendWalkPositions(route, poiPositions, lastPosition, elapsedTime)
+
+		if isScenicPOI then
+			local idleDuration = randomFloat(Config.SCENIC_IDLE_MIN, Config.SCENIC_IDLE_MAX)
+			local faceCFrame: CFrame? = nil
+
+			local lookAtPosition = resolveScenicLookPosition(poiNode)
+			if lookAtPosition then
+				local flatTarget = Vector3.new(lookAtPosition.X, lastPosition.Y, lookAtPosition.Z)
+				if (flatTarget - lastPosition).Magnitude > EPSILON then
+					faceCFrame = CFrame.lookAt(lastPosition, flatTarget)
+				end
+			end
+
+			table.insert(route, {
+				position = lastPosition,
+				action = "idle",
+				duration = idleDuration,
+				faceCFrame = faceCFrame,
+				sitCFrame = nil,
+			})
+			elapsedTime += idleDuration
+
+			-- Re-enter walk mode from the scenic stop before routing onward.
+			table.insert(route, {
+				position = lastPosition,
+				action = "walk",
+				duration = nil,
+				faceCFrame = nil,
+				sitCFrame = nil,
+			})
+		end
+
+		if #path >= 2 then
+			previousHopPart = path[#path - 1].part
+		end
+		currentNode = poiNode
+		poiAccepted += 1
+	end
+
+	local despawnPath = findReachableDespawnPath(currentNode, previousHopPart)
+	if not despawnPath then
+		debugLog(("No reachable despawn from node %s; returning empty route"):format(currentNode.part:GetFullName()))
+		return
+			{},
+			{},
+			formatRouteFailureReason(
+				"no_reachable_despawn",
+				poiAccepted,
+				skippedNoExit,
+				skippedUnreachable,
+				skippedBacktrack,
+				skippedNoSeat
+			)
+	end
+
+	local finalPositions = resolveSegmentPositions(despawnPath, nil, true)
+	lastPosition, elapsedTime = appendWalkPositions(route, finalPositions, lastPosition, elapsedTime)
+
+	if #route == 0 then
+		return
+			{},
+			{},
+			formatRouteFailureReason(
+				"empty_route_after_path_resolution",
+				poiAccepted,
+				skippedNoExit,
+				skippedUnreachable,
+				skippedBacktrack,
+				skippedNoSeat
+			)
+	end
+
+	if #finalPositions == 0 and route[#route].action ~= "walk" then
+		table.insert(route, {
+			position = route[#route].position,
+			action = "walk",
+			duration = nil,
+			faceCFrame = nil,
+			sitCFrame = nil,
+		})
+	end
+
+	table.insert(route, {
+		position = route[#route].position,
+		action = "despawn",
+		duration = nil,
+		faceCFrame = nil,
+		sitCFrame = nil,
+	})
+
+	if #route < 2 or route[1].action == "despawn" then
+		return
+			{},
+			{},
+			formatRouteFailureReason(
+				"invalid_terminal_route",
+				poiAccepted,
+				skippedNoExit,
+				skippedUnreachable,
+				skippedBacktrack,
+				skippedNoSeat
+			)
+	end
+
+	return route, reservedSeats, nil
+end
+
+function RouteBuilder.buildGroupRoute(
+	spawnNode: GraphNode,
+	groupSize: number
+): ({ { route: { RouteStep }, reservedSeats: { Part } } }, string?)
+	groupSize = math.max(1, math.floor(groupSize))
+
+	local leaderRoute, leaderSeats, leaderFailureReason = RouteBuilder.buildRoute(spawnNode)
+	if #leaderRoute == 0 then
+		if leaderFailureReason and leaderFailureReason ~= "" then
+			return {}, "leader_" .. leaderFailureReason
+		end
+		return {}, "leader_empty_route"
+	end
+
+	local groupRoutes: { { route: { RouteStep }, reservedSeats: { Part } } } = {}
+	table.insert(groupRoutes, {
+		route = cloneRoute(leaderRoute),
+		reservedSeats = leaderSeats,
+	})
+
+	for followerIndex = 1, groupSize - 1 do
+		local laneIndex = math.ceil(followerIndex / 2)
+		local side = if followerIndex % 2 == 1 then 1 else -1
+		local baseOffset = math.max(0, tonumber(Config.GROUP_FOLLOWER_OFFSET) or 0) * laneIndex
+		local jitterMax = math.max(0, tonumber(Config.GROUP_FOLLOWER_JITTER) or 0)
+		local jitter = if jitterMax > 0 then (math.random() * 2 - 1) * jitterMax else 0
+		local offsetAmount = side * baseOffset + jitter
+
+		table.insert(groupRoutes, {
+			route = offsetRoute(leaderRoute, offsetAmount),
+			reservedSeats = {},
+		})
+	end
+
+	return groupRoutes, nil
+end
+
+return RouteBuilder

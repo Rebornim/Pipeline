@@ -1,100 +1,71 @@
-# Testing Report: [System Name]
+# Testing Report: [System Name] — Pass [N]
 
 **Date:**
-**Test Round:** (1, 2, 3... increment each time you re-test)
-**Testing In:** (Studio play solo / multiplayer test / etc.)
+**Test Round:** (increment each re-test)
+**Testing In:** (Studio play solo / multiplayer / etc.)
 
 ---
 
-## Mechanic Testing
-
-_Copy one block per mechanic from idea-locked.md. Test each one individually._
-
-### [Mechanic Name]
-- **What it should do:** (copy from idea-locked.md)
-- **Status:** PASS / BUG / WRONG BEHAVIOR / FEELS OFF / MISSING
-- **What actually happened:**
-- **Issue type (if not PASS):** Bug / Wrong Behavior / Feels Off / Missing Feature
-- **Details:**
-
-### [Mechanic Name]
-- **What it should do:**
-- **Status:** PASS / BUG / WRONG BEHAVIOR / FEELS OFF / MISSING
-- **What actually happened:**
-- **Issue type (if not PASS):**
-- **Details:**
-
-_(add more mechanic blocks as needed)_
+## Startup Validation
+- [ ] Server started without errors
+- **Errors (if any):**
 
 ---
 
-## Security Testing
+## Golden Tests — This Pass
 
-_Try the exploit scenarios from idea-locked.md edge cases section._
-
-- [ ] Can you cheat/exploit any mechanic? (describe what you tried)
-- [ ] Does the server reject bad inputs?
-- [ ] Can you spam actions without rate limiting?
-
-**Issues found:**
-
----
-
-## Performance Testing
-
-- [ ] Any lag or stuttering?
-- [ ] Any frame drops?
-- [ ] Memory usage seem stable? (no growing over time)
-
-**Issues found:**
+### Test: [Name]
+- **Setup done:** Yes / No
+- **Expected:** [from pass design]
+- **Actual:**
+- **Diagnostics output:** [relevant lines]
+- **Status:** PASS / FAIL
 
 ---
 
-## UI Testing (if applicable)
+## Golden Tests — Previous Passes (Regression)
 
-- [ ] Does UI show correct information?
-- [ ] Does UI update when state changes?
-- [ ] Does UI handle edge cases? (loading, empty state, rapid changes)
-
-**Issues found:**
+### Test: [Name] (Pass N)
+- **Status:** PASS / FAIL
+- **Notes:** [any changes from previous behavior]
 
 ---
 
-## Config Adjustments Attempted
+## Diagnostics Health Check
 
-_Before sending issues to AI, document config values you tried changing._
+- **Active count:** [stable / drifting]
+- **Spawn/destroy rates:** [balanced / imbalanced]
+- **Failure/reject counts:** [expected / unexpected]
+- **Anomalies:**
 
-| Config Value | Original | Changed To | Effect | Resolved? |
-|-------------|----------|------------|--------|-----------|
-| | | | | |
+---
+
+## Config Adjustments
+
+| Value | Original | Changed To | Effect | Resolved? |
+|-------|----------|------------|--------|-----------|
 | | | | | |
 
 ---
 
-## Issues for AI (after config tuning exhausted)
+## Issues for AI
 
-_Only issues that need code changes. Each must have a category._
+_One issue at a time. Include diagnostics. Specify change type._
 
 ### Issue 1
-- **Mechanic:**
-- **Category:** Bug / Wrong Behavior / Feels Off / Missing Feature
+- **Module:**
+- **Category:** Bug / Wrong Behavior / Feels Off / Missing
+- **Change type:** Bugfix / Tuning / Design change
+- **Diagnostics output:**
 - **Description:**
-- **Expected behavior:** (reference idea-locked.md or architecture-outline.md)
-- **What you tried:** (config adjustments, if any)
-
-### Issue 2
-- **Mechanic:**
-- **Category:**
-- **Description:**
-- **Expected behavior:**
-- **What you tried:**
-
-_(add more as needed)_
+- **Expected behavior:** (reference pass design doc)
 
 ---
 
 ## Summary
 
-**Mechanics passing:** X / Y
-**Issues for AI:** N (list categories)
+**Startup:** PASS / FAIL
+**This pass golden tests:** X / Y
+**Previous pass golden tests:** X / Y (regression)
+**Diagnostics:** Clean / Anomalies
 **Verdict:** ALL PASS / NEEDS FIXES

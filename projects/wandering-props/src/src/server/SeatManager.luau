@@ -1,301 +1,296 @@
 --!strict
 
-local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
 
-local configModule = ReplicatedStorage:WaitForChild("Config", 10)
-assert(configModule and configModule:IsA("ModuleScript"), "WanderingProps SeatManager: ReplicatedStorage.Config not found")
+local sharedFolder = ReplicatedStorage:WaitForChild("WanderingProps")
+local Config = require(sharedFolder:WaitForChild("Config"))
+local Diagnostics = require(sharedFolder:WaitForChild("Diagnostics"))
 
-local typesModule = ReplicatedStorage:WaitForChild("Types", 10)
-assert(typesModule and typesModule:IsA("ModuleScript"), "WanderingProps SeatManager: ReplicatedStorage.Types not found")
-
-local Config = require(configModule)
-local Types = require(typesModule)
-type _RouteStep = Types.RouteStep
-
-type SeatReservation = {
-	startTime: number,
-	endTime: number,
-	npcId: string?,
+type SeatData = {
+    id: string,
+    instance: BasePart,
+    cframe: CFrame,
+    approachNodeId: string?,
 }
 
-type SeatRecord = {
-	seat: Part,
-	groupKey: Instance,
-	reservations: { SeatReservation },
+type NodeData = {
+    id: string,
+    instance: BasePart,
+    position: Vector3,
+    nodeType: "spot" | "zone",
+    nodeRole: "waypoint" | "spawn" | "despawn",
+    connections: { string },
+    size: Vector3?,
+    poi: {
+        poiType: "scenic" | "busy" | "social",
+        weight: number,
+        viewZone: BasePart?,
+        seats: { SeatData }?,
+    }?,
+    socialPOIId: string?,
 }
 
-type SocialRecord = {
-	poi: Part,
-	seats: { SeatRecord },
-	capacityCap: number,
+type SeatClaim = {
+    seatId: string,
+    poiNodeId: string,
+    cframe: CFrame,
+    approachNodeId: string?,
+}
+
+type SeatEntry = {
+    seatId: string,
+    poiNodeId: string,
+    cframe: CFrame,
+    instance: BasePart,
+    approachNodeId: string?,
+    groupKey: string,
+    occupied: boolean,
+}
+
+type POISeatRecord = {
+    poiNodeId: string,
+    seats: { SeatEntry },
+    occupiedCount: number,
+    capacityCap: number,
 }
 
 local SeatManager = {}
 
-local DEFAULT_CAPACITY_CAP = 0.75
+local poiRecords: { [string]: POISeatRecord } = {}
+local seatById: { [string]: SeatEntry } = {}
+local seatTotalCount = 0
+local seatOccupiedCount = 0
 
-local socialByPOI: { [Part]: SocialRecord } = {}
-local initialized = false
-
-local function debugLog(message: string): ()
-	if Config.DEBUG_ENABLED then
-		warn(("[WanderingProps/SeatManager] %s"):format(message))
-	end
+local function adjustCounter(counter: string, delta: number): ()
+    if delta > 0 then
+        for _ = 1, delta do
+            Diagnostics.increment(counter)
+        end
+    elseif delta < 0 then
+        for _ = 1, -delta do
+            Diagnostics.decrement(counter)
+        end
+    end
 end
 
-local function intervalsOverlap(startA: number, endA: number, startB: number, endB: number): boolean
-	return startA < endB and startB < endA
+local function resetDiagnosticsSeatCounters(newSeatTotal: number): ()
+    adjustCounter("seatOccupied", -seatOccupiedCount)
+    seatOccupiedCount = 0
+
+    local deltaTotal = newSeatTotal - seatTotalCount
+    adjustCounter("seatTotal", deltaTotal)
+    seatTotalCount = newSeatTotal
 end
 
-local function getCapacityCap(socialPOI: Part): number
-	local raw = socialPOI:GetAttribute("CapacityCap")
-	if typeof(raw) == "number" then
-		return math.clamp(raw, 0, 1)
-	end
-	return DEFAULT_CAPACITY_CAP
+local function resolveGroupKey(poiPart: BasePart, seatPart: BasePart): string
+    local tableId = seatPart:GetAttribute("TableId")
+    if typeof(tableId) == "string" and tableId ~= "" then
+        return string.format("%s::table::%s", poiPart:GetFullName(), tableId)
+    end
+
+    local topChild: Instance = seatPart
+    local cursor: Instance? = seatPart
+
+    while cursor and cursor ~= poiPart do
+        topChild = cursor
+        cursor = cursor.Parent
+    end
+
+    return topChild:GetFullName()
 end
 
-local function pruneExpiredReservations(nowTime: number): ()
-	for _, socialRecord in pairs(socialByPOI) do
-		for _, seatRecord in ipairs(socialRecord.seats) do
-			for i = #seatRecord.reservations, 1, -1 do
-				local reservation = seatRecord.reservations[i]
-				if reservation.endTime <= nowTime then
-					table.remove(seatRecord.reservations, i)
-				end
-			end
-		end
-	end
+local function resolveNearestNodeId(candidates: { NodeData }, position: Vector3): string?
+    local nearestId: string? = nil
+    local nearestDistance = math.huge
+    for _, candidate in ipairs(candidates) do
+        local dist = (candidate.position - position).Magnitude
+        if dist < nearestDistance then
+            nearestDistance = dist
+            nearestId = candidate.id
+        end
+    end
+    return nearestId
 end
 
-local function resolveSeatGroupKey(seat: Part, socialPOI: Part): Instance
-	local topChildUnderSocial: Instance = seat
-	local cursor: Instance? = seat
+local function chooseWeightedSeat(available: { SeatEntry }, groupOccupancy: { [string]: number }): SeatEntry
+    local socialWeight = math.max(0, tonumber(Config.SOCIAL_GROUP_WEIGHT) or 0.7)
+    local totalWeight = 0
+    local weights: { number } = table.create(#available, 1)
 
-	while cursor and cursor ~= socialPOI do
-		topChildUnderSocial = cursor
-		cursor = cursor.Parent
-	end
+    for index, seat in ipairs(available) do
+        local occupiedAtTable = groupOccupancy[seat.groupKey] or 0
+        local weight = 1 + occupiedAtTable * socialWeight
+        weights[index] = weight
+        totalWeight += weight
+    end
 
-	return topChildUnderSocial
+    if totalWeight <= 0 then
+        return available[math.random(1, #available)]
+    end
+
+    local roll = math.random() * totalWeight
+    local running = 0
+    for index, seat in ipairs(available) do
+        running += weights[index]
+        if roll <= running then
+            return seat
+        end
+    end
+
+    return available[#available]
 end
 
-function SeatManager.init(): ()
-	socialByPOI = {}
-	initialized = false
+function SeatManager.init(nodeGraph: any): ()
+    poiRecords = {}
+    seatById = {}
 
-	local taggedSocialPOIs = CollectionService:GetTagged(Config.TAG_SOCIAL)
-	for _, tagged in ipairs(taggedSocialPOIs) do
-		if not tagged:IsDescendantOf(Workspace) then
-			continue
-		end
+    local totalSeats = 0
+    local socialCapacity = math.clamp(tonumber(Config.SOCIAL_CAPACITY_PERCENT) or 0.75, 0, 1)
+    local allNodes: { NodeData } = nodeGraph.getAllNodes()
+    local socialNavNodesByPOI: { [string]: { NodeData } } = {}
 
-		if not tagged:IsA("Part") then
-			debugLog(("Ignoring non-Part social POI tagged instance: %s"):format(tagged:GetFullName()))
-			continue
-		end
+    local function pushSocialNode(poiId: string, node: NodeData): ()
+        local list = socialNavNodesByPOI[poiId]
+        if not list then
+            list = {}
+            socialNavNodesByPOI[poiId] = list
+        end
+        table.insert(list, node)
+    end
 
-		socialByPOI[tagged] = {
-			poi = tagged,
-			seats = {},
-			capacityCap = getCapacityCap(tagged),
-		}
-	end
+    for _, node in ipairs(allNodes) do
+        if node.poi and node.poi.poiType == "social" then
+            pushSocialNode(node.id, node)
+        end
 
-	local taggedSeats = CollectionService:GetTagged(Config.TAG_SEAT)
-	for _, taggedSeat in ipairs(taggedSeats) do
-		if not taggedSeat:IsDescendantOf(Workspace) then
-			continue
-		end
+        if node.socialPOIId then
+            pushSocialNode(node.socialPOIId, node)
+        end
+    end
 
-		if not taggedSeat:IsA("Part") then
-			debugLog(("Ignoring non-Part seat tagged instance: %s"):format(taggedSeat:GetFullName()))
-			continue
-		end
+    for _, poiNode: NodeData in ipairs(nodeGraph.getPOINodes()) do
+        local poi = poiNode.poi
+        if not poi or poi.poiType ~= "social" then
+            continue
+        end
 
-		local socialPOI: Part? = nil
-		local cursor = taggedSeat.Parent
-		while cursor do
-			if cursor:IsA("Part") and socialByPOI[cursor] then
-				socialPOI = cursor
-				break
-			end
-			cursor = cursor.Parent
-		end
+        local seats = poi.seats or {}
+        local entries: { SeatEntry } = {}
+        local socialNavNodes = socialNavNodesByPOI[poiNode.id] or { poiNode }
+        for _, seat in ipairs(seats) do
+            local approachNodeId = seat.approachNodeId
+            if approachNodeId then
+                local approachNode = nodeGraph.getNode(approachNodeId)
+                if not approachNode then
+                    approachNodeId = nil
+                elseif approachNode.id ~= poiNode.id and approachNode.socialPOIId ~= poiNode.id then
+                    approachNodeId = nil
+                end
+            end
 
-		if not socialPOI then
-			debugLog(("Seat %s has no ancestor social POI"):format(taggedSeat:GetFullName()))
-			continue
-		end
+            if not approachNodeId then
+                approachNodeId = resolveNearestNodeId(socialNavNodes, seat.instance.Position) or poiNode.id
+            end
 
-		local socialRecord = socialByPOI[socialPOI]
-		if not socialRecord then
-			continue
-		end
+            local entry: SeatEntry = {
+                seatId = seat.id,
+                poiNodeId = poiNode.id,
+                cframe = seat.cframe,
+                instance = seat.instance,
+                approachNodeId = approachNodeId,
+                groupKey = resolveGroupKey(poiNode.instance, seat.instance),
+                occupied = false,
+            }
+            table.insert(entries, entry)
+            seatById[seat.id] = entry
+            totalSeats += 1
+        end
 
-		table.insert(socialRecord.seats, {
-			seat = taggedSeat,
-			groupKey = resolveSeatGroupKey(taggedSeat, socialPOI),
-			reservations = {},
-		})
-	end
+        poiRecords[poiNode.id] = {
+            poiNodeId = poiNode.id,
+            seats = entries,
+            occupiedCount = 0,
+            capacityCap = socialCapacity,
+        }
+    end
 
-	initialized = true
+    resetDiagnosticsSeatCounters(totalSeats)
 end
 
-function SeatManager.reserveSeat(
-	socialPOI: Part,
-	arrivalTime: number,
-	duration: number,
-	npcId: string?
-): Part?
-	if not initialized then
-		SeatManager.init()
-	end
+function SeatManager.claimSeat(poiNodeId: string): SeatClaim?
+    local record = poiRecords[poiNodeId]
+    if not record then
+        return nil
+    end
 
-	if duration <= 0 then
-		return nil
-	end
+    local totalSeats = #record.seats
+    if totalSeats <= 0 then
+        return nil
+    end
 
-	local socialRecord = socialByPOI[socialPOI]
-	if not socialRecord then
-		debugLog(("reserveSeat called with unknown social POI: %s"):format(socialPOI:GetFullName()))
-		return nil
-	end
+    local maxOccupied = math.floor(totalSeats * record.capacityCap)
+    if record.capacityCap > 0 then
+        maxOccupied = math.max(1, maxOccupied)
+    end
 
-	pruneExpiredReservations(arrivalTime)
+    if maxOccupied <= 0 or record.occupiedCount >= maxOccupied then
+        Diagnostics.increment("totalRejects", "no_seat")
+        return nil
+    end
 
-	local seats = socialRecord.seats
-	if #seats == 0 then
-		return nil
-	end
+    local groupOccupancy: { [string]: number } = {}
+    local available: { SeatEntry } = {}
+    for _, seat in ipairs(record.seats) do
+        if seat.occupied then
+            groupOccupancy[seat.groupKey] = (groupOccupancy[seat.groupKey] or 0) + 1
+        else
+            table.insert(available, seat)
+        end
+    end
 
-	local maxOccupied = math.floor(#seats * socialRecord.capacityCap)
-	-- For tiny setups (for example, one-seat social POIs), permit at least one
-	-- occupant when capacity cap is positive so social POIs remain usable.
-	if socialRecord.capacityCap > 0 then
-		maxOccupied = math.max(1, maxOccupied)
-	end
-	if maxOccupied <= 0 then
-		return nil
-	end
+    if #available <= 0 then
+        Diagnostics.increment("totalRejects", "no_seat")
+        return nil
+    end
 
-	local endTime = arrivalTime + duration
-	local occupiedSeats = 0
-	local groupOccupancy: { [Instance]: number } = {}
-	local candidates: { SeatRecord } = {}
+    local chosen = chooseWeightedSeat(available, groupOccupancy)
+    chosen.occupied = true
+    record.occupiedCount += 1
 
-	for _, seatRecord in ipairs(seats) do
-		local blocked = false
+    seatOccupiedCount += 1
+    Diagnostics.increment("seatOccupied")
 
-		for _, reservation in ipairs(seatRecord.reservations) do
-			if intervalsOverlap(arrivalTime, endTime, reservation.startTime, reservation.endTime) then
-				blocked = true
-				break
-			end
-		end
-
-		if blocked then
-			occupiedSeats += 1
-			groupOccupancy[seatRecord.groupKey] = (groupOccupancy[seatRecord.groupKey] or 0) + 1
-		else
-			table.insert(candidates, seatRecord)
-		end
-	end
-
-	if occupiedSeats + 1 > maxOccupied then
-		return nil
-	end
-
-	if #candidates == 0 then
-		return nil
-	end
-
-	local occupiedWeight = math.max(0, tonumber(Config.SOCIAL_WEIGHT_OCCUPIED) or 0)
-	local emptyWeight = math.max(0, tonumber(Config.SOCIAL_WEIGHT_EMPTY) or 0)
-	local totalWeight = 0
-	local candidateWeights: { number } = table.create(#candidates, 0)
-
-	for i, candidate in ipairs(candidates) do
-		local groupCount = groupOccupancy[candidate.groupKey] or 0
-		local weight = if groupCount > 0 then occupiedWeight else emptyWeight
-		if weight < 0 then
-			weight = 0
-		end
-		candidateWeights[i] = weight
-		totalWeight += weight
-	end
-
-	local selectedCandidate: SeatRecord
-	if totalWeight > 0 then
-		local roll = math.random() * totalWeight
-		local running = 0
-
-		selectedCandidate = candidates[1]
-		for i, candidate in ipairs(candidates) do
-			running += candidateWeights[i]
-			if roll <= running then
-				selectedCandidate = candidate
-				break
-			end
-		end
-	else
-		selectedCandidate = candidates[math.random(1, #candidates)]
-	end
-
-	local reservation: SeatReservation = {
-		startTime = arrivalTime,
-		endTime = endTime,
-		npcId = npcId,
-	}
-	table.insert(selectedCandidate.reservations, reservation)
-
-	return selectedCandidate.seat
+    return {
+        seatId = chosen.seatId,
+        poiNodeId = chosen.poiNodeId,
+        cframe = chosen.cframe,
+        approachNodeId = chosen.approachNodeId,
+    }
 end
 
-function SeatManager.releaseByNPC(npcId: string): ()
-	if not initialized then
-		SeatManager.init()
-	end
+function SeatManager.releaseSeat(seatId: string): ()
+    local entry = seatById[seatId]
+    if not entry or not entry.occupied then
+        return
+    end
 
-	for _, socialRecord in pairs(socialByPOI) do
-		for _, seatRecord in ipairs(socialRecord.seats) do
-			for i = #seatRecord.reservations, 1, -1 do
-				local reservation = seatRecord.reservations[i]
-				if reservation.npcId == npcId then
-					table.remove(seatRecord.reservations, i)
-				end
-			end
-		end
-	end
+    local record = poiRecords[entry.poiNodeId]
+    if record then
+        record.occupiedCount = math.max(0, record.occupiedCount - 1)
+    end
 
-	pruneExpiredReservations(tick())
+    entry.occupied = false
+    seatOccupiedCount = math.max(0, seatOccupiedCount - 1)
+    Diagnostics.decrement("seatOccupied")
 end
 
-function SeatManager.claimReservations(seatParts: { Part }, npcId: string): ()
-	if not initialized then
-		SeatManager.init()
-	end
+function SeatManager.getOccupancy(poiNodeId: string): (number, number)
+    local record = poiRecords[poiNodeId]
+    if not record then
+        return 0, 0
+    end
 
-	if npcId == "" then
-		return
-	end
-
-	for _, socialRecord in pairs(socialByPOI) do
-		for _, seatRecord in ipairs(socialRecord.seats) do
-			for _, seatPart in ipairs(seatParts) do
-				if seatRecord.seat == seatPart then
-					for _, reservation in ipairs(seatRecord.reservations) do
-						if reservation.npcId == nil then
-							reservation.npcId = npcId
-						end
-					end
-				end
-			end
-		end
-	end
+    return record.occupiedCount, #record.seats
 end
 
 return SeatManager

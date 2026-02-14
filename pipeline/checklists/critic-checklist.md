@@ -1,112 +1,166 @@
 # Critic Review Checklist
 
-Use this rubric when reviewing architecture outlines OR production code. Rate each item as:
+Use this rubric when reviewing pass designs or code. Rate each item as:
 - **BLOCKING** — must fix before proceeding
 - **FLAG** — note it, but doesn't halt progress
 - **PASS** — no issues
 
 ---
 
+## Cross-Module Contracts (Highest Priority)
+
+When reviewing a pass design, check new code against EXISTING TESTED CODE, not against other design docs.
+
+### Blocking
+- [ ] Data lifecycle break: new module's output type/format doesn't match existing module's input parameter
+- [ ] Missing handoff: new module expects data from existing module, but existing module doesn't provide it
+- [ ] API signature mismatch: call site passes different arguments than the real function accepts
+- [ ] Return value ignored or mishandled
+- [ ] Cleanup gap: data created but no module responsible for cleanup
+- [ ] Timing dependency: new module calls existing module before it's initialized
+
+### Flag
+- [ ] Implicit contract: modules depend on shared state without explicit documentation
+- [ ] Redundant data: same data stored in multiple places with no clear owner
+
+---
+
+## Regression Risk (Pass-Specific)
+
+### Blocking
+- [ ] This pass modifies an existing module's API signature without updating all callers
+- [ ] This pass changes data structure used by existing modules without updating those modules
+- [ ] New behavior could interfere with existing pass's golden test scenarios
+
+### Flag
+- [ ] Config value changes could affect previously-proven behavior
+- [ ] New module has same-named functions as existing module (confusion risk)
+
+---
+
+## Startup Validation
+
+### Blocking
+- [ ] System depends on workspace structure with no startup check
+- [ ] New workspace contracts from this pass not added to startup validator
+- [ ] Configuration values not validated at startup
+
+### Flag
+- [ ] Startup validator exists but doesn't cover all workspace contracts
+- [ ] Error messages don't clearly identify the misconfiguration
+
+---
+
 ## Security
 
 ### Blocking
-- [ ] Client has authority over sensitive data (money, inventory, health, progression, game state)
-- [ ] RemoteEvent/RemoteFunction arguments not validated server-side (type, range, sanity)
-- [ ] Server trusts client-provided data for critical operations without verification
-- [ ] No rate limiting on endpoints players could spam (purchases, actions, requests)
-- [ ] Player can trigger actions for other players (missing player identity verification)
+- [ ] Client has authority over sensitive data
+- [ ] RemoteEvent/RemoteFunction arguments not validated server-side
+- [ ] Server trusts client-provided data without verification
+- [ ] No rate limiting on spammable endpoints
+- [ ] Player can trigger actions for other players
 
 ### Flag
-- [ ] Client/server responsibility split is unclear or undocumented
-- [ ] Validation exists but could be stricter (e.g., only type-checking, not range-checking)
-- [ ] Sensitive operation lacks logging for debugging exploits later
+- [ ] Client/server split unclear or undocumented
+- [ ] Validation exists but could be stricter
 
 ---
 
 ## Performance
 
 ### Blocking
-- [ ] Unbounded loop with no yield (`while true do` without `task.wait()`)
-- [ ] Expensive operation in tight loop (raycasting every frame per player, pathfinding in RenderStepped)
-- [ ] RemoteEvent fires every frame instead of batched/throttled
-- [ ] Memory leak: connections never disconnected, tables never cleared, instances never destroyed
-- [ ] Server-side operation scales O(n^2) or worse with player count
-- [ ] UI updates every frame when it should use change events or throttling
+- [ ] Unbounded loop with no yield
+- [ ] Expensive operation in tight loop
+- [ ] RemoteEvent fires every frame
+- [ ] Memory leak: connections/tables/instances never cleaned up
+- [ ] O(n^2) or worse with player count
+- [ ] UI updates every frame unnecessarily
 
 ### Flag
-- [ ] Cacheable operation not cached (e.g., repeated FindFirstChild calls for same object)
-- [ ] Client doing computation that server already did and could replicate
-- [ ] Large data payload sent via RemoteEvent when a smaller one would work
+- [ ] Cacheable operation not cached
+- [ ] Client doing work server already did
+- [ ] Large RemoteEvent payload when smaller would work
 
 ---
 
 ## Roblox Best Practices
 
 ### Blocking
-- [ ] Using deprecated APIs (`wait()`, `spawn()`, `delay()` — use `task.*` equivalents)
-- [ ] Reinventing something Roblox provides (custom pathfinding vs PathfindingService, custom tween vs TweenService)
-- [ ] `.Touched` event without debounce
-- [ ] Yielding in inappropriate contexts (e.g., inside a connection callback without task.spawn)
-- [ ] Using string keys for RemoteEvents when Enum or structured data would prevent typo bugs
+- [ ] Deprecated APIs (`wait()`, `spawn()`, `delay()`)
+- [ ] Reinventing Roblox-provided functionality
+- [ ] `.Touched` without debounce
+- [ ] Yielding in inappropriate contexts
+- [ ] String keys for RemoteEvents when structured data would prevent typo bugs
 
 ### Flag
-- [ ] Not using CollectionService for tagged-instance patterns (using FindFirstChild loops instead)
-- [ ] Missing type annotations on public module functions
-- [ ] Not using Roblox's built-in replication where it would simplify things
+- [ ] Not using CollectionService for tagged-instance patterns
+- [ ] Missing type annotations on public functions
+- [ ] Not using built-in replication where it would simplify
 
 ---
 
 ## Maintainability
 
 ### Blocking
-- [ ] Config values hardcoded in logic (weapon damage = 25 buried in a function instead of config module)
-- [ ] Monolithic script (everything in one file, no module separation)
-- [ ] Spaghetti control flow (deeply nested if/else, unclear state transitions)
-- [ ] Core system logic and UI logic mixed in the same script
-- [ ] Cross-script dependencies not documented (scripts require or fire RemoteEvents to each other with no clear map of what connects to what)
+- [ ] Config values hardcoded in logic
+- [ ] Monolithic script
+- [ ] Spaghetti control flow
+- [ ] Core logic and UI logic mixed
 
 ### Flag
-- [ ] Inconsistent naming conventions (camelCase mixed with PascalCase mixed with snake_case)
+- [ ] Inconsistent naming conventions
 - [ ] Magic numbers without explanation
-- [ ] Complex logic without any comments
-- [ ] Module API surface unclear (no obvious entry points)
-- [ ] Script communication doesn't match architecture-outline.md's communication map
+- [ ] Complex logic without comments
+- [ ] Module API surface unclear
 
 ---
 
-## UI Integration
+## Diagnostics Coverage
 
 ### Blocking
-- [ ] UI state can desync from server state (shows gold amount client calculates instead of server-confirmed)
-- [ ] UI fires RemoteEvents on every interaction without throttling (button spam → server spam)
-- [ ] No handling for loading state (UI shows before data is ready)
-- [ ] No handling for edge cases (player closes UI mid-transaction, data fails to load)
+- [ ] System has no diagnostics module
+- [ ] Lifecycle events missing reason codes
+- [ ] No health counters for key metrics
 
 ### Flag
-- [ ] No optimistic UI updates (waits for full server round-trip before showing feedback)
-- [ ] UI code and backend logic in same module (should be separated)
-- [ ] UI doesn't handle empty state (e.g., empty inventory shows nothing instead of "No items")
-- [ ] UI elements not cleaned up when player leaves or screen changes
+- [ ] Per-entity trail too short for debugging
+- [ ] Diagnostics output hard to read
+- [ ] Diagnostics not toggleable via Config
+
+---
+
+## UI Integration (if applicable)
+
+### Blocking
+- [ ] UI state can desync from server state
+- [ ] UI fires RemoteEvents without throttling
+- [ ] No loading state handling
+- [ ] No edge case handling (close mid-action, data not loaded)
+
+### Flag
+- [ ] No optimistic UI updates
+- [ ] UI code mixed with backend logic
+- [ ] No empty state handling
+- [ ] UI elements not cleaned up
 
 ---
 
 ## Review Output Format
 
-After checking all items, report:
-
 ```
-## Critic Review: [System Name] — [Phase]
+## Critic Review: [System Name] — Pass [N] [Design/Code]
 
 ### Blocking Issues (must fix)
-1. [Category] Description of issue. Where it is. How to fix it.
-2. ...
+1. [Category] Description. Where. How to fix.
 
 ### Flagged Items (note for later)
 1. [Category] Description. Suggestion.
-2. ...
 
 ### Passed
 Summary of what looks good.
+
+### Regression Risk
+Any concerns about impact on previous passes.
 
 ### Verdict: APPROVED / BLOCKED (N blocking issues)
 ```

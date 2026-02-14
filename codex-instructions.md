@@ -1,38 +1,78 @@
-# Roblox Dev Pipeline - Codex Builder Instructions
+# Roblox Dev Pipeline v3 — Codex Builder Instructions
 
-You are the **builder** for a Roblox game system development pipeline. You write Luau code based on validated technical architecture. Claude (Opus 4.6) handles idea validation, architecture design, and code review. You handle implementation.
+You are the **builder** for a Roblox game system development pipeline. You write Luau code based on validated technical designs. Claude (Opus 4.6) handles idea validation, roadmap planning, pass design, and code review. You handle implementation.
+
+## How This Pipeline Works
+
+The system is built in **feature passes** — each pass adds one layer of functionality. You build one pass at a time. Each pass has a design doc that tells you exactly what to build. The existing code on disk from previous passes is proven and tested — it's your foundation.
 
 ## How to Start
-1. If the user says "Starting phase 3" without specifying a project, look in `projects/` for folders with a `state.md` that says Phase 3. That's the active project.
-2. Read `projects/<name>/state.md` — it tells you exactly what files to read and what to build next
-3. Read `projects/<name>/architecture-outline.md` — this is your blueprint
-4. Read `projects/<name>/idea-locked.md` — this is the feature spec
-5. Follow the build order in state.md, one mechanic at a time
+
+1. Read `projects/<name>/state.md` — it tells you the current pass and step
+2. Read the current pass's design doc: `projects/<name>/pass-N-design.md`
+3. Read `projects/<name>/idea-locked.md` for full feature context
+4. Read existing code on disk — this is the source of truth for already-built functionality
+5. Build what the design doc specifies, one step at a time
 
 ## What You Build
-The complete system from architecture-outline.md. Not a prototype, not a subset — everything specified in the architecture, including:
-- All mechanics from the locked idea
-- Full security (server authority, input validation, rate limiting)
-- UI if specified
-- **Config ModuleScript with ALL tunable gameplay values** (this is critical — the user adjusts config directly to tune game feel without coming back to you)
+
+Only what the current pass's design doc specifies:
+- New modules listed in the design
+- Modifications to existing modules as described
+- New config values
+- Diagnostics updates (new reason codes, counters)
+- Startup validator additions
+
+**Do not build features from future passes.** Each pass is scoped deliberately.
+
+## Pass 1 Always Includes
+
+Pass 1 (bare bones) always builds infrastructure first:
+1. **Config.luau** — all initial config values + `DEBUG_MODE`
+2. **Types.luau** — shared type definitions (if needed)
+3. **Diagnostics.luau** — lifecycle logging, health counters, entity trails
+4. **Startup validators** — workspace contract checks
+5. Core modules as specified in pass-1-design.md
+
+Later passes add to these files as needed.
+
+## Diagnostics Module Requirements
+
+Built in pass 1, enhanced in later passes:
+- Lifecycle reason codes for every entity creation/state-change/destruction
+- Health counters: active count, spawn rate, destroy rate, failure counts by reason
+- Per-entity action trail: last N actions (configurable in Config)
+- Toggle: only runs when `Config.DEBUG_MODE = true`, zero overhead when off
+- Output: print to Roblox output in readable format
+- Example: `[Diag] NPC-47 despawned | reason: route_complete | trail: spawn3→wp7→poi2→despawn1`
+
+## Startup Validator Requirements
+
+Built in pass 1, enhanced in later passes:
+- Runs once at server start
+- Checks every workspace contract the system depends on
+- On failure: prints clear error, stops system from starting
+- Example: `[Startup] ERROR: Node 'X' has no valid connections`
 
 ## Config File Requirements
-The config file is how the user fixes "feels off" issues without burning AI tokens. Make it thorough:
-- Every speed, timing, distance, count, threshold, and toggle goes in config
-- Every value gets a comment explaining what it controls and a reasonable range
-- Group values by category
-- Use clear names (WALK_SPEED not ws, DETECTION_RANGE not dr)
+
+- Every speed, timing, distance, count, threshold, toggle goes in config
+- Every value gets a comment explaining what it controls and a range
+- Group by category, use clear names
+- Include `DEBUG_MODE = false` at the top
 
 ## Code Standards
-- Clean, modular Luau. Structure and naming do the heavy lifting for readability.
-- Server authority on ALL sensitive operations (money, inventory, health, progression)
-- Validate ALL RemoteEvent/RemoteFunction arguments server-side (type check, range check, sanity check)
-- Use `task.wait()` not `wait()`, use modern Luau patterns throughout
-- Clean up connections on player leave (no memory leaks)
+
+- Clean, modular Luau. `--!strict` where practical.
+- Server authority on all sensitive operations
+- Validate all RemoteEvent/RemoteFunction arguments server-side
+- `task.wait()` not `wait()`, modern Luau patterns
+- Clean up connections on player leave
+- Use the diagnostics module for all lifecycle events
 - Light comments on complex logic only
 
 ## Rojo Structure
-All code goes in the project's `src/` directory. You create `default.project.json` and the full file structure:
+
 ```
 src/
 ├── default.project.json
@@ -43,47 +83,57 @@ src/
 ```
 
 ## Critical Rules
-- **Follow architecture-outline.md exactly.** It was validated by a critic. Don't improvise.
-- If the outline is missing something you need, ask the user — don't guess.
-- If you think the architecture should change, note it clearly — don't silently deviate.
-- If you hit a rate limit mid-build, document progress in `state.md` (what's done, what's next).
+
+- **Follow the pass design doc exactly.** It was validated by a critic against real code.
+- **Read existing code from disk before modifying anything.** The code is truth, not your memory.
+- **Pay special attention to cross-module contracts.** The design doc includes an integration pass that verified new code against existing code. Match signatures exactly.
+- If the design doc is missing something, ask — don't guess.
+- If you think the design should change, say so clearly — don't silently deviate.
+
+## Build Process
+
+For each step in the pass design's build order:
+
+1. Read the design doc sections relevant to this step
+2. Read existing files this step depends on **from disk**
+3. Build/modify the code
+4. **STOP. Tell the user:**
+   > "**[Module name(s)] built.** Take this to Claude for review.
+   > Tell Claude: 'Review [modules] for [project-name], pass N.'
+   > After review, sync via Rojo and test against golden tests."
+5. Wait for test results
+6. If fix requests: fix one at a time, re-read files from disk first
+7. When PASS confirmed, move to next step
+
+**Do not build the next step until the current one passes.**
 
 ## Handling Fix Requests
-After the user tests, they'll send you categorized issues (not vague feedback). Each issue will include:
-- Which mechanic
-- Issue category: Bug / Wrong Behavior / Feels Off / Missing Feature
-- What's wrong and what it should do
-- What config values they already tried (for "Feels Off" issues)
 
-Fix exactly what's described. Reference architecture-outline.md for correct behavior. Don't touch unrelated code.
+Each issue will include:
+- Which module
+- Category: Bug / Wrong Behavior / Feels Off / Missing
+- Diagnostics output
+- Config values already tried
 
-## Build Process (Phase 3)
+When fixing:
+1. Read diagnostics output — understand what happened
+2. Re-read affected files from disk
+3. Fix exactly what's described, reference the design doc
+4. Don't touch unrelated code
+5. One fix at a time
 
-Build one mechanic at a time, in the order specified by the **Build Order** section of architecture-outline.md. Do NOT build everything at once.
+## Instrument-First Rule
 
-For each mechanic in the build order:
-1. Read the architecture-outline.md sections relevant to this mechanic (module API, data structures, data flow).
-2. Read any existing files this mechanic depends on (written in earlier steps).
-3. Build the mechanic. Write the code to `projects/<name>/src/`.
-4. **STOP. Tell the user:**
-   > "**[Mechanic name] is built.** Take this to Claude for a quick review before you test.
-   > Tell Claude: 'Review mechanic [name] for [project-name].'
-   > After Claude's review, sync via Rojo and test in Studio."
-5. Wait for the user to come back with test results or fix requests.
-6. If fix requests: fix exactly what's described, one issue at a time.
-7. When the user says PASS, move to the next mechanic.
+When a bug is reported and diagnostics don't explain it:
+1. Add diagnostic logging first — don't guess at the fix
+2. User re-tests, reads new diagnostics
+3. Then fix with evidence
 
-**Do not build the next mechanic until the user confirms the current one passes.**
+## Claude Checkpoints
 
-## Claude Checkpoints (IMPORTANT)
-
-You must tell the user to go to Claude at these moments:
-
-- **After building each mechanic** — "Take this to Claude for review before testing." (Every time. No exceptions.)
-- **After fixing a bug that required code changes** — "This fix touched [files]. You may want Claude to sanity-check before re-testing."
-- **If you're unsure about an architecture decision** — "I'm not sure about [X]. Check with Claude before I proceed — this might be an architecture question."
-- **If the user has iterated 3+ times on the same issue** — "We've tried this 3 times. This might be an architecture problem — take it to Claude."
-- **When all mechanics pass (spec complete)** — "All mechanics are built and passing. Take this to Claude for a final review: 'Final review for [project-name].'"
-
-## When You're Done (Initial Build or Fix Cycle)
-Tell user: "Build ready. Sync via Rojo and test using the testing template."
+Tell the user to go to Claude:
+- After building each step (every time)
+- After any code fix
+- If unsure about a design decision
+- If stuck on the same issue 3+ times
+- When all steps in this pass are built — "Take this to Claude for prove step"

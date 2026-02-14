@@ -4,451 +4,425 @@ local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
-local configModule = ReplicatedStorage:WaitForChild("Config", 10)
-assert(configModule and configModule:IsA("ModuleScript"), "WanderingProps NodeGraph: ReplicatedStorage.Config not found")
+local sharedFolder = ReplicatedStorage:WaitForChild("WanderingProps")
+local Config = require(sharedFolder:WaitForChild("Config"))
+local Diagnostics = require(sharedFolder:WaitForChild("Diagnostics"))
 
-local Config = require(configModule)
+type SeatData = {
+    id: string,
+    instance: BasePart,
+    cframe: CFrame,
+    approachNodeId: string?,
+}
 
-type GraphNode = {
-	part: Part,
-	tag: string,
-	position: Vector3,
-	isZone: boolean,
-	size: Vector3?,
-	connections: { GraphNode },
-	weight: number?,
-	viewTargets: { Part }?,
-	seats: { Part }?,
-	capacityCap: number?,
+type POIData = {
+    poiType: "scenic" | "busy" | "social",
+    weight: number,
+    viewZone: BasePart?,
+    seats: { SeatData }?,
+}
+
+type NodeData = {
+    id: string,
+    instance: BasePart,
+    position: Vector3,
+    nodeType: "spot" | "zone",
+    nodeRole: "waypoint" | "spawn" | "despawn",
+    connections: { string },
+    size: Vector3?,
+    poi: POIData?,
+    socialPOIId: string?,
 }
 
 local NodeGraph = {}
 
-local NAVIGATION_TAGS = {
-	Config.TAG_WAYPOINT,
-	Config.TAG_SPAWN,
-	Config.TAG_DESPAWN,
-	Config.TAG_SCENIC,
-	Config.TAG_BUSY,
-	Config.TAG_SOCIAL,
-}
+local nodesById: { [string]: NodeData } = {}
+local idByPart: { [BasePart]: string } = {}
+local spawnNodes: { NodeData } = {}
+local despawnNodes: { NodeData } = {}
+local poiNodes: { NodeData } = {}
+local built = false
 
-local DEFAULT_WEIGHT = 1
-local DEFAULT_CAPACITY_CAP = 0.75
-local DEFAULT_TURN_PENALTY = 0
-
-local graph: { [Part]: GraphNode } = {}
-local nodesByTag: { [string]: { GraphNode } } = {}
-local initialized = false
-
-local function debugLog(message: string): ()
-	if Config.DEBUG_ENABLED then
-		warn(("[WanderingProps/NodeGraph] %s"):format(message))
-	end
+local function copyArray<T>(source: { T }): { T }
+    local copy = table.create(#source)
+    for i, value in ipairs(source) do
+        copy[i] = value
+    end
+    return copy
 end
 
-local function resolveWeight(part: Part): number
-	local weightAttr = part:GetAttribute("Weight")
-	if typeof(weightAttr) == "number" and weightAttr > 0 then
-		return weightAttr
-	end
-	return DEFAULT_WEIGHT
+local function addConnectionUnique(node: NodeData, targetId: string): ()
+    for _, existing in ipairs(node.connections) do
+        if existing == targetId then
+            return
+        end
+    end
+    table.insert(node.connections, targetId)
 end
 
-local function resolveCapacityCap(part: Part): number
-	local capAttr = part:GetAttribute("CapacityCap")
-	if typeof(capAttr) == "number" then
-		return math.clamp(capAttr, 0, 1)
-	end
-	return DEFAULT_CAPACITY_CAP
+local function parseNodeType(part: BasePart): "spot" | "zone"
+    local nodeTypeAttr = part:GetAttribute("NodeType")
+    if typeof(nodeTypeAttr) == "string" and string.lower(nodeTypeAttr) == "zone" then
+        return "zone"
+    end
+    return "spot"
 end
 
-local function resolveViewTargets(part: Part): { Part }
-	local viewTargets: { Part } = {}
-
-	local viewTargetsContainer = part:FindFirstChild("ViewTargets")
-	if viewTargetsContainer then
-		for _, descendant in ipairs(viewTargetsContainer:GetDescendants()) do
-			if descendant:IsA("Part") then
-				table.insert(viewTargets, descendant)
-			end
-		end
-	end
-
-	-- If no "ViewTargets" container exists, allow direct child parts named "ViewTarget*".
-	if #viewTargets == 0 then
-		for _, child in ipairs(part:GetChildren()) do
-			if child:IsA("Part") and string.sub(child.Name, 1, 10) == "ViewTarget" then
-				table.insert(viewTargets, child)
-			end
-		end
-	end
-
-	-- Backward compatibility: legacy ObjectValue ViewTarget.
-	if #viewTargets == 0 then
-		local legacyViewTarget = part:FindFirstChild("ViewTarget")
-		if legacyViewTarget and legacyViewTarget:IsA("ObjectValue") then
-			local target = legacyViewTarget.Value
-			if target and target:IsA("Part") then
-				table.insert(viewTargets, target)
-			end
-		end
-	end
-
-	if #viewTargets == 0 then
-		debugLog(("Scenic node %s is missing view target Parts"):format(part:GetFullName()))
-	end
-
-	return viewTargets
+local function parseNodeRole(part: BasePart): "waypoint" | "spawn" | "despawn"
+    local roleAttr = part:GetAttribute("NodeRole")
+    if typeof(roleAttr) == "string" then
+        local normalized = string.lower(roleAttr)
+        if normalized == "spawn" then
+            return "spawn"
+        elseif normalized == "despawn" then
+            return "despawn"
+        end
+    end
+    return "waypoint"
 end
 
-local function resolveSocialSeats(part: Part): { Part }
-	local seats: { Part } = {}
-	for _, descendant in ipairs(part:GetDescendants()) do
-		if descendant:IsA("Part") and CollectionService:HasTag(descendant, Config.TAG_SEAT) then
-			table.insert(seats, descendant)
-		end
-	end
-	return seats
+local function parsePOI(part: BasePart): POIData?
+    if not CollectionService:HasTag(part, Config.TAG_POI) then
+        return nil
+    end
+
+    local poiTypeAttr = part:GetAttribute("POIType")
+    local poiType: "scenic" | "busy" | "social" = "busy"
+    if typeof(poiTypeAttr) == "string" then
+        local normalized = string.lower(poiTypeAttr)
+        if normalized == "scenic" or normalized == "social" or normalized == "busy" then
+            poiType = normalized
+        end
+    end
+
+    local weightAttr = part:GetAttribute("POIWeight")
+    local weight = 1
+    if typeof(weightAttr) == "number" and weightAttr > 0 then
+        weight = weightAttr
+    end
+
+    local poi: POIData = {
+        poiType = poiType,
+        weight = weight,
+        viewZone = nil,
+        seats = nil,
+    }
+
+    if poiType == "scenic" then
+        for _, child in ipairs(part:GetChildren()) do
+            if child:IsA("BasePart") and CollectionService:HasTag(child, Config.TAG_VIEW_ZONE) then
+                poi.viewZone = child
+                break
+            end
+        end
+    elseif poiType == "social" then
+        local seats: { SeatData } = {}
+        local seatCounter = 0
+        for _, descendant in ipairs(part:GetDescendants()) do
+            if descendant:IsA("BasePart") and CollectionService:HasTag(descendant, Config.TAG_SEAT) then
+                local approachNodeId: string? = nil
+                for _, child in ipairs(descendant:GetChildren()) do
+                    if child:IsA("ObjectValue") then
+                        local target = child.Value
+                        if target and target:IsA("BasePart") and CollectionService:HasTag(target, Config.TAG_NODE) then
+                            approachNodeId = target.Name
+                            break
+                        end
+                    end
+                end
+
+                seatCounter += 1
+                table.insert(seats, {
+                    id = string.format("%s::%s::%d", part.Name, descendant.Name, seatCounter),
+                    instance = descendant,
+                    cframe = descendant.CFrame,
+                    approachNodeId = approachNodeId,
+                })
+            end
+        end
+        poi.seats = seats
+    end
+
+    return poi
 end
 
-local function createNode(part: Part, tag: string): GraphNode
-	local isZone = part:GetAttribute("IsZone") == true
-	local node: GraphNode = {
-		part = part,
-		tag = tag,
-		position = part.Position,
-		isZone = isZone,
-		size = if isZone then part.Size else nil,
-		connections = {},
-	}
+function NodeGraph.build(): boolean
+    nodesById = {}
+    idByPart = {}
+    spawnNodes = {}
+    despawnNodes = {}
+    poiNodes = {}
+    built = false
 
-	return node
+    local taggedNodes = CollectionService:GetTagged(Config.TAG_NODE)
+    for _, tagged in ipairs(taggedNodes) do
+        if not tagged:IsA("BasePart") then
+            continue
+        end
+        if not tagged:IsDescendantOf(Workspace) then
+            continue
+        end
+
+        local nodeId = tagged.Name
+        if nodesById[nodeId] then
+            Diagnostics.increment("totalRejects", "duplicate_node_id")
+            continue
+        end
+
+        local node: NodeData = {
+            id = nodeId,
+            instance = tagged,
+            position = tagged.Position,
+            nodeType = parseNodeType(tagged),
+            nodeRole = parseNodeRole(tagged),
+            connections = {},
+            size = if parseNodeType(tagged) == "zone" then tagged.Size else nil,
+            poi = parsePOI(tagged),
+            socialPOIId = nil,
+        }
+
+        nodesById[nodeId] = node
+        idByPart[tagged] = nodeId
+
+        if node.nodeRole == "spawn" then
+            table.insert(spawnNodes, node)
+        elseif node.nodeRole == "despawn" then
+            table.insert(despawnNodes, node)
+        end
+
+        if node.poi then
+            table.insert(poiNodes, node)
+        end
+    end
+
+    local function resolveSocialPOIId(node: NodeData): string?
+        local explicitAttr = node.instance:GetAttribute("SocialPOIId")
+        if typeof(explicitAttr) == "string" and explicitAttr ~= "" then
+            local explicitOwner = nodesById[explicitAttr]
+            if explicitOwner and explicitOwner.id ~= node.id and explicitOwner.poi and explicitOwner.poi.poiType == "social" then
+                return explicitOwner.id
+            end
+        end
+
+        local cursor: Instance? = node.instance.Parent
+        while cursor do
+            if cursor:IsA("BasePart") then
+                local ownerId = idByPart[cursor]
+                if ownerId and ownerId ~= node.id then
+                    local ownerNode = nodesById[ownerId]
+                    if ownerNode and ownerNode.poi and ownerNode.poi.poiType == "social" then
+                        return ownerNode.id
+                    end
+                end
+            end
+            cursor = cursor.Parent
+        end
+
+        return nil
+    end
+
+    for _, node in pairs(nodesById) do
+        node.socialPOIId = resolveSocialPOIId(node)
+    end
+
+    for nodeId, node in pairs(nodesById) do
+        local sourcePart = node.instance
+        for _, child in ipairs(sourcePart:GetChildren()) do
+            if not child:IsA("ObjectValue") then
+                continue
+            end
+
+            local target = child.Value
+            if not target or not target:IsA("BasePart") then
+                continue
+            end
+            if not CollectionService:HasTag(target, Config.TAG_NODE) then
+                continue
+            end
+
+            local targetId = idByPart[target]
+            if targetId and targetId ~= nodeId then
+                local targetNode = nodesById[targetId]
+                if targetNode then
+                    addConnectionUnique(node, targetId)
+                    addConnectionUnique(targetNode, nodeId)
+                end
+            end
+        end
+    end
+
+    built = true
+    return true
 end
 
-local function applyTagProperties(node: GraphNode, part: Part, tag: string): ()
-	if tag == Config.TAG_SCENIC or tag == Config.TAG_BUSY or tag == Config.TAG_SOCIAL then
-		node.weight = resolveWeight(part)
-	end
-
-	if tag == Config.TAG_SCENIC then
-		node.viewTargets = resolveViewTargets(part)
-	end
-
-	if tag == Config.TAG_SOCIAL then
-		node.capacityCap = resolveCapacityCap(part)
-		node.seats = resolveSocialSeats(part)
-	end
+local function ensureBuilt(): ()
+    if not built then
+        NodeGraph.build()
+    end
 end
 
-local function reverseNodesInPlace(nodes: { GraphNode }): ()
-	local left = 1
-	local right = #nodes
-	while left < right do
-		nodes[left], nodes[right] = nodes[right], nodes[left]
-		left += 1
-		right -= 1
-	end
+function NodeGraph.findPath(
+    fromId: string,
+    toId: string,
+    excludeFirstHop: string?,
+    blockedNodeIds: { [string]: boolean }?
+): { string }?
+    ensureBuilt()
+
+    if fromId == toId and nodesById[fromId] then
+        return { fromId }
+    end
+
+    local startNode = nodesById[fromId]
+    local goalNode = nodesById[toId]
+    if not startNode or not goalNode then
+        return nil
+    end
+
+    local dist: { [string]: number } = {}
+    local prev: { [string]: string } = {}
+    local unvisited: { [string]: boolean } = {}
+
+    for nodeId in pairs(nodesById) do
+        dist[nodeId] = math.huge
+        unvisited[nodeId] = true
+    end
+    dist[fromId] = 0
+
+    while true do
+        local currentId: string? = nil
+        local currentDist = math.huge
+
+        for nodeId in pairs(unvisited) do
+            local d = dist[nodeId] or math.huge
+            if d < currentDist then
+                currentDist = d
+                currentId = nodeId
+            end
+        end
+
+        if not currentId or currentDist == math.huge then
+            break
+        end
+
+        if currentId == toId then
+            break
+        end
+
+        unvisited[currentId] = nil
+
+        local currentNode = nodesById[currentId]
+        if currentNode then
+            for _, neighborId in ipairs(currentNode.connections) do
+                if currentId == fromId and excludeFirstHop and neighborId == excludeFirstHop then
+                    continue
+                end
+
+                if unvisited[neighborId] then
+                    if blockedNodeIds and blockedNodeIds[neighborId] and neighborId ~= toId then
+                        continue
+                    end
+                    local neighborNode = nodesById[neighborId]
+                    if neighborNode then
+                        local alt = (dist[currentId] or math.huge)
+                            + (neighborNode.position - currentNode.position).Magnitude
+                        if alt < (dist[neighborId] or math.huge) then
+                            dist[neighborId] = alt
+                            prev[neighborId] = currentId
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if (dist[toId] or math.huge) == math.huge then
+        return nil
+    end
+
+    local pathReversed: { string } = {}
+    local cursor: string? = toId
+    while cursor do
+        table.insert(pathReversed, cursor)
+        cursor = prev[cursor]
+    end
+
+    local path: { string } = table.create(#pathReversed)
+    for i = #pathReversed, 1, -1 do
+        table.insert(path, pathReversed[i])
+    end
+
+    if excludeFirstHop and #path >= 2 and path[2] == excludeFirstHop then
+        return nil
+    end
+
+    return path
 end
 
-local function estimateHeuristicDistance(fromNode: GraphNode, toNode: GraphNode): number
-	return (toNode.position - fromNode.position).Magnitude
+function NodeGraph.getNode(nodeId: string): NodeData?
+    ensureBuilt()
+    return nodesById[nodeId]
 end
 
-local function getTurnPenalty(): number
-	local raw = tonumber(Config.PATH_TURN_PENALTY)
-	if raw == nil then
-		return DEFAULT_TURN_PENALTY
-	end
-	return math.max(0, raw)
+function NodeGraph.getSpawnNodes(): { NodeData }
+    ensureBuilt()
+    return copyArray(spawnNodes)
 end
 
-local function estimateTurnPenalty(
-	currentNode: GraphNode,
-	nextNode: GraphNode,
-	cameFrom: { [Part]: Part },
-	graphByPart: { [Part]: GraphNode }
-): number
-	local previousPart = cameFrom[currentNode.part]
-	if not previousPart then
-		return 0
-	end
-
-	local previousNode = graphByPart[previousPart]
-	if not previousNode then
-		return 0
-	end
-
-	local incoming = currentNode.position - previousNode.position
-	local outgoing = nextNode.position - currentNode.position
-	if incoming.Magnitude <= 0.0001 or outgoing.Magnitude <= 0.0001 then
-		return 0
-	end
-
-	local dot = math.clamp(incoming.Unit:Dot(outgoing.Unit), -1, 1)
-	local turnStrength = 1 - dot -- 0 straight, 2 full reversal
-	return turnStrength * getTurnPenalty()
+function NodeGraph.getDespawnNodes(): { NodeData }
+    ensureBuilt()
+    return copyArray(despawnNodes)
 end
 
-function NodeGraph.init(): ()
-	graph = {}
-	nodesByTag = {}
-	initialized = false
-
-	for _, tag in ipairs(NAVIGATION_TAGS) do
-		nodesByTag[tag] = {}
-	end
-
-	local partRoles: { [Part]: { [string]: boolean } } = {}
-	for _, tag in ipairs(NAVIGATION_TAGS) do
-		for _, tagged in ipairs(CollectionService:GetTagged(tag)) do
-			if not tagged:IsDescendantOf(Workspace) then
-				continue
-			end
-
-			if not tagged:IsA("Part") then
-				debugLog(("Ignoring non-Part tagged instance %s for tag %s"):format(tagged:GetFullName(), tag))
-				continue
-			end
-
-			local part = tagged
-			local roleMap = partRoles[part]
-			if not roleMap then
-				roleMap = {}
-				partRoles[part] = roleMap
-			end
-			if roleMap[tag] then
-				continue
-			end
-			roleMap[tag] = true
-
-			local node = graph[part]
-			if not node then
-				node = createNode(part, tag)
-				graph[part] = node
-			end
-
-			applyTagProperties(node, part, tag)
-			table.insert(nodesByTag[tag], node)
-		end
-	end
-
-	for part, node in pairs(graph) do
-		for _, child in ipairs(part:GetChildren()) do
-			if not child:IsA("ObjectValue") then
-				continue
-			end
-
-			-- Scenic nodes use this reserved ObjectValue for facing direction, not graph edges.
-			if child.Name == "ViewTarget" then
-				continue
-			end
-
-			local target = child.Value
-			if not target then
-				continue
-			end
-
-			if not target:IsA("Part") then
-				debugLog(("Connection %s on %s points to non-Part instance"):format(child.Name, part:GetFullName()))
-				continue
-			end
-
-			local targetNode = graph[target]
-			if targetNode then
-				table.insert(node.connections, targetNode)
-			else
-				debugLog(("Connection %s on %s points to untagged node %s"):format(child.Name, part:GetFullName(), target:GetFullName()))
-			end
-		end
-	end
-
-	initialized = true
+function NodeGraph.getPOINodes(): { NodeData }
+    ensureBuilt()
+    return copyArray(poiNodes)
 end
 
-function NodeGraph.getPath(from: Part, to: Part): { GraphNode }?
-	if not initialized then
-		NodeGraph.init()
-	end
-
-	local startNode = graph[from]
-	local goalNode = graph[to]
-	if not startNode or not goalNode then
-		return nil
-	end
-
-	if from == to then
-		return { startNode }
-	end
-
-	local openList: { Part } = { from }
-	local isOpen: { [Part]: boolean } = { [from] = true }
-	local cameFrom: { [Part]: Part } = {}
-	local gScore: { [Part]: number } = { [from] = 0 }
-	local fScore: { [Part]: number } = {
-		[from] = estimateHeuristicDistance(startNode, goalNode),
-	}
-
-	while #openList > 0 do
-		local bestIndex = 1
-		local bestPart = openList[1]
-		local bestScore = fScore[bestPart] or math.huge
-
-		for index = 2, #openList do
-			local candidatePart = openList[index]
-			local candidateScore = fScore[candidatePart] or math.huge
-			if candidateScore < bestScore then
-				bestIndex = index
-				bestPart = candidatePart
-				bestScore = candidateScore
-			end
-		end
-
-		local currentPart = bestPart
-		if currentPart == to then
-			break
-		end
-
-		table.remove(openList, bestIndex)
-		isOpen[currentPart] = nil
-
-		local currentNode = graph[currentPart]
-		if not currentNode then
-			continue
-		end
-
-		local currentG = gScore[currentPart] or math.huge
-		for _, neighborNode in ipairs(currentNode.connections) do
-			local neighborPart = neighborNode.part
-			local distanceCost = (neighborNode.position - currentNode.position).Magnitude
-			local turnPenalty = estimateTurnPenalty(currentNode, neighborNode, cameFrom, graph)
-			local tentativeG = currentG + distanceCost + turnPenalty
-
-			if tentativeG < (gScore[neighborPart] or math.huge) then
-				cameFrom[neighborPart] = currentPart
-				gScore[neighborPart] = tentativeG
-				fScore[neighborPart] = tentativeG + estimateHeuristicDistance(neighborNode, goalNode)
-
-				if not isOpen[neighborPart] then
-					table.insert(openList, neighborPart)
-					isOpen[neighborPart] = true
-				end
-			end
-		end
-	end
-
-	if gScore[to] == nil then
-		return nil
-	end
-
-	local pathReversed: { GraphNode } = {}
-	local cursor: Part? = to
-	while cursor do
-		local node = graph[cursor]
-		if node then
-			table.insert(pathReversed, node)
-		end
-		cursor = cameFrom[cursor]
-	end
-
-	reverseNodesInPlace(pathReversed)
-	return pathReversed
+function NodeGraph.getAllNodes(): { NodeData }
+    ensureBuilt()
+    local result: { NodeData } = {}
+    for _, node in pairs(nodesById) do
+        table.insert(result, node)
+    end
+    return result
 end
 
-function NodeGraph.getNearbyNodes(node: Part, maxHops: number): { GraphNode }
-	if not initialized then
-		NodeGraph.init()
-	end
+function NodeGraph.getNodesInRadius(position: Vector3, radius: number): { NodeData }
+    ensureBuilt()
 
-	if maxHops < 1 then
-		return {}
-	end
+    local result: { NodeData } = {}
+    local radiusSq = radius * radius
+    for _, node in pairs(nodesById) do
+        local offset = node.position - position
+        local distSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
+        if distSq <= radiusSq then
+            table.insert(result, node)
+        end
+    end
 
-	local startNode = graph[node]
-	if not startNode then
-		return {}
-	end
-
-	local queue: { Part } = { node }
-	local queueHead = 1
-	local depthByPart: { [Part]: number } = { [node] = 0 }
-	local nearby: { GraphNode } = {}
-
-	while queueHead <= #queue do
-		local current = queue[queueHead]
-		queueHead += 1
-
-		local currentDepth = depthByPart[current]
-		if not currentDepth then
-			continue
-		end
-
-		if currentDepth >= maxHops then
-			continue
-		end
-
-		local currentNode = graph[current]
-		if not currentNode then
-			continue
-		end
-
-		for _, neighborNode in ipairs(currentNode.connections) do
-			local neighborPart = neighborNode.part
-			if depthByPart[neighborPart] ~= nil then
-				continue
-			end
-
-			local nextDepth = currentDepth + 1
-			depthByPart[neighborPart] = nextDepth
-			table.insert(queue, neighborPart)
-			table.insert(nearby, neighborNode)
-		end
-	end
-
-	return nearby
+    return result
 end
 
-function NodeGraph.resolvePosition(node: GraphNode): Vector3
-	if node.isZone and node.size then
-		if node.tag == Config.TAG_WAYPOINT and node.part:GetAttribute("RandomizeTravelPoint") ~= true then
-			return node.part.Position
-		end
+function NodeGraph.resolvePosition(nodeId: string): Vector3
+    ensureBuilt()
 
-		local halfSize = node.size * 0.5
-		local randomOffset = Vector3.new(
-			(math.random() * 2 - 1) * halfSize.X,
-			(math.random() * 2 - 1) * halfSize.Y,
-			(math.random() * 2 - 1) * halfSize.Z
-		)
-		return (node.part.CFrame * CFrame.new(randomOffset)).Position
-	end
+    local node = nodesById[nodeId]
+    if not node then
+        return Vector3.zero
+    end
 
-	return node.part.Position
-end
+    if node.nodeType == "zone" and node.size then
+        local half = node.size * 0.5
+        local localOffset = Vector3.new(
+            (math.random() * 2 - 1) * half.X,
+            0,
+            (math.random() * 2 - 1) * half.Z
+        )
+        return node.instance.CFrame:PointToWorldSpace(localOffset)
+    end
 
-function NodeGraph.getNodesByTag(tag: string): { GraphNode }
-	if not initialized then
-		NodeGraph.init()
-	end
-
-	local taggedNodes = nodesByTag[tag]
-	if not taggedNodes then
-		return {}
-	end
-
-	local copy: { GraphNode } = table.create(#taggedNodes)
-	for index, value in ipairs(taggedNodes) do
-		copy[index] = value
-	end
-	return copy
-end
-
-function NodeGraph.getNode(part: Part): GraphNode?
-	if not initialized then
-		NodeGraph.init()
-	end
-
-	return graph[part]
+    return node.position
 end
 
 return NodeGraph

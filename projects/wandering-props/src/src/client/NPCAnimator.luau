@@ -1,226 +1,260 @@
 --!strict
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
-local configModule = ReplicatedStorage:WaitForChild("Config", 10)
-assert(configModule and configModule:IsA("ModuleScript"), "WanderingProps NPCAnimator: ReplicatedStorage.Config not found")
+local sharedFolder = ReplicatedStorage:WaitForChild("WanderingProps")
+local Config = require(sharedFolder:WaitForChild("Config"))
 
-local Config = require(configModule)
+type AnimatorHandle = {
+    animator: Animator,
+    walkTrack: AnimationTrack,
+    idleTrack: AnimationTrack,
+    sitTrack: AnimationTrack,
+}
 
 local NPCAnimator = {}
 
-type ClientNPC = {
-	id: string,
-	animator: Animator?,
-	walkTrack: AnimationTrack?,
-	idleTrack: AnimationTrack?,
-	sitTrack: AnimationTrack?,
-}
-
 type RuntimeState = {
-	frozen: boolean,
-	walkSpeedScale: number,
+    enabled: boolean,
+    activeTrack: AnimationTrack?,
+    playbackRate: number,
+    steppedFps: number?,
+    accumulator: number,
 }
 
-local runtimeByNpcId: { [string]: RuntimeState } = {}
-local reportedInvalidAnimationIds = false
+local stateByHandle: { [AnimatorHandle]: RuntimeState } = {}
+local stepConnection: RBXScriptConnection? = nil
 
-local function getRuntimeState(npc: ClientNPC): RuntimeState
-	local state = runtimeByNpcId[npc.id]
-	if not state then
-		state = {
-			frozen = false,
-			walkSpeedScale = 1,
-		}
-		runtimeByNpcId[npc.id] = state
-	end
-	return state
+local function ensureStepConnection(): ()
+    if stepConnection then
+        return
+    end
+
+    stepConnection = RunService.Heartbeat:Connect(function(dt)
+        for _, state in pairs(stateByHandle) do
+            if not state.enabled then
+                continue
+            end
+
+            local steppedFps = state.steppedFps
+            local activeTrack = state.activeTrack
+            if not steppedFps or steppedFps <= 0 or not activeTrack then
+                continue
+            end
+
+            local validTrack = pcall(function()
+                return activeTrack.Length
+            end)
+            if not validTrack then
+                state.activeTrack = nil
+                state.accumulator = 0
+                continue
+            end
+
+            if not activeTrack.IsPlaying then
+                activeTrack:Play(0.1, 1, 0)
+                activeTrack:AdjustSpeed(0)
+            end
+
+            local stepInterval = 1 / steppedFps
+            state.accumulator += dt
+            local stepCount = math.floor(state.accumulator / stepInterval)
+            if stepCount <= 0 then
+                continue
+            end
+
+            state.accumulator -= stepCount * stepInterval
+            local deltaTimePosition = stepCount * stepInterval * state.playbackRate
+
+            local currentPosition = activeTrack.TimePosition
+            local nextPosition = currentPosition + deltaTimePosition
+            local trackLength = activeTrack.Length
+            if trackLength > 0 then
+                if activeTrack.Looped then
+                    nextPosition = nextPosition % trackLength
+                else
+                    nextPosition = math.min(nextPosition, trackLength)
+                end
+            end
+
+            pcall(function()
+                activeTrack.TimePosition = nextPosition
+            end)
+        end
+    end)
 end
 
-local function isInvalidAnimationId(animationId: unknown): boolean
-	return type(animationId) ~= "string" or animationId == "" or animationId == "rbxassetid://0"
+local function getState(handle: AnimatorHandle): RuntimeState
+    local state = stateByHandle[handle]
+    if state then
+        return state
+    end
+
+    ensureStepConnection()
+    state = {
+        enabled = true,
+        activeTrack = nil,
+        playbackRate = 1,
+        steppedFps = nil,
+        accumulator = 0,
+    }
+    stateByHandle[handle] = state
+    return state
 end
 
-local function hasValidAnimationIds(): boolean
-	local valid = not isInvalidAnimationId(Config.ANIM_WALK)
-		and not isInvalidAnimationId(Config.ANIM_IDLE)
-		and not isInvalidAnimationId(Config.ANIM_SIT)
-
-	if not valid and not reportedInvalidAnimationIds then
-		reportedInvalidAnimationIds = true
-		warn(
-			"[WanderingProps/NPCAnimator] Animation IDs not configured in Config.luau — replace ANIM_WALK/IDLE/SIT with valid IDs"
-		)
-	end
-
-	return valid
+local function loadTrack(animator: Animator, animationId: string): AnimationTrack
+    local animation = Instance.new("Animation")
+    animation.AnimationId = animationId
+    local track = animator:LoadAnimation(animation)
+    animation:Destroy()
+    return track
 end
 
-local function createTrack(animator: Animator, animationId: string): AnimationTrack
-	local animation = Instance.new("Animation")
-	animation.AnimationId = animationId
-	local track = animator:LoadAnimation(animation)
-	animation:Destroy()
-	return track
+local function stopTrack(track: AnimationTrack): ()
+    local ok, isPlaying = pcall(function()
+        return track.IsPlaying
+    end)
+    if ok and isPlaying then
+        pcall(function()
+            track:Stop(0.1)
+        end)
+    end
 end
 
-local function stopTrack(track: AnimationTrack?): ()
-	if track and track.IsPlaying then
-		track:Stop(0.1)
-	end
+local function playTrack(track: AnimationTrack, speed: number, steppedFps: number?): ()
+    local playbackSpeed = if steppedFps and steppedFps > 0 then 0 else speed
+    if not track.IsPlaying then
+        track:Play(0.1, 1, playbackSpeed)
+    else
+        track:AdjustSpeed(playbackSpeed)
+    end
 end
 
-local function destroyTrack(track: AnimationTrack?): ()
-	if not track then
-		return
-	end
-
-	if track.IsPlaying then
-		track:Stop(0.1)
-	end
-
-	track:Destroy()
+local function isEnabled(handle: AnimatorHandle): boolean
+    return getState(handle).enabled
 end
 
-local function playTrack(track: AnimationTrack, speed: number): ()
-	if not track.IsPlaying then
-		track:Play(0.1, 1, 1)
-	end
-	track:AdjustSpeed(speed)
+local function selectTrack(
+    handle: AnimatorHandle,
+    targetTrack: AnimationTrack,
+    playbackRate: number,
+    steppedFps: number?
+): ()
+    if targetTrack ~= handle.walkTrack then
+        stopTrack(handle.walkTrack)
+    end
+    if targetTrack ~= handle.idleTrack then
+        stopTrack(handle.idleTrack)
+    end
+    if targetTrack ~= handle.sitTrack then
+        stopTrack(handle.sitTrack)
+    end
+
+    local state = getState(handle)
+    state.activeTrack = targetTrack
+    state.playbackRate = math.max(0.01, playbackRate)
+    state.steppedFps = if steppedFps and steppedFps > 0 then steppedFps else nil
+    state.accumulator = 0
+
+    playTrack(targetTrack, state.playbackRate, state.steppedFps)
 end
 
-function NPCAnimator.setup(npc: ClientNPC): ()
-	local animator = npc.animator
-	if not animator then
-		warn(("[WanderingProps/NPCAnimator] NPC %s missing Animator; cannot setup animations"):format(npc.id))
-		return
-	end
+function NPCAnimator.setup(model: Model): AnimatorHandle?
+    local animationController = model:FindFirstChildOfClass("AnimationController")
+    if not animationController then
+        return nil
+    end
 
-	if not hasValidAnimationIds() then
-		npc.walkTrack = nil
-		npc.idleTrack = nil
-		npc.sitTrack = nil
-		return
-	end
+    -- Reset pooled rig animator so stale tracks from prior uses cannot accumulate.
+    for _, child in ipairs(animationController:GetChildren()) do
+        if child:IsA("Animator") then
+            child:Destroy()
+        end
+    end
+    local animator = Instance.new("Animator")
+    animator.Parent = animationController
 
-	destroyTrack(npc.walkTrack)
-	destroyTrack(npc.idleTrack)
-	destroyTrack(npc.sitTrack)
-	npc.walkTrack = nil
-	npc.idleTrack = nil
-	npc.sitTrack = nil
+    local walkTrack = loadTrack(animator, Config.WALK_ANIMATION_ID)
+    local idleTrack = loadTrack(animator, Config.IDLE_ANIMATION_ID)
+    local sitTrack = loadTrack(animator, Config.SIT_ANIMATION_ID)
 
-	npc.walkTrack = createTrack(animator, Config.ANIM_WALK)
-	npc.idleTrack = createTrack(animator, Config.ANIM_IDLE)
-	npc.sitTrack = createTrack(animator, Config.ANIM_SIT)
-
-	local state = getRuntimeState(npc)
-	state.frozen = false
-	state.walkSpeedScale = 1
+    local handle: AnimatorHandle = {
+        animator = animator,
+        walkTrack = walkTrack,
+        idleTrack = idleTrack,
+        sitTrack = sitTrack,
+    }
+    local state = getState(handle)
+    state.enabled = true
+    return handle
 end
 
-function NPCAnimator.playWalk(npc: ClientNPC, speed: number): ()
-	local walkTrack = npc.walkTrack
-	if not walkTrack then
-		return
-	end
+function NPCAnimator.playWalk(
+    handle: AnimatorHandle,
+    walkSpeed: number,
+    speedMultiplier: number?,
+    steppedFps: number?
+): ()
+    if not isEnabled(handle) then
+        return
+    end
 
-	stopTrack(npc.idleTrack)
-	stopTrack(npc.sitTrack)
-
-	local naturalSpeed = tonumber(Config.WALK_ANIMATION_NATURAL_SPEED) or 1
-	if naturalSpeed <= 0 then
-		naturalSpeed = 1
-	end
-
-	local state = getRuntimeState(npc)
-	state.walkSpeedScale = speed / naturalSpeed
-
-	if state.frozen then
-		playTrack(walkTrack, 0)
-	else
-		playTrack(walkTrack, state.walkSpeedScale)
-	end
+    local baseSpeed = math.max(0.001, tonumber(Config.BASE_WALK_SPEED) or 10)
+    local multiplier = if speedMultiplier and speedMultiplier > 0 then speedMultiplier else 1
+    selectTrack(handle, handle.walkTrack, math.max(0.01, (walkSpeed / baseSpeed) * multiplier), steppedFps)
 end
 
-function NPCAnimator.playIdle(npc: ClientNPC): ()
-	local idleTrack = npc.idleTrack
-	if not idleTrack then
-		return
-	end
+function NPCAnimator.playIdle(handle: AnimatorHandle, speedMultiplier: number?, steppedFps: number?): ()
+    if not isEnabled(handle) then
+        return
+    end
 
-	stopTrack(npc.walkTrack)
-	stopTrack(npc.sitTrack)
-
-	local state = getRuntimeState(npc)
-	if state.frozen then
-		playTrack(idleTrack, 0)
-	else
-		playTrack(idleTrack, 1)
-	end
+    local multiplier = if speedMultiplier and speedMultiplier > 0 then speedMultiplier else 1
+    selectTrack(handle, handle.idleTrack, math.max(0.01, multiplier), steppedFps)
 end
 
-function NPCAnimator.playSit(npc: ClientNPC): ()
-	local sitTrack = npc.sitTrack
-	if not sitTrack then
-		return
-	end
+function NPCAnimator.playSit(handle: AnimatorHandle, speedMultiplier: number?, steppedFps: number?): ()
+    if not isEnabled(handle) then
+        return
+    end
 
-	stopTrack(npc.walkTrack)
-	stopTrack(npc.idleTrack)
-
-	local state = getRuntimeState(npc)
-	if state.frozen then
-		playTrack(sitTrack, 0)
-	else
-		playTrack(sitTrack, 1)
-	end
+    local multiplier = if speedMultiplier and speedMultiplier > 0 then speedMultiplier else 1
+    selectTrack(handle, handle.sitTrack, math.max(0.01, multiplier), steppedFps)
 end
 
-function NPCAnimator.stopAll(npc: ClientNPC): ()
-	destroyTrack(npc.walkTrack)
-	destroyTrack(npc.idleTrack)
-	destroyTrack(npc.sitTrack)
-	npc.walkTrack = nil
-	npc.idleTrack = nil
-	npc.sitTrack = nil
+function NPCAnimator.stopAll(handle: AnimatorHandle): ()
+    stopTrack(handle.walkTrack)
+    stopTrack(handle.idleTrack)
+    stopTrack(handle.sitTrack)
 
-	local state = getRuntimeState(npc)
-	state.frozen = false
-	state.walkSpeedScale = 1
-	runtimeByNpcId[npc.id] = nil
+    local state = stateByHandle[handle]
+    if state then
+        state.activeTrack = nil
+        state.accumulator = 0
+    end
 end
 
-function NPCAnimator.freeze(npc: ClientNPC): ()
-	local state = getRuntimeState(npc)
-	state.frozen = true
-
-	local animator = npc.animator
-	if not animator then
-		return
-	end
-
-	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-		track:AdjustSpeed(0)
-	end
+function NPCAnimator.setEnabled(handle: AnimatorHandle, enabled: boolean): ()
+    local state = getState(handle)
+    state.enabled = enabled
+    if not enabled then
+        NPCAnimator.stopAll(handle)
+    end
 end
 
-function NPCAnimator.unfreeze(npc: ClientNPC): ()
-	local state = getRuntimeState(npc)
-	state.frozen = false
-
-	local animator = npc.animator
-	if not animator then
-		return
-	end
-
-	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-		if npc.walkTrack and track == npc.walkTrack then
-			track:AdjustSpeed(state.walkSpeedScale)
-		else
-			track:AdjustSpeed(1)
-		end
-	end
+function NPCAnimator.cleanup(handle: AnimatorHandle): ()
+    NPCAnimator.stopAll(handle)
+    pcall(function()
+        handle.walkTrack:Destroy()
+    end)
+    pcall(function()
+        handle.idleTrack:Destroy()
+    end)
+    pcall(function()
+        handle.sitTrack:Destroy()
+    end)
+    stateByHandle[handle] = nil
 end
 
 return NPCAnimator
