@@ -32,42 +32,78 @@ With DEBUG_MODE enabled, play for a few minutes and check:
 
 Specifically verify that behaviors from previous passes still work correctly:
 - Does pass 1's core loop still function?
-- Do pass 2's features still behave as expected?
+- Do previous passes' features still behave as expected?
 - Are diagnostics patterns from previous passes unchanged?
 
 If a regression is found: **this is a blocking issue.** Fix it before this pass can be locked. The fix goes through the normal build process (categorize issue, send to Codex with diagnostics, one fix at a time).
 
-### Step 4: Lock This Pass
+### Step 4: Contract Check
 
-When all golden tests pass and diagnostics are clean:
+Tell Claude: "Pass N prove for [project-name]."
 
-1. Tell Claude: "Pass N prove for [project-name] — all golden tests passing, diagnostics clean."
-2. Claude runs critic review on the new/modified code against the pass design doc
-3. If critic finds blocking issues → fix → re-prove
-4. When approved:
-   - Update `state.md`: move to next pass's Design step (or Ship if this was the last pass)
-   - The code on disk is now **proven foundation** for the next pass
+Claude does a focused contract check on the new/modified code (NOT a full critic review):
+1. Do function signatures match the pass design doc?
+2. Do cross-module calls pass the right arguments and handle returns?
+3. Are diagnostics and validators hooked up as specified?
+
+This is quick — focused on verifying the build matches the design, not a comprehensive code review.
+
+### Step 5: Build Delta + Handoff
+
+**Codex writes the build delta.** Before locking the pass, tell Codex to document what actually changed vs what was planned:
+- What was built exactly as designed
+- What deviated from the design and why (bug fixes, user-requested changes, practical adjustments)
+- Any new contracts, config values, or behaviors that weren't in the original design
+
+This goes into `state.md` so Claude reads it before designing the next pass.
+
+**Codex commits and pushes.** All scripts get committed and pushed to `git@github.com:Rebornim/Pipeline.git` with a clear commit message: `pass N complete: [pass name]`
+
+**Codex produces a Claude handoff prompt.** A short message the user pastes to Claude to start the next pass's design. It must include:
+- Which project, which pass was just completed
+- Where to read the build delta (state.md)
+- Which files to read for the current codebase state
+- What the next pass is (from feature-passes.md)
+
+Example:
+> "Pass 2 for wandering-props is complete. Read `state.md` for build deltas, then read code in `src/`. Next is pass 3 per `feature-passes.md`. Design pass 3."
+
+### Step 6: Lock This Pass
+
+When contract check passes, build delta is written, and code is pushed:
+- Update `state.md` with build deltas and next pass info
+- The code on disk is now **proven foundation** for the next pass
+- Move to next pass's Design step (or Ship if this was the last pass)
 
 ## Exit Criteria
 
 - [ ] All golden tests pass (this pass + all previous)
 - [ ] Diagnostics health check clean (no anomalies, stable counts)
 - [ ] No regressions on previous pass behavior
-- [ ] Critic review approved
-- [ ] state.md updated
+- [ ] Contract check passed (build matches design)
+- [ ] Build delta documented in state.md
+- [ ] Code committed and pushed to GitHub
+- [ ] Claude handoff prompt produced
+- [ ] state.md updated for next pass
+
+## Periodic Full Critic Review
+
+Every 3-5 passes (not every pass), run a full critic review on the entire codebase instead of just a contract check. This catches accumulated drift, tech debt, and patterns going stale. The review feedback goes to Codex to address before the next pass begins.
 
 ## Rules
 
-- **Don't skip regression tests.** The whole point of the cyclic approach is that each pass builds on proven code. If you skip regression testing, you lose that guarantee.
-- **Don't move on with a known regression.** Fix it in this cycle or the next pass inherits a broken foundation.
-- **Config tuning is still free.** If something feels off and it's a config value, just change it. No cycle needed for config tweaks.
+- **Don't skip regression tests.** The whole point of the cyclic approach is that each pass builds on proven code.
+- **Don't move on with a known regression.** Fix it in this cycle.
+- **Config tuning is still free.** No cycle needed for config tweaks.
+- **Build deltas are mandatory.** Claude cannot design the next pass accurately without knowing what Codex actually built.
+- **Handoff prompts are mandatory.** The user should not have to figure out what to tell the next AI.
 
 ## If This Is The Last Pass → Ship
 
 When all feature passes are proven:
-
 1. Run all golden tests one final time
 2. Claude runs full critic review on the complete codebase
 3. Write `projects/<name>/build-notes.md`
-4. Update `state.md`: Stage → Complete
-5. System is done
+4. Final commit and push
+5. Update `state.md`: Stage → Complete
+6. System is done

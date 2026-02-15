@@ -34,45 +34,71 @@ bash pipeline/new-project.sh <system-name>
 
 ### Design (Claude)
 1. Tell Claude: **"Design pass N for <system-name>"**
-2. Claude reads existing code, designs this pass, runs critic
+   - Or paste the handoff prompt Codex gave you from the previous pass
+2. Claude reads existing code + build deltas, designs this pass, runs critic
 3. When approved: Claude writes `pass-N-design.md`
+4. **Claude gives you a handoff prompt for Codex** — copy it
 
-**Done when:** Claude says "Hand this to Codex."
+**Done when:** Claude gives you a Codex handoff prompt.
 
 ### Build (Codex CLI)
 1. Open Codex CLI
-2. Tell Codex: **"Build pass N for <system-name>"**
-3. Codex builds step by step, stops after each for Claude review
-4. Follow Codex's prompts — switch to Claude when told
+2. **Paste the handoff prompt Claude gave you**
+3. Codex builds step by step
+4. Test in Studio after each step (golden tests + regression tests)
+5. If a bug won't fix after 2 Codex attempts:
+   - Tell Claude: **"Bug in pass N. [describe bug + diagnostics]. Codex tried [X] and [Y]."**
+   - Claude writes a fix plan → give it to Codex
+6. When all golden tests pass → tell Codex: **"All tests passing, complete the pass"**
 
-### Test (You, in Studio)
-1. `rojo serve` in `projects/<system-name>/src/`
-2. Connect in Studio
-3. **Check output window** — startup errors? Diagnostics running?
-4. **Run golden tests** from `golden-tests.md`:
-   - This pass's tests (new stuff works)
-   - Previous passes' tests (nothing broke)
-5. Note what diagnostics output says
+### Pass Completion (Codex handles this)
+Codex automatically:
+1. Writes build delta to `state.md` (what changed from the design)
+2. Commits and pushes all code to GitHub
+3. **Gives you a handoff prompt for Claude** — copy it for the next pass
 
-### Config Tuning (You, no AI needed)
+### Prove (You + Claude)
+1. **Paste the handoff prompt Codex gave you** into Claude
+2. Claude does a contract check (build matches design)
+3. If issues: back to Codex → fix → Claude re-checks
+4. When approved: pass is locked, Claude starts designing the next pass
+
+---
+
+## The Flow Between AIs
+
+```
+Claude designs → gives you a Codex prompt
+↓
+You paste into Codex → Codex builds
+↓
+Codex finishes → gives you a Claude prompt
+↓
+You paste into Claude → Claude proves + designs next pass
+↓
+(repeat)
+```
+
+You are the bridge. The handoff prompts make that easy — just copy and paste.
+
+---
+
+## Config Tuning (You, no AI needed)
+
+At any point during testing:
 1. Open Config.luau
 2. Adjust values for anything that feels off
 3. Re-test
 4. **Exhaust config before going back to AI**
 
-### Fix Issues (You → Codex)
-1. Check diagnostics output — **include it in your report**
-2. Categorize: Bug / Wrong Behavior / Feels Off / Missing
-3. Send ONE issue at a time to Codex
-4. Codex fixes, you re-test
-5. Repeat until all golden tests pass
+---
 
-### Prove (Claude)
-1. When all golden tests pass (this pass + previous):
-   Tell Claude: **"Prove pass N for <system-name>"**
-2. Claude runs critic review
-3. If issues: Codex fixes → Claude re-reviews
-4. When approved: pass is locked, move to next pass
+## Periodic Structural Review (every 3-5 passes)
+
+1. Tell Claude: **"Full structural review for <system-name>"**
+2. Claude runs critic on the entire codebase
+3. Give feedback to Codex to address
+4. Then continue with the next pass
 
 ---
 
@@ -81,22 +107,23 @@ bash pipeline/new-project.sh <system-name>
 When all passes are proven:
 1. Tell Claude: **"Ship <system-name>"**
 2. Claude does final review, writes build-notes.md
-3. Done
+3. Final commit and push
+4. Done
 
 ---
 
 ## If Rate Limit Hits
 
-- Stop. AI saved state.
+- Stop. AI saved state to state.md.
 - When limit resets: **"Resuming pass N [design/build/prove] for <system-name>"**
 
 ---
 
-## If Stuck 3+ Times on Same Issue
+## If Stuck 3+ Times on Same Bug
 
 - Stop iterating with Codex
-- Tell Claude: **"Stuck on [issue] in pass N. Diagnostics show: [output]"**
-- May be a design issue, not a code issue
+- Tell Claude: **"Bug in pass N. [describe bug + diagnostics]. Codex tried [X], [Y], [Z]."**
+- Claude writes a fix plan, you give it to Codex
 
 ---
 

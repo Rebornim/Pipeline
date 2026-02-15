@@ -97,15 +97,25 @@ For each step in the pass design's build order:
 1. Read the design doc sections relevant to this step
 2. Read existing files this step depends on **from disk**
 3. Build/modify the code
-4. **STOP. Tell the user:**
-   > "**[Module name(s)] built.** Take this to Claude for review.
-   > Tell Claude: 'Review [modules] for [project-name], pass N.'
-   > After review, sync via Rojo and test against golden tests."
+4. Tell the user the step is built and ready to test against golden tests
 5. Wait for test results
 6. If fix requests: fix one at a time, re-read files from disk first
 7. When PASS confirmed, move to next step
 
 **Do not build the next step until the current one passes.**
+
+## Bug Fix Rules
+
+- **Do not move on until the bug is fixed.** A broken module is a broken foundation.
+- **Minimize blast radius.** Fix the bug with the smallest change possible. Do not restructure surrounding code, refactor, or "improve" things while fixing a bug.
+- **One fix at a time.** Never batch multiple fixes. Fix one, test, confirm.
+- **Never mix bugfixes with feature additions or refactors.**
+- **If your fix doesn't work after 2 attempts: STOP.** Tell the user:
+  > "This fix isn't working after 2 attempts. Take this to Claude for a fix plan.
+  > Tell Claude: 'Bug in pass N for [project-name]. [Describe bug]. Codex tried [X] and [Y]. Diagnostics show: [output].'
+  > Claude will write a targeted fix plan. Bring it back and I'll implement it."
+
+**Do not keep guessing.** Speculative patching makes things worse. If you're not confident, defer to Claude for a structural fix plan. This is not failure — this is the pipeline working correctly. Claude plans, you build.
 
 ## Handling Fix Requests
 
@@ -129,11 +139,37 @@ When a bug is reported and diagnostics don't explain it:
 2. User re-tests, reads new diagnostics
 3. Then fix with evidence
 
-## Claude Checkpoints
+## Pass Completion Protocol
 
-Tell the user to go to Claude:
-- After building each step (every time)
-- After any code fix
-- If unsure about a design decision
-- If stuck on the same issue 3+ times
-- When all steps in this pass are built — "Take this to Claude for prove step"
+When all steps in a pass are built and all golden tests pass:
+
+### 1. Write Build Delta
+Document in `state.md` what actually happened during this pass:
+- What was built exactly as designed
+- What deviated from the design and why (bug fixes, user-requested changes, practical adjustments)
+- Any new contracts, config values, or behaviors that weren't in the original design
+- Any modules that changed in ways the next pass's designer (Claude) needs to know about
+
+This is critical. Claude designs the next pass based on what you actually built, not what was planned. If you changed something and don't document it, the next pass's design will be based on wrong assumptions.
+
+### 2. Commit and Push
+Commit all scripts and push to the remote repository:
+```
+git add -A
+git commit -m "pass N complete: [pass name]"
+git push origin main
+```
+
+### 3. Produce Claude Handoff Prompt
+Write a short message the user copies to Claude to start the next pass. Include:
+- Which project and which pass was just completed
+- Where to find build deltas (`state.md`)
+- Which code files to read for current state
+- What the next pass is (from `feature-passes.md`)
+
+Example:
+> "Pass 2 for wandering-props is complete. Build deltas are in `state.md`. Read existing code in `src/`. Next is pass 3 per `feature-passes.md`. Design pass 3."
+
+### 4. Tell the user:
+> "**Pass N is complete.** Code committed and pushed. Give Claude this prompt to start the next pass:
+> [handoff prompt]"

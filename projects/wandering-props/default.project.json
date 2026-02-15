@@ -1,22 +1,22 @@
 {
-  "name": "WanderingPropsV3",
+  "name": "WanderingProps",
   "tree": {
     "$className": "DataModel",
-    "ReplicatedStorage": {
-      "WanderingProps": {
-        "$path": "src/src/shared"
-      }
-    },
     "ServerScriptService": {
       "WanderingProps": {
-        "$path": "src/src/server"
+        "$path": "src/server"
       }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "WanderingProps": {
-          "$path": "src/src/client"
+          "$path": "src/client"
         }
+      }
+    },
+    "ReplicatedStorage": {
+      "WanderingPropsShared": {
+        "$path": "src/shared"
       }
     }
   }

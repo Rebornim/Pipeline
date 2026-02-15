@@ -98,7 +98,6 @@ These were discussed and decided during idea validation. Phase 2 should build on
 - NPC model list
 - Base walk speed + variation range
 - POI weights (per POI instance)
-- Group spawn chance + group size range (2–4)
 - Dwell time ranges for scenic and social POIs
 - Social POI capacity cap (percentage)
 - Social vs. solo seating weight
