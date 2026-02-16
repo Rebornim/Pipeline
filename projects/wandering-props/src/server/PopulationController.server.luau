@@ -39,6 +39,14 @@ local graph
 local poiRegistry = nil
 local wanderingFolder
 local lastIsNightState: boolean? = nil
+local queuedSpawnRequests = 0
+local queuedDespawnIds = {}
+local queuedDespawnHead = 1
+local queuedDespawnSet = {}
+local queuedSpawnEvents = {}
+local queuedDespawnEvents = {}
+local queuedDespawnEventSet = {}
+local nextEventFlushAt = 0
 
 local function diagnostics(message: string)
 	if Config.DiagnosticsEnabled then
@@ -164,6 +172,73 @@ local function setupRemotes()
 	npcSpawnedRemote = createRemoteEvent(remotesFolder, Remotes.NPCSpawned)
 	npcDespawnedRemote = createRemoteEvent(remotesFolder, Remotes.NPCDespawned)
 	npcBulkSyncRemote = createRemoteEvent(remotesFolder, Remotes.NPCBulkSync)
+end
+
+local function isEventBatchingEnabled(): boolean
+	return Config.EventBatchingEnabled ~= false
+end
+
+local function flushQueuedRemoteEvents(force: boolean?)
+	if not npcSpawnedRemote or not npcDespawnedRemote then
+		return
+	end
+
+	local now = Workspace:GetServerTimeNow()
+	if isEventBatchingEnabled() then
+		if not force and now < nextEventFlushAt then
+			return
+		end
+	else
+		if not force then
+			return
+		end
+	end
+
+	if #queuedSpawnEvents > 0 then
+		local spawnPayload = if #queuedSpawnEvents == 1 then queuedSpawnEvents[1] else queuedSpawnEvents
+		npcSpawnedRemote:FireAllClients(spawnPayload)
+		queuedSpawnEvents = {}
+	end
+
+	if #queuedDespawnEvents > 0 then
+		local despawnPayload = if #queuedDespawnEvents == 1 then queuedDespawnEvents[1] else queuedDespawnEvents
+		npcDespawnedRemote:FireAllClients(despawnPayload)
+		queuedDespawnEvents = {}
+		queuedDespawnEventSet = {}
+	end
+
+	nextEventFlushAt = now + math.max(0.01, Config.EventBatchInterval or 0.05)
+end
+
+local function queueSpawnBroadcast(spawnData)
+	table.insert(queuedSpawnEvents, spawnData)
+	if not isEventBatchingEnabled() then
+		flushQueuedRemoteEvents(true)
+	end
+end
+
+local function queueDespawnBroadcast(id: string)
+	if queuedDespawnEventSet[id] then
+		return
+	end
+	queuedDespawnEventSet[id] = true
+	table.insert(queuedDespawnEvents, id)
+	if not isEventBatchingEnabled() then
+		flushQueuedRemoteEvents(true)
+	end
+end
+
+local function requestSpawn(count: number?)
+	local amount = math.max(1, math.floor(count or 1))
+	queuedSpawnRequests += amount
+end
+
+local function requestDespawn(id: string)
+	if queuedDespawnSet[id] then
+		return
+	end
+	queuedDespawnSet[id] = true
+	table.insert(queuedDespawnIds, id)
 end
 
 local function routeDistance(waypoints: { Vector3 }): number
@@ -334,7 +409,7 @@ local function despawnNPC(id: string)
 	activeCount -= 1
 	npcsDespawnedTotal += 1
 
-	npcDespawnedRemote:FireAllClients(id)
+	queueDespawnBroadcast(id)
 	diagnostics(string.format(
 		"[WanderingProps] DESPAWN %s active=%d/%d total_despawned=%d",
 		id,
@@ -508,7 +583,7 @@ local function scheduleNPCDespawn(record, duration: number)
 	task.delay(delaySeconds, function()
 		local current = activeNPCs[record.id]
 		if current and current.despawnAt == scheduledAt then
-			despawnNPC(record.id)
+			requestDespawn(record.id)
 		end
 	end)
 end
@@ -574,7 +649,7 @@ local function trimRouteForNightDrain(record, now: number): boolean
 	record.totalDuration = totalDuration
 
 	scheduleNPCDespawn(record, totalDuration)
-	npcSpawnedRemote:FireAllClients(makeSpawnData(record))
+	queueSpawnBroadcast(makeSpawnData(record))
 	diagnostics(string.format(
 		"[WanderingProps] NIGHT_DRAIN_ROUTE %s nextPoi=%s legs=%d",
 		record.id,
@@ -915,7 +990,7 @@ local function spawnNPC()
 		end
 	end
 
-	npcSpawnedRemote:FireAllClients(makeSpawnData(record))
+	queueSpawnBroadcast(makeSpawnData(record))
 	scheduleNPCDespawn(record, totalDuration)
 
 	diagnostics(string.format(
@@ -929,6 +1004,36 @@ local function spawnNPC()
 		Config.MaxPopulation,
 		npcsSpawnedTotal
 	))
+end
+
+local function processSpawnDespawnQueues()
+	local despawnBudget = math.max(1, math.floor(Config.DespawnOpsPerHeartbeat or 8))
+	local spawnBudget = math.max(1, math.floor(Config.SpawnOpsPerHeartbeat or 4))
+
+	local despawnProcessed = 0
+	while despawnProcessed < despawnBudget and queuedDespawnHead <= #queuedDespawnIds do
+		local id = queuedDespawnIds[queuedDespawnHead]
+		queuedDespawnIds[queuedDespawnHead] = nil
+		queuedDespawnHead += 1
+		queuedDespawnSet[id] = nil
+		despawnNPC(id)
+		despawnProcessed += 1
+	end
+	if queuedDespawnHead > #queuedDespawnIds then
+		queuedDespawnIds = {}
+		queuedDespawnHead = 1
+	end
+
+	local spawnProcessed = 0
+	while spawnProcessed < spawnBudget and queuedSpawnRequests > 0 do
+		if activeCount >= getEffectiveMaxPopulation() then
+			queuedSpawnRequests = 0
+			break
+		end
+		spawnNPC()
+		queuedSpawnRequests -= 1
+		spawnProcessed += 1
+	end
 end
 
 local function onPlayerAdded(player: Player)
@@ -1045,6 +1150,7 @@ local function startup()
 	end
 
 	setupRemotes()
+	nextEventFlushAt = Workspace:GetServerTimeNow()
 
 	local edgeCount = 0
 	local nodeCount = 0
@@ -1061,24 +1167,29 @@ local function startup()
 	))
 
 	Players.PlayerAdded:Connect(onPlayerAdded)
+	RunService.Heartbeat:Connect(function()
+		processSpawnDespawnQueues()
+		flushQueuedRemoteEvents(false)
+	end)
 
 	if Config.InitialSpawnBurst then
-		for _ = 1, getEffectiveMaxPopulation() do
-			spawnNPC()
-			RunService.Heartbeat:Wait()
+		local initialCount = math.max(0, math.floor(getEffectiveMaxPopulation()))
+		if initialCount > 0 then
+			requestSpawn(initialCount)
 		end
 	end
 
 	local nextNightDrainAt = 0
 	while true do
-		task.wait(Config.SpawnInterval)
+		task.wait(math.max(0, Config.SpawnInterval or 0))
 		local now = Workspace:GetServerTimeNow()
 		if Config.NightDrainEnabled and now >= nextNightDrainAt then
 			applyNightDrain()
 			nextNightDrainAt = now + math.max(0.1, Config.NightDrainCheckInterval)
 		end
-		if activeCount < getEffectiveMaxPopulation() then
-			spawnNPC()
+		local effectiveMax = getEffectiveMaxPopulation()
+		if activeCount + queuedSpawnRequests < effectiveMax then
+			requestSpawn(1)
 		end
 	end
 end

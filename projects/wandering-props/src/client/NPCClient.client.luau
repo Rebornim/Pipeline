@@ -16,6 +16,8 @@ local activeNPCs = {}
 local activeNPCsFolderRef: Folder? = nil
 local waypointsFolderRef: Folder? = nil
 local restoreRaycastParams: RaycastParams? = nil
+local pendingEventOps = {}
+local pendingEventOpsHead = 1
 
 local globalFrame = 0
 local lodRuntimeEnabled = Config.LODEnabled
@@ -423,6 +425,64 @@ local function buildFreshModelFromTemplate(data, modelsFolder: Folder)
 	}
 end
 
+local function ensureModelDataTracks(modelData)
+	local walkTrack = modelData.walkTrack
+	local idleTrack = modelData.idleTrack
+	local sitTrack = modelData.sitTrack
+
+	if not walkTrack or not idleTrack then
+		walkTrack, idleTrack = NPCAnimator.setup(modelData.animator)
+		modelData.walkTrack = walkTrack
+		modelData.idleTrack = idleTrack
+	end
+	if not sitTrack then
+		sitTrack = NPCAnimator.setupSit(modelData.animator)
+		modelData.sitTrack = sitTrack
+	end
+
+	return walkTrack, idleTrack, sitTrack
+end
+
+local function prewarmModelPool(modelsFolder: Folder)
+	if not Config.PoolEnabled then
+		return
+	end
+
+	local maxPerModel = math.max(0, math.floor(Config.PoolMaxPerModel or 0))
+	local prewarmPerModel = math.max(0, math.floor(Config.PoolPrewarmPerModel or 0))
+	local targetPerModel = math.min(maxPerModel, prewarmPerModel)
+	if targetPerModel <= 0 then
+		return
+	end
+
+	local created = 0
+	for _, child in ipairs(modelsFolder:GetChildren()) do
+		if child:IsA("Model") and child.PrimaryPart then
+			local modelName = child.Name
+			for i = 1, targetPerModel do
+				local modelData = buildFreshModelFromTemplate({
+					id = string.format("prewarm_%s_%d", modelName, i),
+					modelName = modelName,
+					modelTemplate = child,
+				}, modelsFolder)
+				if not modelData then
+					break
+				end
+				if activeNPCsFolderRef then
+					modelData.model.Parent = activeNPCsFolderRef
+				end
+				ensureModelDataTracks(modelData)
+				ModelPool.release(modelName, modelData)
+				created += 1
+			end
+		end
+	end
+
+	if created > 0 then
+		diagnostics(string.format("[WanderingProps] POOL_PREWARM created=%d", created))
+	end
+end
+
 local function spawnNPCFromData(data, modelsFolder: Folder)
 	removeNPC(data.id)
 
@@ -486,12 +546,7 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 		clonedModel.Parent = activeNPCsFolderRef
 	end
 
-	if not walkTrack or not idleTrack then
-		walkTrack, idleTrack = NPCAnimator.setup(animator)
-	end
-	if not sitTrack then
-		sitTrack = NPCAnimator.setupSit(animator)
-	end
+	walkTrack, idleTrack, sitTrack = ensureModelDataTracks(modelData)
 
 	local walkTime = 0
 	local totalDistance = routeDistance(data.waypoints)
@@ -564,6 +619,70 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 	end)
 end
 
+local function queueSpawnPayload(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	if payload.id ~= nil then
+		table.insert(pendingEventOps, {
+			kind = "spawn",
+			data = payload,
+		})
+		return
+	end
+	for _, entry in ipairs(payload) do
+		if typeof(entry) == "table" and entry.id ~= nil then
+			table.insert(pendingEventOps, {
+				kind = "spawn",
+				data = entry,
+			})
+		end
+	end
+end
+
+local function queueDespawnPayload(payload)
+	if typeof(payload) == "string" then
+		table.insert(pendingEventOps, {
+			kind = "despawn",
+			id = payload,
+		})
+		return
+	end
+	if typeof(payload) ~= "table" then
+		return
+	end
+	for _, id in ipairs(payload) do
+		if typeof(id) == "string" then
+			table.insert(pendingEventOps, {
+				kind = "despawn",
+				id = id,
+			})
+		end
+	end
+end
+
+local function processPendingEventOps(modelsFolder: Folder)
+	local maxOps = math.max(1, math.floor(Config.ClientEventOpsPerHeartbeat or 8))
+	local processed = 0
+	while processed < maxOps and pendingEventOpsHead <= #pendingEventOps do
+		local op = pendingEventOps[pendingEventOpsHead]
+		pendingEventOps[pendingEventOpsHead] = nil
+		pendingEventOpsHead += 1
+		processed += 1
+
+		if op.kind == "spawn" then
+			spawnNPCFromData(op.data, modelsFolder)
+		elseif op.kind == "despawn" then
+			removeNPC(op.id)
+		end
+	end
+
+	if pendingEventOpsHead > #pendingEventOps then
+		pendingEventOps = {}
+		pendingEventOpsHead = 1
+	end
+end
+
 local function startup()
 	local remotesFolder = ReplicatedStorage:WaitForChild("WanderingPropsRemotes")
 	local npcSpawnedRemote = remotesFolder:WaitForChild(Remotes.NPCSpawned)
@@ -594,24 +713,25 @@ local function startup()
 	end
 
 	ModelPool.init(Config.PoolMaxPerModel)
+	prewarmModelPool(modelsFolder)
 	NPCMover.init(waypointsFolder, activeNPCsFolder)
 	initRestoreRaycastParams(waypointsFolder, activeNPCsFolder)
 
-	npcSpawnedRemote.OnClientEvent:Connect(function(data)
-		spawnNPCFromData(data, modelsFolder)
+	npcSpawnedRemote.OnClientEvent:Connect(function(payload)
+		queueSpawnPayload(payload)
 	end)
 
-	npcDespawnedRemote.OnClientEvent:Connect(function(npcId: string)
-		removeNPC(npcId)
+	npcDespawnedRemote.OnClientEvent:Connect(function(payload)
+		queueDespawnPayload(payload)
 	end)
 
 	npcBulkSyncRemote.OnClientEvent:Connect(function(entries)
-		for _, data in ipairs(entries) do
-			spawnNPCFromData(data, modelsFolder)
-		end
+		queueSpawnPayload(entries)
 	end)
 
 	RunService.Heartbeat:Connect(function(dt)
+		processPendingEventOps(modelsFolder)
+
 		globalFrame = (globalFrame + 1) % 100000
 		local isLODCheckFrame = lodRuntimeEnabled and (globalFrame % lodCheckInterval == 0)
 

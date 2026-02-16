@@ -1,9 +1,9 @@
 # Project State: wandering-props
 
-**Stage:** Pass 4 — Design locked
-**Status:** ready_for_pass_4_build
+**Stage:** Pass 4 — Built
+**Status:** pass_4_complete
 **Pipeline Version:** v3 (cyclic)
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-02-16
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `golden-tests.md`, `state.md`
@@ -98,5 +98,49 @@ Implemented:
 - LOD and Pool features are independently toggleable via `LODEnabled` and `PoolEnabled` config flags.
 - When both are disabled, system must behave identically to Pass 3.
 
+## Pass 4 Outcome (Built)
+Implemented as designed:
+1. **LOD integration** in client loop with tier transitions, reduced raycast cadence, hidden out-of-range NPCs, and far-tier restore flow.
+2. **Model pooling** with acquire/release lifecycle and reuse diagnostics.
+3. **Types/Config updates** for LOD + pooling fields and tunables.
+4. **Animator/Mover updates** to support LOD-aware animation stop and raycast skipping.
+
+Post-build fixes and stabilization completed:
+1. **Initial batch animation bug fix** (fresh models now initialize tracks in the same runtime context as pooled paths).
+2. **LOD consistency fix** (`mid` entry now reliably stops tracks).
+3. **Config freedom update** (removed hard max/min fatal caps from `PopulationController` validator; retained robust runtime behavior).
+
+## Pass 4 Build Deltas From Original Pass 4 Design
+Design deviations introduced by request during stress tuning:
+1. **Server-side churn controls added** (design said client-only):
+   - Spawn/despawn request queues with per-heartbeat budgets.
+   - Batched spawn/despawn remote flushes.
+2. **Client-side event apply queue added**:
+   - Spawn/despawn payloads are queued and applied under a per-heartbeat budget.
+3. **Pool prewarm added**:
+   - Client can pre-seed pooled models at startup.
+4. **LOD policy tuned**:
+   - `mid` tier animation disabled for stronger CPU savings.
+   - Distances/raycast skip defaults tuned for heavier optimization profile.
+
+## New Runtime Contracts (Active)
+1. `NPCSpawned` remote payload is now either:
+   - single spawn data table, or
+   - array of spawn data tables (batched).
+2. `NPCDespawned` remote payload is now either:
+   - single npc id string, or
+   - array of npc id strings (batched).
+3. Server and client both enforce per-heartbeat operation budgets for churn-heavy spawn/despawn periods.
+
+## Key Files Modified For Pass 4 Build + Stabilization
+- `src/client/NPCClient.client.luau`
+- `src/client/LODController.luau`
+- `src/client/ModelPool.luau`
+- `src/client/NPCAnimator.luau`
+- `src/client/NPCMover.luau`
+- `src/shared/Config.luau`
+- `src/shared/Types.luau`
+- `src/server/PopulationController.server.luau`
+
 ## Next Step
-- Hand `pass-4-design.md` to Codex for build.
+- Plan Pass 5 against live code + this state file deltas before writing `pass-5-design.md`.

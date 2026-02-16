@@ -71,5 +71,17 @@ Config.LODMidRaycastSkip = 10
 -- MODEL POOLING
 Config.PoolEnabled = true
 Config.PoolMaxPerModel = 10
+Config.PoolPrewarmPerModel = 2
+
+-- SPAWN/DESPAWN THROTTLE
+Config.SpawnOpsPerHeartbeat = 4
+Config.DespawnOpsPerHeartbeat = 8
+
+-- NETWORK EVENT BATCHING
+Config.EventBatchingEnabled = true
+Config.EventBatchInterval = 0.05
+
+-- CLIENT EVENT APPLICATION THROTTLE
+Config.ClientEventOpsPerHeartbeat = 8
 
 return Config
