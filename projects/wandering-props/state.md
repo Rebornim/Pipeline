@@ -1,7 +1,7 @@
 # Project State: wandering-props
 
-**Stage:** Pass 4 — Built
-**Status:** pass_4_complete
+**Stage:** Pass 4 — Built + Critic Reviewed
+**Status:** pass_4_critic_passed
 **Pipeline Version:** v3 (cyclic)
 **Last Updated:** 2026-02-16
 
@@ -142,5 +142,13 @@ Design deviations introduced by request during stress tuning:
 - `src/shared/Types.luau`
 - `src/server/PopulationController.server.luau`
 
+## Pass 4 Post-Build Critic Review
+- Full codebase critic review conducted at 4-pass mark (all 12 source files).
+- **1 blocking issue found and fixed:** Prewarm model visibility flash (models briefly visible at origin during pool prewarm). Fixed by CFraming off-screen before parenting.
+- **3 flags addressed:** Heartbeat LOD indentation reformatted, double `getStats()` removed from `removeNPC`, event queue backlog diagnostic added.
+- **4 flags noted (no action needed):** LOD distances tuned wider than design (tuning choice), raycast skip values increased (tuning choice), mid-tier seat slide without animation (acceptable at distance), duplicate RaycastParams setup between NPCClient and NPCMover (minor, future cleanup).
+- Verdict: APPROVED. 0 blocking issues remaining.
+
 ## Next Step
-- Plan Pass 5 against live code + this state file deltas before writing `pass-5-design.md`.
+- Plan Pass 5: original roadmap had 4 passes. Need to define Pass 5 scope/idea before designing.
+- Prove step for Pass 4 pending (golden tests 15-18 + regression suite).

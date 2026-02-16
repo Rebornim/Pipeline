@@ -151,8 +151,8 @@ local function removeNPC(id: string)
 	NPCAnimator.stopAll(npc)
 
 	if Config.PoolEnabled then
-		local beforeStats = ModelPool.getStats()
-		local beforeCount = beforeStats.perModel[npc.modelName] or 0
+		local stats = ModelPool.getStats()
+		local beforeCount = stats.perModel[npc.modelName] or 0
 		local maxCount = math.max(0, math.floor(Config.PoolMaxPerModel))
 		local willDestroy = beforeCount >= maxCount
 
@@ -172,8 +172,7 @@ local function removeNPC(id: string)
 				maxCount
 			))
 		else
-			local afterStats = ModelPool.getStats()
-			local afterCount = afterStats.perModel[npc.modelName] or 0
+			local afterCount = beforeCount + 1
 			diagnostics(string.format(
 				"[WanderingProps] POOL_RELEASE model=%s pool_size=%d",
 				npc.modelName,
@@ -468,6 +467,9 @@ local function prewarmModelPool(modelsFolder: Folder)
 				if not modelData then
 					break
 				end
+				if modelData.model.PrimaryPart then
+					modelData.model.PrimaryPart.CFrame = CFrame.new(0, -500, 0)
+				end
 				if activeNPCsFolderRef then
 					modelData.model.Parent = activeNPCsFolderRef
 				end
@@ -677,6 +679,10 @@ local function processPendingEventOps(modelsFolder: Folder)
 		end
 	end
 
+	if pendingEventOpsHead <= #pendingEventOps then
+		diagnostics(string.format("[WanderingProps] EVENT_QUEUE_BACKLOG pending=%d", #pendingEventOps - pendingEventOpsHead + 1))
+	end
+
 	if pendingEventOpsHead > #pendingEventOps then
 		pendingEventOps = {}
 		pendingEventOpsHead = 1
@@ -736,9 +742,9 @@ local function startup()
 		local isLODCheckFrame = lodRuntimeEnabled and (globalFrame % lodCheckInterval == 0)
 
 		local playerPosition = nil
-		if isLODCheckFrame then
-			local localPlayer = Players.LocalPlayer
-			local character = localPlayer and localPlayer.Character
+			if isLODCheckFrame then
+				local localPlayer = Players.LocalPlayer
+				local character = localPlayer and localPlayer.Character
 			local rootPart = character and character:FindFirstChild("HumanoidRootPart")
 			if rootPart and rootPart:IsA("BasePart") then
 				playerPosition = rootPart.Position
@@ -761,17 +767,17 @@ local function startup()
 					npcPos = npc.waypoints[npc.currentLeg] or npc.waypoints[1]
 				end
 
-			local newTier = LODController.computeTier(npcPos, playerPosition)
-			if newTier ~= npc.lodTier then
-				local oldTier = npc.lodTier
-				npc.lodTier = newTier
+				local newTier = LODController.computeTier(npcPos, playerPosition)
+				if newTier ~= npc.lodTier then
+					local oldTier = npc.lodTier
+					npc.lodTier = newTier
 
-				if newTier == "far" then
-					if npc.model.PrimaryPart then
-						npc.lastKnownPosition = npc.model.PrimaryPart.Position
-					end
-					NPCAnimator.stopAll(npc)
-					npc.model.Parent = nil
+					if newTier == "far" then
+						if npc.model.PrimaryPart then
+							npc.lastKnownPosition = npc.model.PrimaryPart.Position
+						end
+						NPCAnimator.stopAll(npc)
+						npc.model.Parent = nil
 					elseif oldTier == "far" then
 						restoreFromFarTier(npc)
 						if activeNPCsFolderRef then
@@ -788,10 +794,10 @@ local function startup()
 						applyAnimationForState(npc)
 					end
 
-				lodTransitionsTotal += 1
-				diagnostics(string.format("[WanderingProps] LOD_TRANSITION %s tier=%s→%s", id, oldTier, newTier))
+					lodTransitionsTotal += 1
+					diagnostics(string.format("[WanderingProps] LOD_TRANSITION %s tier=%s→%s", id, oldTier, newTier))
+				end
 			end
-		end
 
 			if npc.lodTier == "far" then
 				continue
