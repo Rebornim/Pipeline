@@ -60,15 +60,22 @@ For every call site where new code calls existing code (or vice versa):
 
 **This is the most important step.** Checking new code against real, tested code is fundamentally more reliable than checking specs against specs.
 
-### Step 4: Design Golden Tests for This Pass
+### Step 4: Design Golden Tests + AI Build Prints for This Pass
 
-Define 1-3 specific test scenarios for the new functionality:
+**Golden tests.** Define 1-3 specific test scenarios for the new functionality:
 - **Setup:** What workspace layout, what config overrides
 - **Action:** What happens
 - **Expected:** Specific observable result
 - **Pass condition:** What to check (visual + diagnostics)
 
 Also note: which previous passes' golden tests should be re-run as regression checks.
+
+**AI build prints.** Specify which temporary print statements Codex should add so the automated test loop can verify behavior without seeing the game:
+- Which events to print (`[SPAWN]`, `[DESPAWN]`, `[STATE]`, `[ERROR]`, etc.)
+- What data each print should include (entity ID, position, reason, etc.)
+- Where to place `START READ HERE` / `END READ HERE` markers
+- What the `[SUMMARY]` line should report at the end of each test window
+- These prints are temporary — they get removed after the pass is proven
 
 ### Step 5: Update Diagnostics & Validators (if needed)
 
@@ -101,6 +108,7 @@ This handoff prompt is how the user transitions from Claude to Codex without doi
 - [ ] All new/modified modules specified with exact APIs
 - [ ] Integration pass complete — every cross-boundary data flow traced against real code
 - [ ] Golden tests defined for new functionality
+- [ ] AI build prints specified (tags, data, markers, summary line)
 - [ ] Regression tests identified from previous passes
 - [ ] Diagnostics/validators updated if new behaviors or workspace contracts added
 - [ ] Config values extracted for any new tunables

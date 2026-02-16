@@ -16,7 +16,7 @@ The human user has minimal Luau/Roblox scripting knowledge. The AIs carry the te
 
 ### Per-pass cycle (repeat for each feature pass)
 - **Design** — Claude architects this pass against real tested code from previous passes. Integration pass traces data across modules. Golden test scenarios defined. Produces a handoff prompt for Codex.
-- **Build** — Codex implements from the design doc. User tests in Studio against golden tests. Bugs fixed one at a time. If Codex can't fix after 2 attempts, Claude writes a fix plan.
+- **Build** — Codex implements from the design doc. Codex tests automatically via MCP (start playtest, read logs, fix). User does a final visual check. If Codex can't fix after 3 test-fix cycles, Claude writes a fix plan.
 - **Prove** — All golden tests pass (this pass + all previous = regression check). Codex writes a build delta (what actually changed vs the design), commits, pushes, and produces a handoff prompt for Claude.
 
 ### Ship
@@ -37,7 +37,9 @@ The cyclic approach designs each pass against real, tested code from previous pa
 - **Diagnostics module:** Built-in logging (lifecycle reason codes, health counters, per-entity trails). Makes debugging evidence-based instead of speculative.
 - **Startup validators:** Check workspace contracts at server start, fail loud if something's wrong.
 - **Config extraction:** Every tunable value in a config file. User adjusts these directly without AI tokens.
-- **Bug escalation:** Codex defers to Claude after 2 failed fix attempts. Claude writes a structural fix plan.
+- **Bug escalation:** Codex defers to Claude after 3 failed test-fix cycles. Claude writes a structural fix plan.
+- **Automated testing via MCP:** Codex connects to Roblox Studio through the `robloxstudio-mcp` server. It can start/stop playtests and read all output logs without the user touching anything. The user only steps in for visual/behavioral judgment.
+- **AI build prints:** Temporary, structured print statements (`[TAG] key=value`) that let Codex "see" what the code does at runtime by reading logs. These are AI-focused, non-spammy, and get removed after each pass is proven. Separate from permanent human-focused diagnostics.
 - **Critic reviews are periodic, NOT per-pass.** Full critic review on the entire codebase every 3-5 passes. Between reviews, the pipeline relies on golden tests, diagnostics, and the integration pass in the design step. Do not run a critic review every single pass — it wastes tokens without proportional value.
 
 ## File Layout

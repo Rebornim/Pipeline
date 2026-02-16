@@ -48,7 +48,16 @@ Claude does a focused contract check on the new/modified code (NOT a full critic
 
 This is quick — focused on verifying the build matches the design, not a comprehensive code review.
 
-### Step 5: Build Delta + Handoff
+### Step 5: Clean Up AI Build Prints
+
+**Codex removes all temporary AI build prints** added during the build step:
+- All `[TAG] key=value` print statements
+- All `START READ HERE` / `END READ HERE` marker scripts
+- All `[SUMMARY]` print lines
+
+Keep permanent diagnostics (the `DEBUG_MODE`-gated logging, lifecycle reason codes, health counters). Those are human-focused and stay in the codebase. Only the temporary AI-focused prints get removed.
+
+### Step 6: Build Delta + Handoff
 
 **Codex writes the build delta.** Before locking the pass, tell Codex to document what actually changed vs what was planned:
 - What was built exactly as designed
@@ -68,9 +77,9 @@ This goes into `state.md` so Claude reads it before designing the next pass.
 Example:
 > "Pass 2 for wandering-props is complete. Read `state.md` for build deltas, then read code in `src/`. Next is pass 3 per `feature-passes.md`. Design pass 3."
 
-### Step 6: Lock This Pass
+### Step 7: Lock This Pass
 
-When contract check passes, build delta is written, and code is pushed:
+When contract check passes, AI prints are cleaned, build delta is written, and code is pushed:
 - Update `state.md` with build deltas and next pass info
 - The code on disk is now **proven foundation** for the next pass
 - Move to next pass's Design step (or Ship if this was the last pass)
@@ -81,6 +90,7 @@ When contract check passes, build delta is written, and code is pushed:
 - [ ] Diagnostics health check clean (no anomalies, stable counts)
 - [ ] No regressions on previous pass behavior
 - [ ] Contract check passed (build matches design)
+- [ ] AI build prints removed (only permanent diagnostics remain)
 - [ ] Build delta documented in state.md
 - [ ] Code committed and pushed to GitHub
 - [ ] Claude handoff prompt produced

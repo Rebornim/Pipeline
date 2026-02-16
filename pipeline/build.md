@@ -32,21 +32,34 @@ Give Codex:
 - What files already exist (tell Codex to read them from disk)
 - Boundaries: what it can change, what it must not touch
 
-#### 2b. Sync via Rojo and test.
-- Check output window: startup validator errors? Diagnostics running?
-- Run this pass's golden tests
-- **Run previous passes' golden tests** (regression check)
-- Check diagnostics output for anomalies
+#### 2b. Checkpoint before testing.
+Codex commits a checkpoint: `git add -A && git commit -m "checkpoint: pass N step [name] pre-test"`. If the test-fix loop makes things worse, the user can revert to this commit.
 
-#### 2c. If it fails:
-1. **Check diagnostics.** What do reason codes and trails say?
+#### 2c. Automated test loop (via MCP).
+Codex has access to Roblox Studio via the `robloxstudio-mcp` server. Use it:
+
+1. Call `start_playtest` — launches Play Solo in Studio, begins capturing output
+2. Wait for AI build prints to appear (look for `========== START READ HERE ==========` marker)
+3. Call `get_playtest_output` — read all captured print/warn/error output
+4. Call `stop_playtest` — end the session
+
+**Read the output.** AI build prints tell you exactly what ran, in what order, and what failed. Check against golden test expectations.
+
+**3 test-fix cycles max.** If the code doesn't pass after 3 cycles of (test → read logs → fix → retest), STOP. Hand the code + logs to the user for escalation to Claude.
+
+**No-regression rule.** If a fix breaks something that was previously passing, revert that fix immediately. Do not "fix forward" through a cascade.
+
+#### 2d. If automated tests fail within the 3-cycle cap:
+1. **Read AI build prints.** What do the `[TAG]` lines say?
 2. **Check config.** Is it a tunable value problem? Free fix, no tokens.
-3. **If not config:** Send Codex ONE categorized issue with diagnostics output. Tell it to re-read files from disk first.
-4. **Do not move on until the bug is fixed.** This is non-negotiable.
-5. **If Codex's fix doesn't work after 2 attempts:** Escalate to Claude. Tell Claude the bug, the diagnostics, and what Codex tried. Claude writes a targeted fix plan. Give that plan to Codex to implement.
-6. **If stuck after 3 total attempts (Codex + Claude-planned fix):** This may be a design issue — revisit the pass design.
+3. **Fix ONE thing.** The smallest change that addresses the specific failure.
+4. **Retest.** Back to 2c.
 
-#### 2d. PASS → move to next step.
+#### 2e. If automated tests pass → user visual check.
+Tell the user: "Step [name] passes automated tests. Ready for your visual check in Studio."
+The user plays the game, checks that it looks/feels right. If they report issues, those go through the normal fix process.
+
+#### 2f. PASS → move to next step.
 
 ### Step 3: All Steps Built
 
@@ -54,6 +67,27 @@ When all modules for this pass are built and individual tests pass:
 - Run ALL golden tests (this pass + all previous passes)
 - Check diagnostics health summary
 - If everything passes → move to Prove
+
+## AI Build Prints
+
+Temporary print statements that exist ONLY during the build step so Codex can read what the code does at runtime. These are **not** the same as permanent diagnostics.
+
+**Rules:**
+- **Structured and tagged:** `[TAG] key=value` format. One line per event. Machine-readable.
+- **Non-spammy:** Don't print every frame. Print on events (spawn, despawn, state change, error).
+- **Marker scripts:** Add a small script that waits a few seconds then prints `========== START READ HERE ==========` so the AI knows where to read from, skipping startup noise. Use `========== END READ HERE ==========` to bracket the interesting window.
+- **Summary prints:** At the end of a test window, print a one-line summary: `[SUMMARY] spawned=12 despawned=4 errors=0 avg_lifetime=28.3s`. This lets the AI assess pass/fail from one line instead of parsing hundreds.
+- **Temporary.** AI build prints are removed after the pass is proven (during the Prove step). They do not ship.
+- **Separate from diagnostics.** The permanent diagnostics module (lifecycle reason codes, health counters) is controlled by `DEBUG_MODE` and is human-focused. AI build prints are AI-focused and exist only during development.
+
+**Example AI build prints:**
+```lua
+print("[SPAWN] id=NPC_012 pos=(142,3,87) model=Zombie zone=Forest")
+print("[PATH]  id=NPC_012 waypoints=5 target=(200,3,120)")
+print("[STATE] id=NPC_012 old=wandering new=returning reason=out_of_range")
+print("[DESPAWN] id=NPC_012 reason=cleanup lifetime=34.2s")
+print("[SUMMARY] spawned=12 despawned=4 active=8 errors=0")
+```
 
 ## Bug Fix Discipline
 

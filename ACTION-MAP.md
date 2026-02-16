@@ -6,6 +6,10 @@ cd ~/roblox-pipeline
 bash pipeline/new-project.sh <system-name>
 ```
 
+### MCP Prerequisites (one-time)
+- **Codex CLI:** `robloxstudio-mcp` is configured globally in `~/.codex/config.toml`. Codex auto-launches it.
+- **Roblox Studio:** Install the [boshyxd MCP plugin](https://github.com/boshyxd/robloxstudio-mcp/releases). Enable "Allow HTTP Requests" in Game Settings > Security. Set the plugin's server URL to your dev machine's IP if Studio and Codex are on different machines.
+
 ---
 
 ## Idea (You + Claude)
@@ -41,21 +45,24 @@ bash pipeline/new-project.sh <system-name>
 
 **Done when:** Claude gives you a Codex handoff prompt.
 
-### Build (Codex CLI)
-1. Open Codex CLI
+### Build (Codex CLI — mostly hands-off)
+1. Open Codex CLI. **Make sure Roblox Studio is open** with the MCP plugin connected.
 2. **Paste the handoff prompt Claude gave you**
-3. Codex builds step by step
-4. Test in Studio after each step (golden tests + regression tests)
-5. If a bug won't fix after 2 Codex attempts:
-   - Tell Claude: **"Bug in pass N. [describe bug + diagnostics]. Codex tried [X] and [Y]."**
+3. Codex builds step by step, **testing automatically** via MCP (starts playtest, reads logs, fixes bugs)
+4. You watch or do something else — Codex handles the test-fix loop
+5. **Codex asks you for a visual check** when automated tests pass. Play the game, check it looks/feels right.
+6. If something looks wrong: tell Codex what you see
+7. If Codex can't fix after 3 test-fix cycles:
+   - Tell Claude: **"Bug in pass N. [describe bug + logs]. Codex tried [X], [Y], [Z]."**
    - Claude writes a fix plan → give it to Codex
-6. When all golden tests pass → tell Codex: **"All tests passing, complete the pass"**
+8. When all golden tests pass and you're happy → tell Codex: **"All tests passing, complete the pass"**
 
 ### Pass Completion (Codex handles this)
 Codex automatically:
-1. Writes build delta to `state.md` (what changed from the design)
-2. Commits and pushes all code to GitHub
-3. **Gives you a handoff prompt for Claude** — copy it for the next pass
+1. Removes temporary AI build prints (keeps permanent diagnostics)
+2. Writes build delta to `state.md` (what changed from the design)
+3. Commits and pushes all code to GitHub
+4. **Gives you a handoff prompt for Claude** — copy it for the next pass
 
 ### Prove (You + Claude)
 1. **Paste the handoff prompt Codex gave you** into Claude
@@ -119,10 +126,10 @@ When all passes are proven:
 
 ---
 
-## If Stuck 3+ Times on Same Bug
+## If Codex Hits 3 Test-Fix Cycles
 
-- Stop iterating with Codex
-- Tell Claude: **"Bug in pass N. [describe bug + diagnostics]. Codex tried [X], [Y], [Z]."**
+- Codex will stop automatically and tell you
+- Tell Claude: **"Bug in pass N. [describe bug + logs]. Codex tried [X], [Y], [Z]."**
 - Claude writes a fix plan, you give it to Codex
 
 ---
