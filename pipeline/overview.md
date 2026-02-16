@@ -15,9 +15,9 @@ The human user has minimal Luau/Roblox scripting knowledge. The AIs carry the te
 - **Roadmap** — divide features into ordered passes. Pass 1 is bare bones. Optimizations are last.
 
 ### Per-pass cycle (repeat for each feature pass)
-- **Design** — Claude architects this pass against real tested code from previous passes. Integration pass traces data across modules. Critic review. Golden test scenarios defined. Produces a handoff prompt for Codex.
+- **Design** — Claude architects this pass against real tested code from previous passes. Integration pass traces data across modules. Golden test scenarios defined. Produces a handoff prompt for Codex.
 - **Build** — Codex implements from the design doc. User tests in Studio against golden tests. Bugs fixed one at a time. If Codex can't fix after 2 attempts, Claude writes a fix plan.
-- **Prove** — All golden tests pass (this pass + all previous = regression check). Claude does a contract check. Codex writes a build delta (what actually changed vs the design), commits, pushes, and produces a handoff prompt for Claude.
+- **Prove** — All golden tests pass (this pass + all previous = regression check). Codex writes a build delta (what actually changed vs the design), commits, pushes, and produces a handoff prompt for Claude.
 
 ### Ship
 When all passes are proven. Final critic review on the full codebase.
@@ -38,7 +38,7 @@ The cyclic approach designs each pass against real, tested code from previous pa
 - **Startup validators:** Check workspace contracts at server start, fail loud if something's wrong.
 - **Config extraction:** Every tunable value in a config file. User adjusts these directly without AI tokens.
 - **Bug escalation:** Codex defers to Claude after 2 failed fix attempts. Claude writes a structural fix plan.
-- **Periodic structural review:** Full critic on entire codebase every 3-5 passes.
+- **Critic reviews are periodic, NOT per-pass.** Full critic review on the entire codebase every 3-5 passes. Between reviews, the pipeline relies on golden tests, diagnostics, and the integration pass in the design step. Do not run a critic review every single pass — it wastes tokens without proportional value.
 
 ## File Layout
 

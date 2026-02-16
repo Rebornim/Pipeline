@@ -77,15 +77,9 @@ Also note: which previous passes' golden tests should be re-run as regression ch
 - New startup validator checks for new workspace contracts
 - These get added to existing modules, not new ones
 
-### Step 6: Critic Review
+### Step 6: Lock This Pass's Design + Produce Handoff
 
-Run the `critic-reviewer` agent with `pipeline/checklists/critic-checklist.md`:
-- Feed it the pass design AND the relevant existing code
-- Critic verifies data lifecycle traces against real code
-- Any blocking issue → fix → re-review
-- If stuck after 3 iterations, escalate to user
-
-### Step 7: Lock This Pass's Design + Produce Handoff
+**Note on critic reviews:** Full critic reviews happen every 3-5 passes, NOT every pass. If the user requests one, or if this is a periodic review pass, run the critic. Otherwise, the integration pass (Step 3) is the primary design-time validation.
 
 - Write to `projects/<name>/pass-N-design.md`
 - Add new golden tests to `projects/<name>/golden-tests.md`
