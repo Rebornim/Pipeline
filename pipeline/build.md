@@ -40,10 +40,14 @@ Codex has access to Roblox Studio via the `robloxstudio-mcp` server. Use it:
 
 1. Call `start_playtest` — launches Play Solo in Studio, begins capturing output
 2. Wait for AI build prints to appear (look for `========== START READ HERE ==========` marker)
-3. Call `get_playtest_output` — read all captured print/warn/error output
-4. Call `stop_playtest` — end the session
+3. Call `get_playtest_output` ONE TIME — read captured output. This is cumulative (returns ALL logs), so only call it once.
+4. Call `stop_playtest` — end the session. Do NOT also call `get_playtest_output` before this — `stop_playtest` returns the logs too.
 
-**Read the output.** AI build prints tell you exactly what ran, in what order, and what failed. Check against golden test expectations.
+**Important: `get_playtest_output` is cumulative.** Each call returns the entire log from session start, not just new lines. Do not poll it repeatedly — one retrieval per test. If waiting for a specific marker, poll sparingly.
+
+**Keep global diagnostics OFF.** Set `Config.DiagnosticsEnabled = false` during automated testing. Only pass-specific `[PN_TEST]` prints should be active. Unrelated diagnostics noise burns tokens.
+
+**Read the output.** AI build prints tell you exactly what ran, in what order, and what failed. Check against golden test expectations. Summarize findings — do not dump full raw logs.
 
 **3 test-fix cycles max.** If the code doesn't pass after 3 cycles of (test → read logs → fix → retest), STOP. Hand the code + logs to the user for escalation to Claude.
 
