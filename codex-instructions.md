@@ -62,12 +62,27 @@ Add temporary print statements so you can read what the code does at runtime. Th
 - **These are temporary.** They get removed after the pass is proven. They are NOT permanent diagnostics.
 - **Keep global diagnostics OFF** during testing. Only your pass-specific test prints should be active.
 
-## Completing a Pass
+## Wrap-Up Protocol
 
-When all golden tests pass and the user confirms:
+When the user says **"do the wrap-up protocol"** (or anything similar), execute ALL of the following steps in order. Do not skip any.
 
-1. **Remove AI build prints.** Delete all temporary `[PN_TEST]` print statements, marker scripts, and test probe modules. Keep permanent diagnostics (the `DEBUG_MODE` ones).
-2. **Write build delta to state.md** using this exact template:
+### Step 1: Remove ALL MCP/testing artifacts
+
+Search every file you touched this pass and remove:
+- All `[PN_TEST]` print statements (any pass-tagged prints you added)
+- All `========== START READ HERE ==========` and `========== END READ HERE ==========` markers
+- All `[PN_SUMMARY]` print lines
+- All test probe scripts/modules you created for MCP testing
+- All temporary test fixtures (helper scripts, marker scripts, probe loops)
+- Any `Config.DiagnosticsEnabled = true` you set — reset it to `false`
+
+**Keep:** Permanent diagnostics (`DEBUG_MODE`-gated logging, lifecycle reason codes, health counters). Those stay.
+
+**Verify:** After removing, do one final `start_playtest` → `get_playtest_output` → `stop_playtest` to confirm the game still runs clean without the test artifacts.
+
+### Step 2: Write build delta to state.md
+
+Use this exact template:
 
 ```
 ### Pass N Build Delta
@@ -84,15 +99,21 @@ When all golden tests pass and the user confirms:
 - [anything noticed but deferred — not blocking this pass]
 ```
 
-3. **Commit and push:** `git add -A && git commit -m "pass N complete: [name]" && git push origin main`
-4. **Write a Claude handoff prompt.** File pointers and action only. No summaries, no context, no explanations. The files contain the information.
+### Step 3: Commit and push
 
-Format:
+```
+git add -A && git commit -m "pass N complete: [name]" && git push origin main
+```
+
+### Step 4: Write Claude handoff prompt
+
+File pointers and action only. No summaries, no context, no explanations.
+
 ```
 Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Prove pass N.
 ```
 
-That's it. Nothing more. Do not add what was built, what changed, or any other context. state.md has all of that.
+That's it. Nothing more. state.md has all the context.
 
 ## Rojo + MCP Coexistence
 
