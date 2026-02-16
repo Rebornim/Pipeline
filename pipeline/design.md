@@ -92,16 +92,14 @@ Also note: which previous passes' golden tests should be re-run as regression ch
 - Add new golden tests to `projects/<name>/golden-tests.md`
 - Update `projects/<name>/state.md`: Step → Build, Status → ready
 
-**Produce a Codex handoff prompt.** Write a short, copy-pasteable message the user gives to Codex. It must include:
-- Which project, which pass
-- Exactly which files to read (state.md, pass-N-design.md, existing code files)
-- What to build
-- A reminder to read `codex-instructions.md` for pipeline rules
+**Produce a Codex handoff prompt.** File pointers and action only. No summaries, no context, no explanations. The files contain the information — the prompt just tells Codex where to look.
 
-Example:
-> "Building pass 2 for wandering-props. Read: `state.md`, `pass-2-design.md`, `codex-instructions.md`. Read existing code in `src/`. Build what pass-2-design.md specifies. Follow pipeline rules in codex-instructions.md."
+Format:
+```
+Read: codex-instructions.md, projects/<name>/state.md, projects/<name>/pass-N-design.md. Then read code in projects/<name>/src/. Build pass N.
+```
 
-This handoff prompt is how the user transitions from Claude to Codex without doing orchestration work themselves.
+That's it. Nothing more.
 
 ## Exit Criteria
 

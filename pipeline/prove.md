@@ -68,14 +68,14 @@ This goes into `state.md` so Claude reads it before designing the next pass.
 
 **Codex commits and pushes.** All scripts get committed and pushed to `git@github.com:Rebornim/Pipeline.git` with a clear commit message: `pass N complete: [pass name]`
 
-**Codex produces a Claude handoff prompt.** A short message the user pastes to Claude to start the next pass's design. It must include:
-- Which project, which pass was just completed
-- Where to read the build delta (state.md)
-- Which files to read for the current codebase state
-- What the next pass is (from feature-passes.md)
+**Codex produces a Claude handoff prompt.** File pointers and action only. No summaries, no context, no explanations. The files contain the information.
 
-Example:
-> "Pass 2 for wandering-props is complete. Read `state.md` for build deltas, then read code in `src/`. Next is pass 3 per `feature-passes.md`. Design pass 3."
+Format:
+```
+Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Prove pass N.
+```
+
+That's it. Nothing more.
 
 ### Step 7: Lock This Pass
 

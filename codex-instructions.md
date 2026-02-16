@@ -85,7 +85,14 @@ When all golden tests pass and the user confirms:
 ```
 
 3. **Commit and push:** `git add -A && git commit -m "pass N complete: [name]" && git push origin main`
-4. **Write a Claude handoff prompt** for the user to copy. Include: which pass completed, where to read build deltas, what code to read, what the next pass is.
+4. **Write a Claude handoff prompt.** File pointers and action only. No summaries, no context, no explanations. The files contain the information.
+
+Format:
+```
+Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Prove pass N.
+```
+
+That's it. Nothing more. Do not add what was built, what changed, or any other context. state.md has all of that.
 
 ## Rojo + MCP Coexistence
 
