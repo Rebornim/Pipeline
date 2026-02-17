@@ -225,6 +225,16 @@ local function removeNPC(id: string)
 	activeNPCCount = math.max(0, activeNPCCount - 1)
 end
 
+local function clearAllClientNPCs()
+	for npcId in pairs(activeNPCs) do
+		removeNPC(npcId)
+	end
+	pendingSpawnOps = {}
+	pendingSpawnOpsHead = 1
+	pendingDespawnOps = {}
+	pendingDespawnOpsHead = 1
+end
+
 local function calculatePositionAlongWaypoints(
 	waypoints: { Vector3 },
 	walkSpeed: number,
@@ -375,6 +385,150 @@ local function isMovingState(state: string): boolean
 	return state == "walking" or state == "walking_to_seat" or state == "walking_from_seat"
 end
 
+local applyAnimationForState
+
+local function snapPositionToGround(flatPos: Vector3, fallbackY: number): Vector3
+	local snappedY = fallbackY
+	if restoreRaycastParams then
+		local rayOrigin = flatPos + Vector3.new(0, Config.SnapRayOriginOffset, 0)
+		local rayDirection = Vector3.new(0, -Config.SnapRayLength, 0)
+		local hitResult = Workspace:Raycast(rayOrigin, rayDirection, restoreRaycastParams)
+		if hitResult then
+			snappedY = hitResult.Position.Y + Config.SnapHipOffset
+		end
+	end
+	return Vector3.new(flatPos.X, snappedY, flatPos.Z)
+end
+
+local function buildFacingCFrame(
+	position: Vector3,
+	state: string,
+	waypoints: { Vector3 },
+	currentLeg: number
+): CFrame
+	if state == "walking" or state == "walking_to_seat" or state == "walking_from_seat" then
+		if currentLeg >= 1 and currentLeg < #waypoints then
+			local nextPos = waypoints[currentLeg + 1]
+			local flatTarget = Vector3.new(nextPos.X, position.Y, nextPos.Z)
+			if (flatTarget - position).Magnitude > 0.01 then
+				return CFrame.lookAt(position, flatTarget)
+			end
+		end
+	end
+	return CFrame.new(position)
+end
+
+local function computeExpectedDespawnTimeFromData(data, waypointsOverride, startTimeOverride): number
+	local waypoints = waypointsOverride or data.waypoints
+	local poiStops = data.poiStops
+	local walkTime = 0
+	local totalDistance = routeDistance(waypoints)
+	local socialTravelDistance = socialSeatTravelDistance(waypoints, poiStops)
+	totalDistance += socialTravelDistance
+	if data.walkSpeed > 0 then
+		walkTime = totalDistance / data.walkSpeed
+	end
+	local totalDwellTime = 0
+	for _, poi in ipairs(poiStops or {}) do
+		totalDwellTime += poi.dwellTime
+	end
+	local startTime = if startTimeOverride ~= nil then startTimeOverride else data.startTime
+	return startTime + walkTime + totalDwellTime + Config.ClientDespawnBuffer
+end
+
+local function applySpawnDataToExistingNPC(npc, data): boolean
+	if not npc or not npc.model or not npc.model.PrimaryPart then
+		return false
+	end
+
+	if data.modelName and npc.modelName and data.modelName ~= npc.modelName then
+		return false
+	end
+
+	local waypoints = data.waypoints
+	local poiStops = data.poiStops
+	if not waypoints or #waypoints == 0 then
+		return false
+	end
+
+	local elapsed = Workspace:GetServerTimeNow() - data.startTime
+	if elapsed < 0 then
+		elapsed = 0
+	end
+	local routeState = calculateRouteState(waypoints, data.walkSpeed, elapsed, poiStops)
+
+	local appliedWaypoints = waypoints
+	local appliedStartTime = data.startTime
+	local appliedRouteState = routeState
+	local snappedPos = snapPositionToGround(routeState.position, npc.lastGroundY or routeState.position.Y)
+
+	-- For despawn-route rewrites (evacuate/scatter), preserve current visual position
+	-- to avoid a visible pop when mode transition arrives over the network.
+	if poiStops == nil and routeState.state == "walking" then
+		local currentVisualPos = npc.model.PrimaryPart.Position
+		local snappedCurrentPos = snapPositionToGround(currentVisualPos, npc.lastGroundY or currentVisualPos.Y)
+		local adjustedWaypoints = table.clone(waypoints)
+		adjustedWaypoints[1] = snappedCurrentPos
+		appliedWaypoints = adjustedWaypoints
+		appliedStartTime = Workspace:GetServerTimeNow()
+		appliedRouteState = calculateRouteState(appliedWaypoints, data.walkSpeed, 0, nil)
+		snappedPos = snappedCurrentPos
+	end
+
+	npc.walkSpeed = data.walkSpeed
+	npc.waypoints = appliedWaypoints
+	npc.poiStops = poiStops
+	npc.startTime = appliedStartTime
+	npc.expectedDespawnTime = computeExpectedDespawnTimeFromData(data, appliedWaypoints, appliedStartTime)
+	npc.currentLeg = appliedRouteState.currentLeg
+	npc.legProgress = appliedRouteState.legProgress
+	npc.state = appliedRouteState.state
+	npc.nextPoiStopIdx = appliedRouteState.nextPoiStopIdx
+	npc.dwellEndTime = appliedRouteState.dwellEndTime or nil
+	npc.dwellFacingTarget = nil
+	npc.routeVersion = data.routeVersion or npc.routeVersion or 1
+	npc.lastGroundY = snappedPos.Y
+	npc.lastKnownPosition = snappedPos
+	npc.preSeatCFrame = nil
+	npc.seatTargetCFrame = nil
+
+	HeadLookController.stopScan(npc)
+	HeadLookController.reset(npc)
+	restorePartTransparencies(npc)
+	npc.fadeDirection = nil
+	npc.fadeProgress = 0
+
+	if appliedRouteState.state == "sitting" and appliedRouteState.seatCFrame then
+		npc.preSeatCFrame = CFrame.new(snappedPos)
+		npc.seatTargetCFrame = appliedRouteState.seatCFrame
+		npc.model.PrimaryPart.CFrame = appliedRouteState.seatCFrame
+	elseif appliedRouteState.state == "dwelling" then
+		if appliedRouteState.viewTarget then
+			local flatTarget = Vector3.new(appliedRouteState.viewTarget.X, snappedPos.Y, appliedRouteState.viewTarget.Z)
+			if (flatTarget - snappedPos).Magnitude > 0.01 then
+				npc.model.PrimaryPart.CFrame = CFrame.lookAt(snappedPos, flatTarget)
+			else
+				npc.model.PrimaryPart.CFrame = CFrame.new(snappedPos)
+			end
+		else
+			npc.model.PrimaryPart.CFrame = CFrame.new(snappedPos)
+		end
+		if appliedRouteState.scanTarget then
+			HeadLookController.startScan(npc, appliedRouteState.scanTarget, appliedRouteState.scanExtent or 2)
+		end
+	else
+		npc.model.PrimaryPart.CFrame = buildFacingCFrame(
+			snappedPos,
+			appliedRouteState.state,
+			appliedWaypoints,
+			appliedRouteState.currentLeg
+		)
+	end
+
+	applyAnimationForState(npc)
+	return true
+end
+
 local function restoreFromFarTier(npc)
 	HeadLookController.reset(npc)
 
@@ -392,18 +546,8 @@ local function restoreFromFarTier(npc)
 	npc.dwellEndTime = routeState.dwellEndTime or nil
 	npc.dwellFacingTarget = nil
 
-	local flatPos = routeState.position
-	local snappedY = npc.lastGroundY
-	if restoreRaycastParams then
-		local rayOrigin = flatPos + Vector3.new(0, Config.SnapRayOriginOffset, 0)
-		local rayDirection = Vector3.new(0, -Config.SnapRayLength, 0)
-		local hitResult = Workspace:Raycast(rayOrigin, rayDirection, restoreRaycastParams)
-		if hitResult then
-			snappedY = hitResult.Position.Y + Config.SnapHipOffset
-			npc.lastGroundY = snappedY
-		end
-	end
-	local snappedPos = Vector3.new(flatPos.X, snappedY, flatPos.Z)
+	local snappedPos = snapPositionToGround(routeState.position, npc.lastGroundY)
+	npc.lastGroundY = snappedPos.Y
 
 	if npc.model.PrimaryPart then
 		if routeState.state == "sitting" and routeState.seatCFrame then
@@ -426,7 +570,12 @@ local function restoreFromFarTier(npc)
 				HeadLookController.stopScan(npc)
 			end
 		else
-			npc.model.PrimaryPart.CFrame = CFrame.new(snappedPos)
+			npc.model.PrimaryPart.CFrame = buildFacingCFrame(
+				snappedPos,
+				routeState.state,
+				npc.waypoints,
+				routeState.currentLeg
+			)
 			npc.preSeatCFrame = nil
 			npc.seatTargetCFrame = nil
 			HeadLookController.stopScan(npc)
@@ -436,7 +585,7 @@ local function restoreFromFarTier(npc)
 	npc.lastKnownPosition = snappedPos
 end
 
-local function applyAnimationForState(npc)
+applyAnimationForState = function(npc)
 	if not lodRuntimeEnabled or LODController.shouldAnimate(npc.lodTier) then
 		if npc.state == "sitting" then
 			NPCAnimator.playSit(npc)
@@ -667,52 +816,23 @@ local function prewarmModelPool(modelsFolder: Folder)
 	end
 end
 
-local function computeExpectedDespawnTimeFromData(data): number
-	local waypoints = data.waypoints
-	local poiStops = data.poiStops
-	local walkTime = 0
-	local totalDistance = routeDistance(waypoints)
-	local socialTravelDistance = socialSeatTravelDistance(waypoints, poiStops)
-	totalDistance += socialTravelDistance
-	if data.walkSpeed > 0 then
-		walkTime = totalDistance / data.walkSpeed
-	end
-	local totalDwellTime = 0
-	for _, poi in ipairs(poiStops or {}) do
-		totalDwellTime += poi.dwellTime
-	end
-	return data.startTime + walkTime + totalDwellTime + Config.ClientDespawnBuffer
-end
-
-local function applySpawnDataToExistingNPC(npc, data): boolean
-	if not npc or not npc.model or not npc.model.PrimaryPart then
-		return false
-	end
-
-	npc.walkSpeed = data.walkSpeed
-	npc.waypoints = data.waypoints
-	npc.poiStops = data.poiStops
-	npc.startTime = data.startTime
-	npc.expectedDespawnTime = computeExpectedDespawnTimeFromData(data)
-	npc.modelName = data.modelName or npc.modelName
-	npc.fadeDirection = nil
-	npc.fadeProgress = 0
-	restorePartTransparencies(npc)
-
-	restoreFromFarTier(npc)
-	applyAnimationForState(npc)
-	return true
-end
-
 local function spawnNPCFromData(data, modelsFolder: Folder)
-	local waypoints = data.waypoints
-	local poiStops = data.poiStops
+	local incomingRouteVersion = data.routeVersion or 1
 	local existingNpc = activeNPCs[data.id]
-	if existingNpc and applySpawnDataToExistingNPC(existingNpc, data) then
-		return
+	if existingNpc then
+		local currentRouteVersion = existingNpc.routeVersion or 1
+		if incomingRouteVersion < currentRouteVersion then
+			return
+		end
+		if applySpawnDataToExistingNPC(existingNpc, data) then
+			return
+		end
 	end
 
 	removeNPC(data.id)
+
+	local waypoints = data.waypoints
+	local poiStops = data.poiStops
 
 	local poolEntry = nil
 	local resolvedModelName = data.modelName
@@ -771,7 +891,13 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 	end
 
 	local routeState = calculateRouteState(waypoints, data.walkSpeed, elapsed, poiStops)
-	clonedModel.PrimaryPart.CFrame = CFrame.new(routeState.position)
+	local spawnPosition = snapPositionToGround(routeState.position, routeState.position.Y)
+	clonedModel.PrimaryPart.CFrame = buildFacingCFrame(
+		spawnPosition,
+		routeState.state,
+		waypoints,
+		routeState.currentLeg
+	)
 	if activeNPCsFolderRef then
 		clonedModel.Parent = activeNPCsFolderRef
 	end
@@ -790,7 +916,7 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 		waypoints = waypoints,
 		currentLeg = routeState.currentLeg,
 		legProgress = routeState.legProgress,
-		lastGroundY = routeState.position.Y,
+		lastGroundY = spawnPosition.Y,
 		expectedDespawnTime = expectedDespawnTime,
 		animator = animator,
 		walkTrack = walkTrack,
@@ -810,7 +936,7 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 		movePhase = math.random(0, maxMovePhase - 1),
 		moveAccum = 0,
 		raycastPhase = math.random(0, maxPhase - 1),
-		lastKnownPosition = routeState.position,
+		lastKnownPosition = spawnPosition,
 		fadeDirection = nil,
 		fadeProgress = 0,
 		partTransparencies = nil,
@@ -820,11 +946,12 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 			headLookEndTime = 0,
 			headLookAlpha = 0,
 			headLookNextCheckTime = 0,
-			scanActive = false,
-			scanTarget = nil,
-			scanExtent = nil,
-			scanTime = 0,
-			baseParts = baseParts,
+		scanActive = false,
+		scanTarget = nil,
+		scanExtent = nil,
+		scanTime = 0,
+		baseParts = baseParts,
+		routeVersion = incomingRouteVersion,
 		}
 	HeadLookController.init(npc, modelData.neckMotor, modelData.neckOriginalC0)
 
@@ -849,13 +976,13 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 		npc.dwellEndTime = routeState.dwellEndTime
 	end
 	if routeState.state == "sitting" and routeState.seatCFrame then
-		npc.preSeatCFrame = CFrame.new(routeState.position)
+		npc.preSeatCFrame = CFrame.new(spawnPosition)
 		npc.seatTargetCFrame = routeState.seatCFrame
 		npc.model.PrimaryPart.CFrame = routeState.seatCFrame
 		applyAnimationForState(npc)
 	elseif routeState.state == "dwelling" then
 		if routeState.viewTarget then
-			local pos = routeState.position
+			local pos = spawnPosition
 			local flatTarget = Vector3.new(routeState.viewTarget.X, pos.Y, routeState.viewTarget.Z)
 			if (flatTarget - pos).Magnitude > 0.01 then
 				npc.model.PrimaryPart.CFrame = CFrame.lookAt(pos, flatTarget)
@@ -975,27 +1102,12 @@ local function beginFadeOut(npc)
 	diagnostics(string.format("[WanderingProps] FADE_OUT_START %s duration=%.2f", npc.id, Config.DespawnFadeDuration))
 end
 
-local function clearAllClientNPCs()
-	pendingSpawnOps = {}
-	pendingSpawnOpsHead = 1
-	pendingDespawnOps = {}
-	pendingDespawnOpsHead = 1
-
-	local ids = {}
-	for id in pairs(activeNPCs) do
-		table.insert(ids, id)
-	end
-	for _, id in ipairs(ids) do
-		removeNPC(id)
-	end
-end
-
 local function startup()
 	local remotesFolder = ReplicatedStorage:WaitForChild("WanderingPropsRemotes")
 	local npcSpawnedRemote = remotesFolder:WaitForChild(Remotes.NPCSpawned)
 	local npcDespawnedRemote = remotesFolder:WaitForChild(Remotes.NPCDespawned)
 	local npcBulkSyncRemote = remotesFolder:WaitForChild(Remotes.NPCBulkSync)
-	local npcDesyncRemote = remotesFolder:WaitForChild(Remotes.NPCDesync)
+	local npcDesyncRemote = remotesFolder:WaitForChild(Remotes.NPCDesync, 10)
 
 	local wanderingFolder = Workspace:WaitForChild("WanderingProps")
 	local waypointsFolder = wanderingFolder:WaitForChild("Waypoints")
@@ -1054,17 +1166,16 @@ local function startup()
 		queueSpawnPayload(entries)
 	end)
 
-	npcDesyncRemote.OnClientEvent:Connect(function(state)
-		local shouldDesync = state == true
-		if shouldDesync then
-			desynced = true
-			clearAllClientNPCs()
-			diagnostics("[WanderingProps] CLIENT_DESYNC state=true")
-		else
-			desynced = false
-			diagnostics("[WanderingProps] CLIENT_DESYNC state=false")
-		end
-	end)
+	if npcDesyncRemote and npcDesyncRemote:IsA("RemoteEvent") then
+		npcDesyncRemote.OnClientEvent:Connect(function(isDesynced: boolean)
+			if isDesynced then
+				desynced = true
+				clearAllClientNPCs()
+			else
+				desynced = false
+			end
+		end)
+	end
 
 	RunService.Heartbeat:Connect(function(dt)
 		processPendingEventOps(modelsFolder)

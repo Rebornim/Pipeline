@@ -32,6 +32,9 @@ Run this every time before your first `start_playtest` in a session. Catches Roj
 
 You have access to Roblox Studio via the `robloxstudio-mcp` server. After writing code for each build step:
 
+0. **Clear stale test session first:** Call `stop_playtest` once before `start_playtest`.  
+   - If it returns **"No test is currently running"**, continue normally.  
+   - This prevents overlap with any manual/user playtest still running in Studio.
 1. **Checkpoint:** `git add -A && git commit -m "checkpoint: pass N step [name] pre-test"`
 2. **Test:** `start_playtest` → wait for marker → `get_playtest_output` once → `stop_playtest`
 3. **Read AI build prints.** The `[TAG] key=value` lines tell you what ran and what failed.

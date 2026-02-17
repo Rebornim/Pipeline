@@ -304,3 +304,63 @@ Re-run from previous passes:
 - **Test 17: LOD + POI State Consistency**
 - **Test 25: Social POI with Internal Waypoints**
 - **Test 27: Backward Compatibility — POIs Without Internal Features**
+
+---
+
+## Pass 8: External Behavior API (v2 — Redesign)
+
+### Test 36: Pause Mode — Spawning Stops, NPCs Finish Naturally
+- **Setup:** MaxPopulation = 10, NPCs walking routes. Config: ModeRetriggerCooldown = 2, DiagnosticsEnabled = true.
+- **Action:** Wait for 10 NPCs to be active. External script calls `WanderingPropsAPI.SetMode("pause", 30)`.
+- **Expected:** No new NPCs spawn. Existing NPCs continue walking their routes and despawn normally at route endpoints. Population drops to 0 over time. After 30s, spawning resumes.
+- **Pass condition:** `[P8_TEST] MODE_CHANGE to=pause`, `[P8_TEST] SPAWN_PAUSED state=true`. No new `[WanderingProps] SPAWN` during pause. After 30s: `[P8_TEST] MODE_EXPIRE mode=pause`, `[P8_TEST] MODE_CHANGE to=normal`. **No NPC jumps or teleports.**
+
+### Test 37: Evacuate Mode — Drain Clears Area
+- **Setup:** MaxPopulation = 10, NPCs walking routes. Config: EvacDrainBatchSize = 3, EvacDrainCheckInterval = 2, DiagnosticsEnabled = true.
+- **Action:** External script calls `WanderingPropsAPI.SetMode("evacuate", 60)`.
+- **Expected:** No new spawns. Drain loop trims 3 NPCs per cycle every 2s. NPCs get shortened routes to despawn. Active count drops to 0.
+- **Pass condition:** `[P8_TEST] MODE_CHANGE to=evacuate`, `[P8_TEST] MODE_DRAIN` logs every ~2s with `trimmed=3`. Active count reaches 0. **No NPC jumps or teleports** — NPCs walk shortened routes smoothly.
+
+### Test 38: Scatter Mode — Fast Drain Clears Area Quickly
+- **Setup:** MaxPopulation = 10, NPCs walking routes. Config: ScatterDrainBatchSize = 8, ScatterDrainCheckInterval = 1, DiagnosticsEnabled = true.
+- **Action:** External script calls `WanderingPropsAPI.SetMode("scatter", 60)`.
+- **Expected:** Same as evacuate but clears faster. Drain trims 8 per cycle every 1s. Area clears in ~2-3 cycles.
+- **Pass condition:** `[P8_TEST] MODE_DRAIN` shows `trimmed=8` (or remaining count). Active count reaches 0 noticeably faster than evacuate. **No NPC jumps or teleports.**
+
+### Test 39: Mode Priority Override
+- **Setup:** NPCs active. Config: DiagnosticsEnabled = true.
+- **Action:** Call `SetMode("pause", 60)`, then call `SetMode("scatter", 30)`.
+- **Expected:** Scatter overrides pause (priority 30 > 10). Drain activates. After scatter expires (30s), falls back to pause (no drain, just paused spawning). After pause expires, returns to normal.
+- **Pass condition:** `[P8_TEST] MODE_CHANGE to=pause`, then `[P8_TEST] MODE_CHANGE to=scatter`. After 30s: `[P8_TEST] MODE_CHANGE to=pause`. After 60s total: `[P8_TEST] MODE_CHANGE to=normal`.
+
+### Test 40: Debounce Re-trigger
+- **Setup:** Config: ModeRetriggerCooldown = 2, DiagnosticsEnabled = true.
+- **Action:** Call `SetMode("scatter", 30)`. Wait 0.5s. Call `SetMode("scatter", 30)` again.
+- **Expected:** Second call is ignored (within 2s debounce window).
+- **Pass condition:** `[P8_TEST] MODE_DEBOUNCE mode=scatter` logged on second call. Only one `[P8_TEST] MODE_SET` logged total.
+
+### Test 41: Client Desync/Resync
+- **Setup:** MaxPopulation = 10, NPCs visible on client. Config: DiagnosticsEnabled = true.
+- **Action:** Call `WanderingPropsAPI.DesyncPlayer(player)`. Wait 5s. Call `WanderingPropsAPI.ResyncPlayer(player)`.
+- **Expected:** On desync: all NPCs disappear from that client immediately. Server continues normally. On resync: NPCs reappear via bulk sync.
+- **Pass condition:** `[P8_TEST] DESYNC` logged. Client NPC count drops to 0. `[P8_TEST] RESYNC` logged. Client NPC count matches server active count after bulk sync.
+
+### Test 42: No Regression When API Unused
+- **Setup:** No script requires WanderingPropsAPI. MaxPopulation = 10. Run all Pass 1-7 golden test scenarios.
+- **Expected:** Behavior identical to Pass 7. PopulationHooks defaults have zero effect.
+- **Pass condition:** All existing golden tests pass without change.
+
+### Regression Tests
+Re-run from previous passes:
+- **Test 1: Basic Spawn-Walk-Despawn Cycle**
+- **Test 2: Late-Join Sync**
+- **Test 4: Scenic POI Visit**
+- **Test 5: Social POI Sit and Walk In/Out**
+- **Test 9: Zone Waypoint Variation**
+- **Test 11: Clock-Based Day/Night Hook**
+- **Test 15: LOD Tier Visual Transitions**
+- **Test 16: Model Pool Reuse**
+- **Test 17: LOD + POI State Consistency**
+- **Test 25: Social POI with Internal Waypoints**
+- **Test 27: Backward Compatibility — POIs Without Internal Features**
+- **Test 30: Market POI Basic Flow**

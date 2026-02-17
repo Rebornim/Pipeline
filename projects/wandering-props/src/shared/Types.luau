@@ -68,8 +68,11 @@ export type BehaviorMode = {
 	name: string,
 	priority: number,
 	spawnPaused: boolean,
-	speedMultiplier: number,
-	rerouteToNearest: boolean,
+	populationOverride: number?,
+	drainEnabled: boolean,
+	drainBatchSize: number,
+	drainCheckInterval: number,
+	rerouteSpeedMultiplier: number?,
 }
 
 export type ActiveMode = {
@@ -95,11 +98,13 @@ export type NPCSpawnData = {
 	waypoints: { Vector3 },
 	startTime: number,
 	poiStops: { POIStopData }?,
+	routeVersion: number?,
 }
 
 export type NPCRecord = {
 	id: string,
 	modelName: string,
+	baseWalkSpeed: number?,
 	walkSpeed: number,
 	waypoints: { Vector3 },
 	startTime: number,
@@ -153,6 +158,7 @@ export type NPCState = {
 	scanTarget: Vector3?,
 	scanExtent: number?,
 	scanTime: number,
+	routeVersion: number?,
 }
 
 return nil

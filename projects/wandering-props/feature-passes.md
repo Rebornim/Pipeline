@@ -147,6 +147,25 @@ NPCs browse marketplace stands naturally. They enter a market, wander between st
 
 ---
 
+## Pass 8 (Candidate): External Behavior API
+**Depends on:** Pass 4 (spawn queues, batch remotes), Pass 7 (market claims)
+**What it includes:**
+- **New public API module: `WanderingPropsAPI`** — the only surface other game systems interact with
+- **Priority-based behavior modes:** Normal (0), Pause (10), Evacuate (20), Scatter (30). Higher priority overrides lower. Only one mode active at a time.
+- **Mode effects (v2 — simplified):** spawn pausing, population cap override, incremental drain rate control. Modes never modify in-flight NPC routes or speed — drain uses the existing `trimRouteForNightDrain` function incrementally.
+- **Built-in debounce:** re-triggers of the same mode within `ModeRetriggerCooldown` are silently ignored (cheap — one number comparison)
+- **Mode expiry with fallback:** modes have a duration. When the highest-priority mode expires, system falls back to next highest active mode, or normal.
+- **Scatter = fast incremental drain** (batch 8, check every 1s) vs evacuate = normal drain (batch 3, check every 2s). No in-flight speed changes.
+- **Per-player client desync:** server stops sending NPC data to a specific player. Client wipes all NPCs instantly. Resync sends a bulk sync to repopulate.
+- **Shared state module: `PopulationHooks`** — bridges API module and PopulationController (avoids require-cycle since server scripts can't be required)
+- **One new RemoteEvent:** `NPCDesync` (desync/resync toggle per player)
+- Config additions: `ModeRetriggerCooldown`, `EvacDrainBatchSize`, `EvacDrainCheckInterval`, `ScatterDrainBatchSize`, `ScatterDrainCheckInterval`
+
+**After this pass, the system:**
+Other game systems can tell NPCs what to do. A gunshot triggers scatter mode — spawning pauses and NPCs drain to despawn points in large batches, clearing the area quickly. A cutscene triggers pause mode — no new NPCs spawn but current ones finish naturally. A performance spike triggers client desync — that player's NPC rendering stops entirely until resynced. Modes stack by priority so a scatter during a pause still scatters. Everything has built-in debounce so rapid re-triggers are free. No timeline instability — modes never modify in-flight NPC routes or speed.
+
+---
+
 ## Feature Coverage Check
 
 All features from idea-locked.md assigned (Passes 1-4). Pass 5 extends beyond the original spec:
@@ -188,3 +207,4 @@ All features from idea-locked.md assigned (Passes 1-4). Pass 5 extends beyond th
 | Scenic stand point collections | 6 |
 | No-main-waypoint POI authoring | 6 |
 | Market POI type (stands, browsing, head scanning) | 7 (candidate) |
+| External behavior API (modes, client desync) | 8 (candidate) |

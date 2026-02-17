@@ -36,7 +36,6 @@ local zoneRoutesTotal = 0
 local npcSpawnedRemote
 local npcDespawnedRemote
 local npcBulkSyncRemote
-local npcDesyncRemote
 
 local graph
 local poiRegistry = nil
@@ -180,7 +179,6 @@ local function setupRemotes()
 	npcSpawnedRemote = createRemoteEvent(remotesFolder, Remotes.NPCSpawned)
 	npcDespawnedRemote = createRemoteEvent(remotesFolder, Remotes.NPCDespawned)
 	npcBulkSyncRemote = createRemoteEvent(remotesFolder, Remotes.NPCBulkSync)
-	npcDesyncRemote = createRemoteEvent(remotesFolder, Remotes.NPCDesync)
 end
 
 local function isEventBatchingEnabled(): boolean
@@ -316,6 +314,11 @@ local function isNightNow(): boolean
 end
 
 local function getEffectiveMaxPopulation(): number
+	local modeOverride = PopulationHooks.populationOverride
+	if modeOverride ~= nil then
+		return math.max(0, math.floor(modeOverride))
+	end
+
 	local isNight = isNightNow()
 
 	if isNight ~= lastIsNightState then
@@ -408,6 +411,7 @@ local function makeSpawnData(record)
 		waypoints = record.waypoints,
 		startTime = record.startTime,
 		poiStops = record.poiStops,
+		routeVersion = record.routeVersion,
 	}
 end
 
@@ -496,11 +500,11 @@ local function despawnNPC(id: string)
 	activeCount -= 1
 	npcsDespawnedTotal += 1
 
-	if Config.RecycleNPCsEnabled and spawnNPC then
+	if Config.RecycleNPCsEnabled and spawnNPC and not PopulationHooks.spawnPaused then
 		queueRecycleRequest({
 			reuseId = id,
 			model = record.modelTemplate,
-			baseWalkSpeed = record.baseWalkSpeed or record.walkSpeed,
+			walkSpeed = record.baseWalkSpeed or record.walkSpeed,
 			routeVersion = (record.routeVersion or 1) + 1,
 		}, Config.RecycleRespawnDelayMin, Config.RecycleRespawnDelayMax)
 		queueDespawnBroadcast(id)
@@ -721,14 +725,29 @@ local function scheduleNPCDespawn(record, duration: number)
 	end)
 end
 
-local function findNearestNodeIdFromPosition(position: Vector3): string?
+local function findNearestNodeIdFromPosition(position: Vector3, preferredForward: Vector3?): string?
+	local hasPreferredForward = preferredForward ~= nil and preferredForward.Magnitude > 0.001
+	local forward = if hasPreferredForward then preferredForward.Unit else nil
 	local nearestId = nil
-	local nearestDist = math.huge
+	local bestScore = math.huge
 	for nodeId, node in pairs(graph.nodes) do
 		if node then
-			local dist = (node.position - position).Magnitude
-			if dist < nearestDist then
-				nearestDist = dist
+			local delta = node.position - position
+			local dist = delta.Magnitude
+			local score = dist
+			if forward then
+				local flatDelta = Vector3.new(delta.X, 0, delta.Z)
+				if flatDelta.Magnitude > 0.01 then
+					local dir = flatDelta.Unit
+					local alignment = dir:Dot(forward)
+					-- Penalize nodes behind current movement heading to avoid instant 180 reroute pivots.
+					if alignment < 0 then
+						score += (-alignment) * 6
+					end
+				end
+			end
+			if score < bestScore then
+				bestScore = score
 				nearestId = nodeId
 			end
 		end
@@ -752,8 +771,8 @@ local function findNearestDespawnIdFromPosition(position: Vector3): string?
 	return nearestId
 end
 
-local function rerouteRecordToNearestDespawn(record, now: number, reason: string): boolean
-	if not record or not record.waypoints or #record.waypoints < 1 then
+local function rerouteRecordToNearestDespawn(record, now: number, speedMultiplier: number?): boolean
+	if not record or record.nightDrainApplied or not record.waypoints or #record.waypoints < 1 then
 		return false
 	end
 
@@ -762,10 +781,17 @@ local function rerouteRecordToNearestDespawn(record, now: number, reason: string
 	if routeState.state == "sitting" or routeState.state == "finished" then
 		return false
 	end
-	local currentPosition = routeState.position
-	local startNodeId = findNearestNodeIdFromPosition(currentPosition)
-	local despawnId = findNearestDespawnIdFromPosition(currentPosition)
 
+	local currentPosition = routeState.position
+	local preferredForward = nil
+	if routeState.currentLeg and routeState.currentLeg < #record.waypoints then
+		local toward = record.waypoints[routeState.currentLeg + 1] - currentPosition
+		if toward.Magnitude > 0.01 then
+			preferredForward = Vector3.new(toward.X, 0, toward.Z)
+		end
+	end
+	local startNodeId = findNearestNodeIdFromPosition(currentPosition, preferredForward)
+	local despawnId = findNearestDespawnIdFromPosition(currentPosition)
 	if not startNodeId or not despawnId then
 		return false
 	end
@@ -780,6 +806,7 @@ local function rerouteRecordToNearestDespawn(record, now: number, reason: string
 	if #newWaypoints == 0 then
 		return false
 	end
+
 	if (newWaypoints[1] - currentPosition).Magnitude > 0.01 then
 		table.insert(newWaypoints, 1, currentPosition)
 	else
@@ -804,6 +831,9 @@ local function rerouteRecordToNearestDespawn(record, now: number, reason: string
 	record.marketStandClaims = nil
 	record.poiStops = nil
 	record.waypoints = newWaypoints
+	local baseWalkSpeed = math.max(0.1, record.baseWalkSpeed or record.walkSpeed)
+	record.baseWalkSpeed = baseWalkSpeed
+	record.walkSpeed = math.max(0.1, baseWalkSpeed * math.max(0.1, speedMultiplier or 1.0))
 	record.startTime = now
 	record.nightDrainApplied = true
 	record.routeVersion = (record.routeVersion or 1) + 1
@@ -817,12 +847,22 @@ local function rerouteRecordToNearestDespawn(record, now: number, reason: string
 	queueSpawnBroadcast(makeSpawnData(record))
 
 	diagnostics(string.format(
-		"[WanderingProps] REROUTE_%s %s legs=%d",
-		reason,
+		"[WanderingProps] MODE_REROUTE %s legs=%d",
 		record.id,
 		math.max(0, #newWaypoints - 1)
 	))
 	return true
+end
+
+local function rerouteAllToNearestDespawn(speedMultiplier: number?): number
+	local now = Workspace:GetServerTimeNow()
+	local rerouted = 0
+	for _, record in pairs(activeNPCs) do
+		if rerouteRecordToNearestDespawn(record, now, speedMultiplier) then
+			rerouted += 1
+		end
+	end
+	return rerouted
 end
 
 local function trimRouteForNightDrain(record, now: number): boolean
@@ -912,11 +952,7 @@ local function trimRouteForNightDrain(record, now: number): boolean
 	return true
 end
 
-local function applyNightDrain(now: number)
-	if not Config.NightDrainEnabled or not isNightNow() then
-		return
-	end
-
+local function applyDrainBatch(now: number, batchSize: number, diagnosticTag: string)
 	local effectiveMax = getEffectiveMaxPopulation()
 	local excess = activeCount - effectiveMax
 	if excess <= 0 then
@@ -936,8 +972,7 @@ local function applyNightDrain(now: number)
 		return a.remaining > b.remaining
 	end)
 
-	local batchSize = math.max(1, math.floor(Config.NightDrainBatchSize))
-	local target = math.min(excess, batchSize)
+	local target = math.min(excess, math.max(1, math.floor(batchSize)))
 	local drained = 0
 	for _, candidate in ipairs(candidates) do
 		if drained >= target then
@@ -950,13 +985,21 @@ local function applyNightDrain(now: number)
 
 	if drained > 0 then
 		diagnostics(string.format(
-			"[WanderingProps] NIGHT_DRAIN trimmed=%d excess=%d active=%d target=%d",
+			"[WanderingProps] %s trimmed=%d excess=%d active=%d target=%d",
+			diagnosticTag,
 			drained,
 			excess,
 			activeCount,
 			effectiveMax
 		))
 	end
+end
+
+local function applyNightDrain(now: number)
+	if not Config.NightDrainEnabled or not isNightNow() then
+		return
+	end
+	applyDrainBatch(now, math.max(1, math.floor(Config.NightDrainBatchSize)), "NIGHT_DRAIN")
 end
 
 local function expandSocialInternalWaypoints(
@@ -1382,17 +1425,15 @@ spawnNPC = function(options)
 		model = pickRandomModel()
 	end
 
-	local baseWalkSpeed = nil
-	if options and options.baseWalkSpeed ~= nil then
-		baseWalkSpeed = math.max(0.1, options.baseWalkSpeed)
-	elseif options and options.walkSpeed ~= nil then
-		baseWalkSpeed = math.max(0.1, options.walkSpeed)
+	local walkSpeed = nil
+	if options and options.walkSpeed ~= nil then
+		walkSpeed = math.max(0.1, options.walkSpeed)
 	else
 		local walkVariation = math.abs(Config.WalkSpeedVariation or 0)
 		local sampledWalkSpeed = Config.BaseWalkSpeed + rng:NextNumber(-walkVariation, walkVariation)
-		baseWalkSpeed = math.max(0.1, sampledWalkSpeed)
+		walkSpeed = math.max(0.1, sampledWalkSpeed)
 	end
-	local walkSpeed = baseWalkSpeed * math.max(0.1, PopulationHooks.walkSpeedMultiplier or 1.0)
+	local baseWalkSpeed = walkSpeed
 
 	local id = nil
 	if options and options.reuseId then
@@ -1992,21 +2033,21 @@ spawnNPC = function(options)
 		totalDuration += totalDistance / walkSpeed
 	end
 
-		local record = {
-			id = id,
-			modelName = model.Name,
-			modelTemplate = model,
+	local record = {
+		id = id,
+		modelName = model.Name,
+		modelTemplate = model,
 		baseWalkSpeed = baseWalkSpeed,
 		walkSpeed = walkSpeed,
 		waypoints = waypoints,
 		startTime = startTime,
-			totalDuration = totalDuration,
-			poiStops = poiStops,
-			seatClaims = seatClaims,
-			marketStandClaims = marketStandClaims,
-			nightDrainApplied = false,
-			routeVersion = routeVersion,
-		}
+		totalDuration = totalDuration,
+		poiStops = poiStops,
+		seatClaims = seatClaims,
+		marketStandClaims = marketStandClaims,
+		nightDrainApplied = false,
+		routeVersion = routeVersion,
+	}
 
 	activeNPCs[id] = record
 	activeCount += 1
@@ -2054,52 +2095,6 @@ spawnNPC = function(options)
 	return true
 end
 
-local function rebroadcastAllSpeeds(multiplier: number)
-	local appliedMultiplier = math.max(0.1, multiplier or 1.0)
-	PopulationHooks.walkSpeedMultiplier = appliedMultiplier
-
-	local affected = 0
-	for _, record in pairs(activeNPCs) do
-		local base = math.max(0.1, record.baseWalkSpeed or record.walkSpeed or Config.BaseWalkSpeed)
-		record.baseWalkSpeed = base
-		record.walkSpeed = base * appliedMultiplier
-		queueSpawnBroadcast(makeSpawnData(record))
-		affected += 1
-	end
-
-	print(string.format("[P8_TEST] SPEED_MULTIPLIER value=%.2f affected=%d", appliedMultiplier, affected))
-	diagnostics(string.format("[WanderingProps] SPEED_MULTIPLIER value=%.2f", appliedMultiplier))
-end
-
-local function rerouteAllToNearestDespawn()
-	local now = Workspace:GetServerTimeNow()
-	local rerouted = 0
-	for _, record in pairs(activeNPCs) do
-		if rerouteRecordToNearestDespawn(record, now, "MODE") then
-			rerouted += 1
-		end
-	end
-
-	print(string.format("[P8_TEST] REROUTE_ALL count=%d", rerouted))
-	diagnostics(string.format("[WanderingProps] REROUTE_ALL count=%d", rerouted))
-end
-
-local function sendBulkSyncToPlayer(player: Player): number
-	if not player then
-		return 0
-	end
-	if PopulationHooks.desyncedPlayers[player] then
-		return 0
-	end
-
-	local bulk = {}
-	for _, record in pairs(activeNPCs) do
-		table.insert(bulk, makeSpawnData(record))
-	end
-	npcBulkSyncRemote:FireClient(player, bulk)
-	return #bulk
-end
-
 local function processSpawnDespawnQueues()
 	local despawnBudget = math.max(1, math.floor(Config.DespawnOpsPerHeartbeat or 8))
 	local spawnBudget = math.max(1, math.floor(Config.SpawnOpsPerHeartbeat or 4))
@@ -2122,11 +2117,15 @@ local function processSpawnDespawnQueues()
 		queuedDespawnHead = 1
 	end
 
+	if PopulationHooks.spawnPaused then
+		queuedSpawnRequests = 0
+		queuedRecycleRequests = {}
+		queuedRecycleHead = 1
+		return
+	end
+
 	local spawnProcessed = 0
 	while spawnProcessed < spawnBudget and os.clock() <= spawnBuildDeadline do
-		if PopulationHooks.spawnPaused then
-			break
-		end
 		if activeCount >= getEffectiveMaxPopulation() then
 			break
 		end
@@ -2145,7 +2144,7 @@ local function processSpawnDespawnQueues()
 				local recycled = spawnNPC({
 					reuseId = recycleRequest.reuseId,
 					model = recycleRequest.model,
-					baseWalkSpeed = recycleRequest.baseWalkSpeed or recycleRequest.walkSpeed,
+					walkSpeed = recycleRequest.walkSpeed,
 					routeVersion = recycleRequest.routeVersion,
 				})
 				if recycled then
@@ -2186,6 +2185,23 @@ local function processSpawnDespawnQueues()
 		queuedRecycleRequests = {}
 		queuedRecycleHead = 1
 	end
+end
+
+local function sendBulkSyncToPlayer(player: Player): number
+	if not player then
+		return 0
+	end
+	if PopulationHooks.desyncedPlayers[player] then
+		return 0
+	end
+
+	local bulk = {}
+	for _, record in pairs(activeNPCs) do
+		table.insert(bulk, makeSpawnData(record))
+	end
+
+	npcBulkSyncRemote:FireClient(player, bulk)
+	return #bulk
 end
 
 local function onPlayerAdded(player: Player)
@@ -2335,9 +2351,8 @@ local function startup()
 
 	setupRemotes()
 	nextEventFlushAt = Workspace:GetServerTimeNow()
-	PopulationHooks.rerouteAllToNearestDespawn = rerouteAllToNearestDespawn
-	PopulationHooks.rebroadcastAllSpeeds = rebroadcastAllSpeeds
 	PopulationHooks.sendBulkSyncToPlayer = sendBulkSyncToPlayer
+	PopulationHooks.rerouteAllToNearestDespawn = rerouteAllToNearestDespawn
 
 	local edgeCount = 0
 	local nodeCount = 0

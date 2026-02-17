@@ -15,35 +15,51 @@ local MODE_DEFS = {
 		name = "normal",
 		priority = 0,
 		spawnPaused = false,
-		speedMultiplier = 1.0,
+		populationOverride = nil,
+		drainEnabled = false,
+		drainBatchSize = 0,
+		drainCheckInterval = 0,
 		rerouteToNearest = false,
+		rerouteSpeedMultiplier = nil,
 	},
 	pause = {
 		name = "pause",
 		priority = 10,
 		spawnPaused = true,
-		speedMultiplier = 1.0,
+		populationOverride = nil,
+		drainEnabled = false,
+		drainBatchSize = 0,
+		drainCheckInterval = 0,
 		rerouteToNearest = false,
+		rerouteSpeedMultiplier = nil,
 	},
 	evacuate = {
 		name = "evacuate",
 		priority = 20,
 		spawnPaused = true,
-		speedMultiplier = Config.EvacuateSpeedMultiplier,
+		populationOverride = 0,
+		drainEnabled = false,
+		drainBatchSize = 0,
+		drainCheckInterval = 0,
 		rerouteToNearest = true,
+		rerouteSpeedMultiplier = math.max(0.1, Config.EvacuateRerouteSpeedMultiplier or 1.0),
 	},
 	scatter = {
 		name = "scatter",
 		priority = 30,
 		spawnPaused = true,
-		speedMultiplier = Config.ScatterSpeedMultiplier,
+		populationOverride = 0,
+		drainEnabled = false,
+		drainBatchSize = 0,
+		drainCheckInterval = 0,
 		rerouteToNearest = true,
+		rerouteSpeedMultiplier = math.max(0.1, Config.ScatterRerouteSpeedMultiplier or 1.0),
 	},
 }
 
 local activeModes = {}
 local currentModeName = "normal"
-local desyncRemote: RemoteEvent? = nil
+local npcDesyncRemote: RemoteEvent? = nil
 
 local function diagnostics(message: string)
 	if Config.DiagnosticsEnabled then
@@ -52,8 +68,8 @@ local function diagnostics(message: string)
 end
 
 local function ensureDesyncRemote(): RemoteEvent
-	if desyncRemote and desyncRemote.Parent then
-		return desyncRemote
+	if npcDesyncRemote and npcDesyncRemote.Parent then
+		return npcDesyncRemote
 	end
 
 	local remotesFolder = ReplicatedStorage:FindFirstChild("WanderingPropsRemotes")
@@ -65,35 +81,30 @@ local function ensureDesyncRemote(): RemoteEvent
 
 	local existing = remotesFolder:FindFirstChild(Remotes.NPCDesync)
 	if existing and existing:IsA("RemoteEvent") then
-		desyncRemote = existing
-		return desyncRemote
+		npcDesyncRemote = existing
+		return npcDesyncRemote
 	end
 	if existing then
 		existing:Destroy()
 	end
 
-	desyncRemote = Instance.new("RemoteEvent")
-	desyncRemote.Name = Remotes.NPCDesync
-	desyncRemote.Parent = remotesFolder
-	return desyncRemote
+	npcDesyncRemote = Instance.new("RemoteEvent")
+	npcDesyncRemote.Name = Remotes.NPCDesync
+	npcDesyncRemote.Parent = remotesFolder
+	return npcDesyncRemote
 end
 
-local function applyMode(modeName: string, previousModeName: string)
-	local modeDef = MODE_DEFS[modeName] or MODE_DEFS.normal
-	local previousDef = MODE_DEFS[previousModeName] or MODE_DEFS.normal
-
+local function applyModeDefinition(modeDef, previousModeDef)
 	PopulationHooks.spawnPaused = modeDef.spawnPaused
-	PopulationHooks.walkSpeedMultiplier = math.max(0.1, modeDef.speedMultiplier or 1.0)
-	print(string.format("[P8_TEST] SPAWN_PAUSED state=%s", tostring(PopulationHooks.spawnPaused)))
-	diagnostics(string.format("[WanderingProps] SPAWN_PAUSED state=%s", tostring(PopulationHooks.spawnPaused)))
+	PopulationHooks.populationOverride = modeDef.populationOverride
+	PopulationHooks.drainEnabled = modeDef.drainEnabled
+	PopulationHooks.drainBatchSize = modeDef.drainBatchSize
+	PopulationHooks.drainCheckInterval = modeDef.drainCheckInterval
 
-	if PopulationHooks.rebroadcastAllSpeeds then
-		PopulationHooks.rebroadcastAllSpeeds(PopulationHooks.walkSpeedMultiplier)
-	end
-
-	if modeDef.rerouteToNearest and not previousDef.rerouteToNearest then
+	if modeDef.rerouteToNearest and (not previousModeDef or not previousModeDef.rerouteToNearest) then
 		if PopulationHooks.rerouteAllToNearestDespawn then
-			PopulationHooks.rerouteAllToNearestDespawn()
+			local speedMultiplier = math.max(0.1, modeDef.rerouteSpeedMultiplier or 1.0)
+			PopulationHooks.rerouteAllToNearestDespawn(speedMultiplier)
 		end
 	end
 end
@@ -103,14 +114,14 @@ local function evaluateActiveMode()
 	local bestName = "normal"
 	local bestPriority = MODE_DEFS.normal.priority
 
-	for modeName, mode in pairs(activeModes) do
-		if mode.expiresAt <= now then
+	for modeName, activeMode in pairs(activeModes) do
+		if activeMode.expiresAt <= now then
 			activeModes[modeName] = nil
 		else
-			local def = MODE_DEFS[modeName]
-			if def and def.priority > bestPriority then
+			local modeDef = MODE_DEFS[modeName]
+			if modeDef and modeDef.priority > bestPriority then
 				bestName = modeName
-				bestPriority = def.priority
+				bestPriority = modeDef.priority
 			end
 		end
 	end
@@ -120,9 +131,9 @@ local function evaluateActiveMode()
 	end
 
 	local previous = currentModeName
+	local previousDef = MODE_DEFS[previous] or MODE_DEFS.normal
 	currentModeName = bestName
-	applyMode(bestName, previous)
-	print(string.format("[P8_TEST] MODE_CHANGE from=%s to=%s priority=%d", previous, bestName, bestPriority))
+	applyModeDefinition(MODE_DEFS[bestName] or MODE_DEFS.normal, previousDef)
 	diagnostics(string.format(
 		"[WanderingProps] MODE_CHANGE from=%s to=%s priority=%d",
 		previous,
@@ -141,14 +152,18 @@ local function expireMode(modeName: string, expectedExpiresAt: number)
 	end
 
 	activeModes[modeName] = nil
-	print(string.format("[P8_TEST] MODE_EXPIRE mode=%s", modeName))
 	evaluateActiveMode()
 end
 
 function WanderingPropsAPI.SetMode(modeName: string, duration: number)
 	local modeDef = MODE_DEFS[modeName]
-	if not modeDef then
-		warn(string.format("[WanderingProps] WARNING: SetMode invalid mode \"%s\".", tostring(modeName)))
+	if not modeDef or modeName == "normal" then
+		warn(string.format('[WanderingProps] WARNING: invalid SetMode("%s").', tostring(modeName)))
+		return
+	end
+
+	local clampedDuration = math.max(0, duration or 0)
+	if clampedDuration <= 0 then
 		return
 	end
 
@@ -156,16 +171,9 @@ function WanderingPropsAPI.SetMode(modeName: string, duration: number)
 	local cooldown = math.max(0, Config.ModeRetriggerCooldown or 0)
 	local existing = activeModes[modeName]
 	if existing and (now - existing.lastTriggeredAt) < cooldown then
-		local remaining = cooldown - (now - existing.lastTriggeredAt)
-		print(string.format(
-			"[P8_TEST] MODE_DEBOUNCE mode=%s cooldown_remaining=%.2f",
-			modeName,
-			math.max(0, remaining)
-		))
 		return
 	end
 
-	local clampedDuration = math.max(0, duration or 0)
 	local expiresAt = now + clampedDuration
 	activeModes[modeName] = {
 		name = modeName,
@@ -173,16 +181,9 @@ function WanderingPropsAPI.SetMode(modeName: string, duration: number)
 		lastTriggeredAt = now,
 	}
 
-	print(string.format(
-		"[P8_TEST] MODE_SET mode=%s duration=%.2f priority=%d",
-		modeName,
-		clampedDuration,
-		modeDef.priority
-	))
 	task.delay(clampedDuration, function()
 		expireMode(modeName, expiresAt)
 	end)
-
 	evaluateActiveMode()
 end
 
@@ -191,7 +192,6 @@ function WanderingPropsAPI.ClearMode(modeName: string)
 		return
 	end
 	activeModes[modeName] = nil
-	print(string.format("[P8_TEST] MODE_CLEAR mode=%s", modeName))
 	evaluateActiveMode()
 end
 
@@ -208,9 +208,15 @@ function WanderingPropsAPI.DesyncPlayer(player: Player)
 		return
 	end
 
+	local fired, fireErr = pcall(function()
+		ensureDesyncRemote():FireClient(player, true)
+	end)
+	if not fired then
+		warn(string.format("[WanderingProps] WARNING: DesyncPlayer failed for %s: %s", player.Name, tostring(fireErr)))
+		return
+	end
+
 	PopulationHooks.desyncedPlayers[player] = true
-	ensureDesyncRemote():FireClient(player, true)
-	print(string.format("[P8_TEST] DESYNC player=%s", player.Name))
 	diagnostics(string.format("[WanderingProps] DESYNC player=%s", player.Name))
 end
 
@@ -222,31 +228,32 @@ function WanderingPropsAPI.ResyncPlayer(player: Player)
 		return
 	end
 
+	local fired, fireErr = pcall(function()
+		ensureDesyncRemote():FireClient(player, false)
+	end)
+	if not fired then
+		warn(string.format("[WanderingProps] WARNING: ResyncPlayer failed for %s: %s", player.Name, tostring(fireErr)))
+		return
+	end
+
 	PopulationHooks.desyncedPlayers[player] = nil
-	ensureDesyncRemote():FireClient(player, false)
-
 	task.defer(function()
-		if player.Parent ~= Players then
-			return
-		end
-
-		local sentCount = 0
 		if PopulationHooks.sendBulkSyncToPlayer then
-			sentCount = PopulationHooks.sendBulkSyncToPlayer(player) or 0
+			local sent = PopulationHooks.sendBulkSyncToPlayer(player) or 0
+			diagnostics(string.format("[WanderingProps] RESYNC_BULK_SEND player=%s npcs_sent=%d", player.Name, sent))
 		end
-		print(string.format("[P8_TEST] RESYNC player=%s npcs_sent=%d", player.Name, sentCount))
-		diagnostics(string.format("[WanderingProps] RESYNC player=%s", player.Name))
 	end)
 end
 
 function WanderingPropsAPI.IsPlayerDesynced(player: Player): boolean
-	return PopulationHooks.desyncedPlayers[player] == true
+	return player ~= nil and PopulationHooks.desyncedPlayers[player] == true
 end
 
-Players.PlayerRemoving:Connect(function(player)
-	PopulationHooks.desyncedPlayers[player] = nil
-end)
-
 ensureDesyncRemote()
+applyModeDefinition(MODE_DEFS.normal, MODE_DEFS.normal)
+
+Players.PlayerRemoving:Connect(function(leavingPlayer)
+	PopulationHooks.desyncedPlayers[leavingPlayer] = nil
+end)
 
 return WanderingPropsAPI

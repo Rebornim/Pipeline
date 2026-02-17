@@ -1,12 +1,12 @@
 # Project State: wandering-props
 
-**Stage:** Pass 7 — Complete
-**Status:** pass_7_complete
+**Stage:** Pass 8 — Redesign Complete
+**Status:** pass_8_ready
 **Pipeline Version:** v3 (cyclic)
 **Last Updated:** 2026-02-17
 
 ## Context Files
-- Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `pass-5-design.md`, `pass-7-design.md`, `golden-tests.md`, `state.md`
+- Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `pass-5-design.md`, `pass-7-design.md`, `pass-8-design.md`, `pass-8-redesign-brief.md`, `golden-tests.md`, `state.md`
 - Source of truth for current behavior: `src/` code + this file + `golden-tests.md`
 
 ## Pass 1 Outcome
@@ -272,5 +272,72 @@ Design deviations introduced during prove/fix cycles:
 - If any rare rotation pop remains under extreme waypoint topologies, add temporary heading-delta instrumentation around waypoint boundary frames to isolate route-shape edge cases.
 - Optional visual tuning pass can further adjust gaze hold/transition/glide timing without contract changes.
 
+## Pass 8 Design Summary
+- **External Behavior API** — public `WanderingPropsAPI` module for other game systems.
+- **Priority-based behavior modes:** Normal (0), Pause (10), Evacuate (20), Scatter (30). Higher priority overrides lower.
+- **Mode effects:** spawn pausing, walk speed multiplier, reroute-all-to-nearest-despawn.
+- **Built-in debounce:** `ModeRetriggerCooldown` prevents repeated same-mode triggers from being expensive.
+- **Mode expiry with fallback:** modes have durations. Expiry falls back to next highest active mode or normal.
+- **Per-player client desync:** `NPCDesync` remote toggles. Desync wipes all client NPCs instantly. Resync sends bulk sync.
+- **Shared state bridge:** `PopulationHooks.luau` connects API module to PopulationController without require-cycle.
+- **Files to modify:** Types.luau, Config.luau, Remotes.luau, PopulationHooks.luau (new), WanderingPropsAPI.luau (new), PopulationController.server.luau, NPCClient.client.luau.
+- **1 new RemoteEvent:** `NPCDesync`.
+- **Zero overhead when unused:** if no script requires WanderingPropsAPI, behavior = Pass 7.
+- Golden tests: Tests 36-41 added. Regression suite covers Tests 1, 2, 4, 5, 9, 11, 15, 16, 17, 25, 27, 30.
+
+### Pass 8 Build Attempt Delta (Scrapped)
+**Built in attempt:**
+- Added `WanderingPropsAPI`, `PopulationHooks`, and `NPCDesync` wiring.
+- Integrated server mode effects (pause/reroute/speed) and client desync handling.
+
+**Why this attempt failed:**
+- Scatter mode produced visible timeline instability ("time machine" behavior): NPC jumps/rewinds and stale-state reappearance during mode transitions.
+- Visual behavior during high-churn mode switches remained unreliable in user playtests.
+- Pass quality/regression bar not met; user requested this pass be scrapped and redesigned.
+
+**Decision:**
+- Treat previous Pass 8 implementation as failed design execution.
+- Keep current repo as source context, but require a new simpler Pass 8 design before additional implementation.
+
+**Redesign focus (required):**
+- Simpler server mode model with deterministic transitions.
+- Avoid repeated route rewrites/speed rewrites that can invalidate in-flight timeline math.
+- Clear testability and rollback criteria for each mode step.
+
+## Pass 8 Redesign Summary (v2)
+- **Core principle: never modify in-flight NPC routes or speed.** Modes control only population policy.
+- **Removed from v1:** `walkSpeedMultiplier` (in-flight speed changes), `rerouteAllToNearestDespawn` (bulk route rewrites), `rebroadcastAllSpeeds`. These caused the timeline instability.
+- **Mode effects limited to:** `spawnPaused` (boolean), `populationOverride` (number or nil), `drainEnabled` + `drainBatchSize` + `drainCheckInterval`.
+- **Drain reuses existing `trimRouteForNightDrain`** (line 708-793) which already works reliably. Extracted core logic into `applyDrainBatch()` shared between night drain and mode drain.
+- **Scatter = faster drain** (batch 8, interval 1s) vs evacuate (batch 3, interval 2s). No speed boost. Area clears ~3x faster via larger batches.
+- **`nightDrainApplied` flag** prevents double-drain when both night and mode drain are active.
+- **6 prove gates** for step-by-step validation: pause → evacuate → scatter → priority/debounce → desync → regression.
+- **Explicit rollback conditions** for each failure mode.
+- **Files:** Types.luau, Config.luau, Remotes.luau, PopulationHooks.luau (new), WanderingPropsAPI.luau (new), PopulationController.server.luau, NPCClient.client.luau.
+- **1 new RemoteEvent:** `NPCDesync`.
+- Golden tests: Tests 36-42 (replaced v1 tests). Regression suite covers Tests 1, 2, 4, 5, 9, 11, 15, 16, 17, 25, 27, 30.
+
 ## Next Step
-- Pass 7 complete. Ready for Pass 8 design.
+- Pass 8 redesign complete. Ready for Codex build.
+
+### Pass 8 Build Delta
+**Built as designed:**
+- Added external behavior API surface in `WanderingPropsAPI` with priority mode resolution, mode expiry/fallback, and per-player desync/resync.
+- Added shared mode/desync bridge in `PopulationHooks` and integrated it into `PopulationController` server authority flow.
+- Added `NPCDesync` remote handling client-side with desync wipe and resync bulk replay handling.
+
+**Deviations from design:**
+- Replaced redesign's incremental drain-only mode execution with one-shot reroute-on-mode-enter (`evacuate`/`scatter`) per user request to keep combat transitions immediate and deterministic.
+- Added spawn/recycle queue hard-pausing and queue clearing while `spawnPaused=true` to prevent delayed respawn bursts after mode transitions.
+- Added scatter-only reroute speed multiplier and forward-biased reroute start-node selection to reduce mode-entry 180 pivots and provide visibly faster scatter movement.
+- Added client in-place route update (`routeVersion` contract) for reroute updates so active NPCs are retargeted without despawn/respawn fade swaps.
+- Added client reroute transition smoothing to preserve current visual position at evacuate/scatter entry and avoid visible teleport pops.
+
+**New runtime contracts:**
+- `NPCSpawnData` now includes optional `routeVersion`; clients ignore stale route updates and apply latest updates in-place for matching NPC ids.
+- New config knobs: `EvacuateRerouteSpeedMultiplier`, `ScatterRerouteSpeedMultiplier`.
+- Mode pause contract now hard-stops new spawn/recycle queue consumption and flushes queued spawn/recycle work while paused.
+
+**Non-blocking follow-ups:**
+- Rare heading artifacts can still occur on extreme waypoint topologies; if needed, add temporary heading-delta instrumentation around reroute boundary frames for targeted tuning.
+- Golden test docs still reference pass-tag log markers from the prove phase and should be refreshed to match post-wrap runtime logging expectations.

@@ -59,6 +59,15 @@ Config.MarketBrowseDwellMax = 10
 Config.MarketWeight = 0.8
 Config.MarketHeadScanSpeed = 0.4
 
+-- BEHAVIOR API
+Config.ModeRetriggerCooldown = 2
+Config.EvacDrainBatchSize = 3
+Config.EvacDrainCheckInterval = 2
+Config.ScatterDrainBatchSize = 8
+Config.ScatterDrainCheckInterval = 1
+Config.EvacuateRerouteSpeedMultiplier = 1.0
+Config.ScatterRerouteSpeedMultiplier = 1.45
+
 -- RANDOM WANDERING (disabled)
 Config.WanderChance = 0
 Config.WanderMaxDistance = 50
@@ -134,11 +143,6 @@ Config.PathLateralOffsetMax = 2
 
 -- INTERNAL POI NAVIGATION
 Config.InternalNavigationEnabled = true
-
--- BEHAVIOR API
-Config.ModeRetriggerCooldown = 2
-Config.ScatterSpeedMultiplier = 2.0
-Config.EvacuateSpeedMultiplier = 1.0
 
 -- SPAWN/DESPAWN FADE
 Config.FadeEnabled = true
