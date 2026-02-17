@@ -74,9 +74,82 @@ Same behavior as before, but runs smoothly at 70 concurrent NPCs. Distant NPCs c
 
 ---
 
+## Pass 5: Visual Polish
+**Depends on:** All previous passes
+**What it includes:**
+- **Corner beveling (curved pathing):** Client-side path smoothing that rounds sharp waypoint corners into natural curves. NPCs follow quadratic Bezier arcs at turns instead of sharp zigzag lines. POI stop waypoints and spawn/despawn endpoints are protected (not beveled).
+- **Smooth elevation transitions:** Ground-snap raycast results are lerped over time instead of applied instantly. Steps and slopes produce smooth height changes instead of snapping.
+- **Smooth body rotation:** NPC facing direction is slerped each frame instead of snapping via `CFrame.lookAt`. Applies to route walking turns, scenic POI facing, and seat walk-in/walk-out.
+- **Head look toward player:** NPCs randomly turn their heads to track nearby players. Smooth Motor6D neck rotation with yaw/pitch clamping. LOD-gated to near tier only.
+- **Path lateral offset:** Server-side random perpendicular offset on intermediate waypoints so NPCs don't follow identical ant-trail paths between the same waypoints.
+- **Spawn/despawn fade:** Client-side transparency lerp for smooth appear/disappear transitions. Fade-in on spawn, fade-out when route completes. Pool-aware (transparency restored on pool release).
+- Config additions: bevel radius/segments, ground snap lerp speed, turn lerp speed, head look distance/chance/duration/limits, lateral offset max, fade durations
+
+**After this pass, the system:**
+NPCs move with natural, polished motion. Corners are rounded, elevation changes are smooth, turns are gradual. NPCs occasionally glance at passing players. No two NPCs follow identical paths. Spawning and despawning is graceful with fade transitions. The world feels alive and believable.
+
+---
+
+## Pass 6: Internal POI Navigation (Built)
+**Depends on:** Pass 2, 5
+**What it includes:**
+- Internal waypoint graphs within social and scenic POIs for complex interior layouts, with BFS/Dijkstra pathfinding.
+- Seat accessibility constraints via AccessPoint ObjectValues or distance-based matching to internal waypoints.
+- Multi-entrance support: multiple internal entry nodes can link to different external graph nodes. NPCs path to the closest entrance.
+- Scenic POI stand point collections: multiple zone-sized stand positions, randomly selected per visit with internal routing.
+- POIs can be authored without a dedicated Waypoint part — internal entry links to external graph nodes define the POI's graph presence.
+- Single config toggle: `InternalNavigationEnabled`.
+- Server-side waypoint expansion bakes approach/exit paths into the flat waypoints array. Client processes expanded array identically.
+
+**After this pass, the system:**
+Social and scenic POIs work in complex interiors. NPCs navigate through interior waypoint paths to reach seats or stand points, and exit via valid internal routes. Multi-entrance POIs route NPCs to the closest door. POI authoring is flexible — no dedicated waypoint part required when internal entries link to the graph.
+
+---
+
+## Pass 7 (Candidate): Market POI Type
+**Depends on:** Pass 6
+**What it includes:**
+- **New POI type: `market`** — indoor/outdoor marketplace with authored stands
+- NPCs enter a market, visit a random number of stands (`MarketStandsMin` to `MarketStandsMax`), browse at each, then leave
+- **No sitting** — standing dwell only. NPCs stand in front of stands within a zone-sized StandZone part
+- Each stand has a **ViewTarget** part that the NPC faces while browsing
+- **Head scanning behavior:** NPC's head smoothly sweeps across the ViewTarget part's bounds while dwelling at a stand. HeadLookController (player tracking) takes priority and interrupts scanning
+- Uses Pass 6 internal waypoint navigation for pathfinding between stands
+- **No main Waypoint part** — internal entry nodes link directly to external graph nodes (leverages Pass 6 generalized POI discovery)
+- **Capacity per stand:** configurable max NPCs browsing one stand simultaneously (`MarketStandCapacity`)
+- StandZone is zone-sized — random XZ positioning supports multiple NPCs at the same stand
+- Stands auto-link to closest internal waypoint by distance (no AccessPoint ObjectValue needed)
+- Authoring layout:
+  ```
+  MarketPOI_Bazaar/
+  ├── InternalWaypoints/
+  │   ├── IW_Entry (ObjectValue → external graph node)
+  │   ├── IW_Aisle1 (ObjectValue → IW_Entry)
+  │   └── IW_Aisle2 (ObjectValue → IW_Aisle1)
+  ├── Stands/
+  │   ├── Stand1/
+  │   │   ├── StandZone (BasePart, zone-sized)
+  │   │   └── ViewTarget (BasePart)
+  │   └── Stand2/
+  │       ├── StandZone (BasePart)
+  │       └── ViewTarget (BasePart)
+  ```
+
+**Open design questions (to resolve before design phase):**
+1. Dwell time per stand — configurable range (`MarketBrowseDwellMin` / `MarketBrowseDwellMax`)?
+2. Stand visit order — nearest-first or fully random?
+3. All stands at capacity — visit whatever's available and leave, or skip market entirely?
+4. Repeat visits — can one NPC visit the same stand twice in one trip?
+5. Head scan style — continuous slow sweep or random point jumps across ViewTarget?
+
+**After this pass, the system:**
+NPCs browse marketplace stands naturally. They enter a market, wander between stands via internal waypoints, stop to look at merchandise with smooth head scanning, then move on. Markets feel busy and alive with multiple NPCs browsing different stands simultaneously.
+
+---
+
 ## Feature Coverage Check
 
-All features from idea-locked.md assigned:
+All features from idea-locked.md assigned (Passes 1-4). Pass 5 extends beyond the original spec:
 | Feature | Pass |
 |---|---|
 | R15 rigs, AnimationController, no Humanoid | 1 |
@@ -104,3 +177,14 @@ All features from idea-locked.md assigned:
 | Day/night cycle hook | 3 |
 | LOD tiers | 4 |
 | All config surface items | Accumulated 1–4 |
+| Corner beveling (curved pathing) | 5 |
+| Smooth elevation transitions | 5 |
+| Smooth body rotation | 5 |
+| Head look toward player | 5 |
+| Path lateral offset | 5 |
+| Spawn/despawn fade | 5 |
+| Internal POI waypoint graphs (social + scenic) | 6 |
+| Multi-entrance POI support | 6 |
+| Scenic stand point collections | 6 |
+| No-main-waypoint POI authoring | 6 |
+| Market POI type (stands, browsing, head scanning) | 7 (candidate) |

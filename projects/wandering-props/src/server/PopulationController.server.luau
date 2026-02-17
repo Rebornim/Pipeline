@@ -10,6 +10,7 @@ local Config = require(sharedFolder:WaitForChild("Config"))
 local Remotes = require(sharedFolder:WaitForChild("Remotes"))
 local RouteBuilder = require(sharedFolder:WaitForChild("RouteBuilder"))
 local WaypointGraph = require(sharedFolder:WaitForChild("WaypointGraph"))
+local PathSmoother = require(sharedFolder:WaitForChild("PathSmoother"))
 local POIRegistry = require(script.Parent:WaitForChild("POIRegistry"))
 
 local activeNPCs = {}
@@ -40,6 +41,8 @@ local poiRegistry = nil
 local wanderingFolder
 local lastIsNightState: boolean? = nil
 local queuedSpawnRequests = 0
+local queuedRecycleRequests = {}
+local queuedRecycleHead = 1
 local queuedDespawnIds = {}
 local queuedDespawnHead = 1
 local queuedDespawnSet = {}
@@ -47,6 +50,9 @@ local queuedSpawnEvents = {}
 local queuedDespawnEvents = {}
 local queuedDespawnEventSet = {}
 local nextEventFlushAt = 0
+local bevelRuntimeEnabled = Config.BevelEnabled
+local bevelRuntimeRadius = Config.BevelRadius
+local bevelRuntimeSegments = math.max(2, math.floor(Config.BevelSegments or 2))
 
 local function diagnostics(message: string)
 	if Config.DiagnosticsEnabled then
@@ -194,17 +200,17 @@ local function flushQueuedRemoteEvents(force: boolean?)
 		end
 	end
 
-	if #queuedSpawnEvents > 0 then
-		local spawnPayload = if #queuedSpawnEvents == 1 then queuedSpawnEvents[1] else queuedSpawnEvents
-		npcSpawnedRemote:FireAllClients(spawnPayload)
-		queuedSpawnEvents = {}
-	end
-
 	if #queuedDespawnEvents > 0 then
 		local despawnPayload = if #queuedDespawnEvents == 1 then queuedDespawnEvents[1] else queuedDespawnEvents
 		npcDespawnedRemote:FireAllClients(despawnPayload)
 		queuedDespawnEvents = {}
 		queuedDespawnEventSet = {}
+	end
+
+	if #queuedSpawnEvents > 0 then
+		local spawnPayload = if #queuedSpawnEvents == 1 then queuedSpawnEvents[1] else queuedSpawnEvents
+		npcSpawnedRemote:FireAllClients(spawnPayload)
+		queuedSpawnEvents = {}
 	end
 
 	nextEventFlushAt = now + math.max(0.01, Config.EventBatchInterval or 0.05)
@@ -239,6 +245,32 @@ local function requestDespawn(id: string)
 	end
 	queuedDespawnSet[id] = true
 	table.insert(queuedDespawnIds, id)
+end
+
+local function getQueuedRecycleCount(): number
+	if queuedRecycleHead > #queuedRecycleRequests then
+		return 0
+	end
+	return #queuedRecycleRequests - queuedRecycleHead + 1
+end
+
+local function clampDelayRange(minValue: number?, maxValue: number?, fallback: number): (number, number)
+	local minDelay = if minValue then math.max(0, minValue) else fallback
+	local maxDelay = if maxValue then math.max(0, maxValue) else minDelay
+	if maxDelay < minDelay then
+		minDelay, maxDelay = maxDelay, minDelay
+	end
+	return minDelay, maxDelay
+end
+
+local function queueRecycleRequest(request, delayRangeMin: number?, delayRangeMax: number?)
+	local minDelay, maxDelay = clampDelayRange(delayRangeMin, delayRangeMax, 0)
+	local now = Workspace:GetServerTimeNow()
+	local delaySeconds = if maxDelay > minDelay
+		then rng:NextNumber(minDelay, maxDelay)
+		else minDelay
+	request.readyAt = now + delaySeconds
+	table.insert(queuedRecycleRequests, request)
 end
 
 local function routeDistance(waypoints: { Vector3 }): number
@@ -303,7 +335,7 @@ local function randomizeZonePosition(node): Vector3
 	)
 end
 
-local function randomizeScenicPOIWaypointPosition(basePosition: Vector3, waypointSize: Vector3?): Vector3
+local function randomizePOIWaypointPosition(basePosition: Vector3, waypointSize: Vector3?): Vector3
 	if not waypointSize or waypointSize.X <= 0 or waypointSize.Z <= 0 then
 		return basePosition
 	end
@@ -363,7 +395,7 @@ local function makeSpawnData(record)
 	}
 end
 
-local function releaseSeatClaim(poiId: string, seatIndex: number)
+local function releaseSeatClaim(poiId: string, seatIndex: number, expectedNpcId: string?)
 	if not poiRegistry then
 		return
 	end
@@ -373,25 +405,33 @@ local function releaseSeatClaim(poiId: string, seatIndex: number)
 		return
 	end
 
-	local wasOccupied = false
-	if poi.seats and poi.seats[seatIndex] and poi.seats[seatIndex].occupiedBy ~= nil then
-		wasOccupied = true
+	local occupantId = nil
+	if poi.seats and poi.seats[seatIndex] then
+		occupantId = poi.seats[seatIndex].occupiedBy
+	end
+
+	if occupantId == nil then
+		return
+	end
+	if expectedNpcId and occupantId ~= expectedNpcId then
+		-- Ignore stale timers/releases that no longer own this seat.
+		return
 	end
 
 	POIRegistry.releaseSeat(poi, seatIndex)
 
-	if wasOccupied then
-		seatsOccupiedNow = math.max(0, seatsOccupiedNow - 1)
-		local totalSeats = poi.totalSeats or (poi.seats and #poi.seats or 0)
-		diagnostics(string.format(
-			"[WanderingProps] SEAT_RELEASE poi=%s seat=%d occupied=%d/%d",
-			poi.id,
-			seatIndex,
-			poi.occupiedCount or 0,
-			totalSeats
-		))
-	end
+	seatsOccupiedNow = math.max(0, seatsOccupiedNow - 1)
+	local totalSeats = poi.totalSeats or (poi.seats and #poi.seats or 0)
+	diagnostics(string.format(
+		"[WanderingProps] SEAT_RELEASE poi=%s seat=%d occupied=%d/%d",
+		poi.id,
+		seatIndex,
+		poi.occupiedCount or 0,
+		totalSeats
+	))
 end
+
+local spawnNPC
 
 local function despawnNPC(id: string)
 	local record = activeNPCs[id]
@@ -401,13 +441,31 @@ local function despawnNPC(id: string)
 
 	if record.seatClaims then
 		for _, claim in ipairs(record.seatClaims) do
-			releaseSeatClaim(claim.poiId, claim.seatIndex)
+			releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
 		end
 	end
 
 	activeNPCs[id] = nil
 	activeCount -= 1
 	npcsDespawnedTotal += 1
+
+	if Config.RecycleNPCsEnabled and spawnNPC then
+		queueRecycleRequest({
+			reuseId = id,
+			model = record.modelTemplate,
+			walkSpeed = record.walkSpeed,
+			routeVersion = (record.routeVersion or 1) + 1,
+		}, Config.RecycleRespawnDelayMin, Config.RecycleRespawnDelayMax)
+		queueDespawnBroadcast(id)
+		diagnostics(string.format(
+			"[WanderingProps] RECYCLE_QUEUE %s active=%d/%d pending_recycle=%d",
+			id,
+			activeCount,
+			Config.MaxPopulation,
+			getQueuedRecycleCount()
+		))
+		return
+	end
 
 	queueDespawnBroadcast(id)
 	diagnostics(string.format(
@@ -419,22 +477,50 @@ local function despawnNPC(id: string)
 	))
 end
 
-local function buildNodeSequence(spawnId: string, selectedPOIs, despawnId: string)
+local function buildNodeSequence(spawnId: string, selectedPOIs, despawnId: string, chosenEntrances: { [number]: string }?)
 	local nodeSequence = { spawnId }
-	for _, poi in ipairs(selectedPOIs) do
-		table.insert(nodeSequence, poi.waypointNodeId)
+	for i, poi in ipairs(selectedPOIs) do
+		local entranceId = if chosenEntrances then chosenEntrances[i] else nil
+		table.insert(nodeSequence, entranceId or poi.waypointNodeId)
 	end
 	table.insert(nodeSequence, despawnId)
 	return nodeSequence
 end
 
+local function findBusyBacktrackPOIIndex(selectedPOIs, poiWaypointIndices, pathNodeIds): number?
+	for i, poi in ipairs(selectedPOIs) do
+		if poi.poiType == "busy" then
+			local waypointIndex = poiWaypointIndices[i]
+			if waypointIndex and waypointIndex > 1 and waypointIndex < #pathNodeIds then
+				if pathNodeIds[waypointIndex - 1] == pathNodeIds[waypointIndex + 1] then
+					return i
+				end
+			end
+		end
+	end
+	return nil
+end
+
 local function convertNodeIdsToWaypoints(pathNodeIds: { string }, poiWaypointIndexSet: { [number]: boolean }?)
 	local waypoints = {}
 	local indexSet = poiWaypointIndexSet or {}
+	local maxOffset = Config.PathLateralOffsetMax or 0
 	for i, nodeId in ipairs(pathNodeIds) do
 		local node = graph.nodes[nodeId]
 		if node.zoneSize and not indexSet[i] then
 			table.insert(waypoints, randomizeZonePosition(node))
+		elseif maxOffset > 0 and i > 1 and i < #pathNodeIds and not indexSet[i] then
+			local prevPos = graph.nodes[pathNodeIds[i - 1]].position
+			local nextPos = graph.nodes[pathNodeIds[i + 1]].position
+			local forward = nextPos - prevPos
+			local flatForward = Vector3.new(forward.X, 0, forward.Z)
+			if flatForward.Magnitude > 0.01 then
+				local perpendicular = Vector3.new(-flatForward.Z, 0, flatForward.X).Unit
+				local offset = rng:NextNumber(-maxOffset, maxOffset)
+				table.insert(waypoints, node.position + perpendicular * offset)
+			else
+				table.insert(waypoints, node.position)
+			end
 		else
 			table.insert(waypoints, node.position)
 		end
@@ -627,9 +713,18 @@ local function trimRouteForNightDrain(record, now: number): boolean
 		return false
 	end
 
+	if bevelRuntimeEnabled and #newWaypoints > 2 then
+		newWaypoints, newPoiStops = PathSmoother.bevel(
+			newWaypoints,
+			newPoiStops,
+			bevelRuntimeRadius,
+			bevelRuntimeSegments
+		)
+	end
+
 	if record.seatClaims then
 		for _, claim in ipairs(record.seatClaims) do
-			releaseSeatClaim(claim.poiId, claim.seatIndex)
+			releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
 		end
 	end
 	record.seatClaims = nil
@@ -660,7 +755,7 @@ local function trimRouteForNightDrain(record, now: number): boolean
 	return true
 end
 
-local function applyNightDrain()
+local function applyNightDrain(now: number)
 	if not Config.NightDrainEnabled or not isNightNow() then
 		return
 	end
@@ -671,7 +766,6 @@ local function applyNightDrain()
 		return
 	end
 
-	local now = Workspace:GetServerTimeNow()
 	local candidates = {}
 	for _, record in pairs(activeNPCs) do
 		local despawnAt = record.despawnAt or (record.startTime + record.totalDuration)
@@ -708,20 +802,280 @@ local function applyNightDrain()
 	end
 end
 
-local function spawnNPC()
+local function expandSocialInternalWaypoints(
+	waypoints: { Vector3 },
+	poiWaypointIndex: number,
+	poi,
+	accessNodeId: string,
+	chosenEntranceNodeId: string?
+): ({ Vector3 }, number, number)
+	if not poi.internalGraph then
+		diagnostics(string.format("[WanderingProps] INTERNAL_NAV_SKIP poi=%s reason=no_internal_graph", poi.id))
+		return waypoints, poiWaypointIndex, 0
+	end
+	if not accessNodeId then
+		diagnostics(string.format("[WanderingProps] INTERNAL_NAV_SKIP poi=%s reason=no_access_node", poi.id))
+		return waypoints, poiWaypointIndex, 0
+	end
+
+	-- Filter entry nodes to those mapping to the chosen entrance (if specified)
+	local candidateEntryIds = poi.internalGraph.entryNodeIds
+	if chosenEntranceNodeId and poi.internalGraph.entryToEntranceMap then
+		local filtered = {}
+		for _, entryId in ipairs(poi.internalGraph.entryNodeIds) do
+			if poi.internalGraph.entryToEntranceMap[entryId] == chosenEntranceNodeId then
+				table.insert(filtered, entryId)
+			end
+		end
+		if #filtered > 0 then
+			candidateEntryIds = filtered
+		end
+	end
+
+	diagnostics(string.format(
+		"[WanderingProps] INTERNAL_NAV_BFS poi=%s entries=%d accessNode=%s",
+		poi.id, #candidateEntryIds, accessNodeId
+	))
+
+	-- Pick the entry node with the shortest path to the access node
+	local approachPath = nil
+	for _, candidateEntryId in ipairs(candidateEntryIds) do
+		local candidatePath = POIRegistry.getCachedInternalPath(poi, candidateEntryId, accessNodeId)
+		diagnostics(string.format(
+			"[WanderingProps] INTERNAL_NAV_BFS_TRY entry=%s result=%s",
+			candidateEntryId, if candidatePath then tostring(#candidatePath) else "nil"
+		))
+		if candidatePath and #candidatePath >= 2 then
+			if not approachPath or #candidatePath < #approachPath then
+				approachPath = candidatePath
+			end
+		end
+	end
+	if not approachPath then
+		diagnostics(string.format("[WanderingProps] INTERNAL_NAV_SKIP poi=%s reason=no_path_found", poi.id))
+		return waypoints, poiWaypointIndex, 0
+	end
+
+	-- Build new waypoints array with approach + exit inserted around the POI waypoint
+	local newWaypoints = {}
+
+	-- Copy waypoints up to and including the POI waypoint
+	for i = 1, poiWaypointIndex do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	-- Insert approach waypoints (door → ... → access node)
+	for i = 1, #approachPath do
+		table.insert(newWaypoints, approachPath[i])
+	end
+
+	-- The new POI waypoint index is at the end of the approach path
+	-- (the access node position, where the NPC enters the seat state)
+	local newPoiWaypointIndex = #newWaypoints
+
+	-- Build exit path (reverse of approach)
+	-- Skip first element (access node — NPC is already there after walking from seat)
+	for i = #approachPath - 1, 1, -1 do
+		table.insert(newWaypoints, approachPath[i])
+	end
+
+	-- Return through the social POI waypoint before leaving the POI route.
+	table.insert(newWaypoints, waypoints[poiWaypointIndex])
+
+	-- Copy remaining waypoints after the original POI waypoint
+	for i = poiWaypointIndex + 1, #waypoints do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	local insertedCount = #newWaypoints - #waypoints
+	return newWaypoints, newPoiWaypointIndex, insertedCount
+end
+
+local function expandScenicStandWaypoints(
+	waypoints: { Vector3 },
+	poiWaypointIndex: number,
+	standPoint: Vector3
+): ({ Vector3 }, number, number)
+	local scenicWaypoint = waypoints[poiWaypointIndex]
+	if not scenicWaypoint then
+		return waypoints, poiWaypointIndex, 0
+	end
+
+	local newWaypoints = {}
+	for i = 1, poiWaypointIndex do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	-- Scenic flow: walk through scenic waypoint -> stand point (dwell) -> scenic waypoint -> continue.
+	table.insert(newWaypoints, standPoint)
+	local newPoiWaypointIndex = #newWaypoints
+	table.insert(newWaypoints, scenicWaypoint)
+
+	for i = poiWaypointIndex + 1, #waypoints do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	local insertedCount = #newWaypoints - #waypoints
+	return newWaypoints, newPoiWaypointIndex, insertedCount
+end
+
+local function expandScenicInternalWaypoints(
+	waypoints: { Vector3 },
+	poiWaypointIndex: number,
+	poi,
+	standPoint: Vector3,
+	standAccessNodeId: string?,
+	chosenEntranceNodeId: string?
+): ({ Vector3 }, number, number)
+	if not poi.internalGraph or not standAccessNodeId then
+		return expandScenicStandWaypoints(waypoints, poiWaypointIndex, standPoint)
+	end
+
+	local candidateEntryIds = poi.internalGraph.entryNodeIds
+	if chosenEntranceNodeId and poi.internalGraph.entryToEntranceMap then
+		local filtered = {}
+		for _, entryId in ipairs(poi.internalGraph.entryNodeIds) do
+			if poi.internalGraph.entryToEntranceMap[entryId] == chosenEntranceNodeId then
+				table.insert(filtered, entryId)
+			end
+		end
+		if #filtered > 0 then
+			candidateEntryIds = filtered
+		end
+	end
+
+	local approachPath = nil
+	for _, candidateEntryId in ipairs(candidateEntryIds) do
+		local candidatePath = POIRegistry.getCachedInternalPath(poi, candidateEntryId, standAccessNodeId)
+		if candidatePath and #candidatePath >= 1 then
+			if not approachPath or #candidatePath < #approachPath then
+				approachPath = candidatePath
+			end
+		end
+	end
+	if not approachPath then
+		diagnostics(string.format("[WanderingProps] SCENIC_INTERNAL_SKIP poi=%s reason=no_path_found", poi.id))
+		return expandScenicStandWaypoints(waypoints, poiWaypointIndex, standPoint)
+	end
+
+	local newWaypoints = {}
+	for i = 1, poiWaypointIndex do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	-- Scenic internal flow: entrance -> internal path -> stand point (dwell) -> internal path back -> continue.
+	for i = 1, #approachPath do
+		table.insert(newWaypoints, approachPath[i])
+	end
+	table.insert(newWaypoints, standPoint)
+	local newPoiWaypointIndex = #newWaypoints
+	for i = #approachPath, 1, -1 do
+		table.insert(newWaypoints, approachPath[i])
+	end
+
+	for i = poiWaypointIndex + 1, #waypoints do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	local insertedCount = #newWaypoints - #waypoints
+	return newWaypoints, newPoiWaypointIndex, insertedCount
+end
+
+local function findUnreachableSocialInternalPOIIndex(selectedPOIs, claimedSeatsByPoiId, chosenEntrances): number?
+	if not Config.InternalNavigationEnabled then
+		return nil
+	end
+
+	for i, poi in ipairs(selectedPOIs) do
+		if poi.poiType == "social" and poi.internalGraph then
+			local claim = claimedSeatsByPoiId[poi.id]
+			local accessNodeId = if claim then claim.accessNodeId else nil
+			if not accessNodeId then
+				return i
+			end
+
+			local candidateEntryIds = poi.internalGraph.entryNodeIds
+			local chosenEntranceNodeId = if chosenEntrances then chosenEntrances[i] else nil
+			if chosenEntranceNodeId and poi.internalGraph.entryToEntranceMap then
+				local filtered = {}
+				for _, entryId in ipairs(poi.internalGraph.entryNodeIds) do
+					if poi.internalGraph.entryToEntranceMap[entryId] == chosenEntranceNodeId then
+						table.insert(filtered, entryId)
+					end
+				end
+				if #filtered > 0 then
+					candidateEntryIds = filtered
+				end
+			end
+
+				local hasPath = false
+				for _, candidateEntryId in ipairs(candidateEntryIds) do
+					local candidatePath = POIRegistry.getCachedInternalPath(poi, candidateEntryId, accessNodeId)
+					if candidatePath and #candidatePath >= 2 then
+						hasPath = true
+						break
+					end
+			end
+			if not hasPath then
+				return i
+			end
+		end
+	end
+
+	return nil
+end
+
+local function selectStandPointPosition(standPoints): (Vector3, string?)
+	local sp = standPoints[rng:NextInteger(1, #standPoints)]
+	local halfX = sp.size.X / 2
+	local halfZ = sp.size.Z / 2
+	local localOffset = Vector3.new(
+		rng:NextNumber(-halfX, halfX),
+		0,
+		rng:NextNumber(-halfZ, halfZ)
+	)
+	if sp.cframe then
+		return sp.cframe:PointToWorldSpace(localOffset), sp.accessNodeId
+	end
+	return sp.position + localOffset, sp.accessNodeId
+end
+
+spawnNPC = function(options)
 	local effectiveMax = getEffectiveMaxPopulation()
 	if activeCount >= effectiveMax then
-		return
+		return false
 	end
 	local currentlyNight = isNightNow()
 	local preferNearestDespawn = currentlyNight and Config.NightPreferNearestDespawn == true
 
-	local model = pickRandomModel()
-	local walkVariation = math.abs(Config.WalkSpeedVariation or 0)
-	local sampledWalkSpeed = Config.BaseWalkSpeed + rng:NextNumber(-walkVariation, walkVariation)
-	local walkSpeed = math.max(0.1, sampledWalkSpeed)
-	local id = "npc_" .. tostring(nextNpcId)
-	nextNpcId += 1
+	local model = nil
+	if options and typeof(options.model) == "Instance" and options.model:IsA("Model") then
+		model = options.model
+	else
+		model = pickRandomModel()
+	end
+
+	local walkSpeed = nil
+	if options and options.walkSpeed ~= nil then
+		walkSpeed = math.max(0.1, options.walkSpeed)
+	else
+		local walkVariation = math.abs(Config.WalkSpeedVariation or 0)
+		local sampledWalkSpeed = Config.BaseWalkSpeed + rng:NextNumber(-walkVariation, walkVariation)
+		walkSpeed = math.max(0.1, sampledWalkSpeed)
+	end
+
+	local id = nil
+	if options and options.reuseId then
+		id = options.reuseId
+	else
+		id = "npc_" .. tostring(nextNpcId)
+		nextNpcId += 1
+	end
+
+	local routeVersion = 1
+	if options and options.routeVersion ~= nil then
+		routeVersion = options.routeVersion
+	end
 
 	local waypoints = nil
 	local totalDistance = 0
@@ -750,11 +1104,13 @@ local function spawnNPC()
 		local filteredPOIs = {}
 		for _, poi in ipairs(selectedPOIs) do
 			if poi.poiType == "social" then
-				local seatIndex, seatCFrame = POIRegistry.claimSeat(poi, id)
+				local seatIndex, seatCFrame, accessNodeId = POIRegistry.claimSeat(poi, id)
 				if seatIndex and seatCFrame then
 					claimedSeatsByPoiId[poi.id] = {
 						seatIndex = seatIndex,
 						seatCFrame = seatCFrame,
+						accessNodeId = accessNodeId,
+						npcId = id,
 					}
 					seatsOccupiedNow += 1
 					local totalSeats = poi.totalSeats or (poi.seats and #poi.seats or 0)
@@ -777,24 +1133,113 @@ local function spawnNPC()
 		end
 		selectedPOIs = filteredPOIs
 
+		-- Pick best external entrance for each POI with multiple entrances
+		local chosenEntrances = nil
+		if Config.InternalNavigationEnabled then
+			local hasMultiEntrance = false
+			for _, poi in ipairs(selectedPOIs) do
+				if poi.entranceNodeIds and #poi.entranceNodeIds > 1 then
+					hasMultiEntrance = true
+					break
+				end
+			end
+			if hasMultiEntrance then
+				chosenEntrances = {}
+				local prevPosition = graph.nodes[spawnId].position
+				for i, poi in ipairs(selectedPOIs) do
+					if poi.entranceNodeIds and #poi.entranceNodeIds > 1 then
+						local bestId = poi.entranceNodeIds[1]
+						local bestDist = (graph.nodes[bestId].position - prevPosition).Magnitude
+						for _, entranceId in ipairs(poi.entranceNodeIds) do
+							local entranceNode = graph.nodes[entranceId]
+							if entranceNode then
+								local dist = (entranceNode.position - prevPosition).Magnitude
+								if dist < bestDist then
+									bestDist = dist
+									bestId = entranceId
+								end
+							end
+						end
+						chosenEntrances[i] = bestId
+						prevPosition = graph.nodes[bestId].position
+					else
+						prevPosition = poi.waypointPosition
+					end
+				end
+			end
+		end
+
 		local routeStartNodeId = if #selectedPOIs > 0 then selectedPOIs[#selectedPOIs].waypointNodeId else spawnId
+		if chosenEntrances and #selectedPOIs > 0 and chosenEntrances[#selectedPOIs] then
+			routeStartNodeId = chosenEntrances[#selectedPOIs]
+		end
 		local despawnId = if preferNearestDespawn
 			then pickNearestDespawnNodeId(graph, routeStartNodeId)
 			else RouteBuilder.pickRandomDespawn(graph)
-		local nodeSequence = buildNodeSequence(spawnId, selectedPOIs, despawnId)
+		local nodeSequence = buildNodeSequence(spawnId, selectedPOIs, despawnId, chosenEntrances)
 		local pathNodeIds, poiWaypointIndices = RouteBuilder.computeMultiSegmentRoute(graph, nodeSequence)
 
-		while not pathNodeIds and #selectedPOIs > 0 do
-			local droppedPOI = table.remove(selectedPOIs, #selectedPOIs)
+		while #selectedPOIs > 0 do
+			local droppedPOI = nil
+			local skipReason = ""
+
+			if not pathNodeIds then
+				droppedPOI = table.remove(selectedPOIs, #selectedPOIs)
+				skipReason = "no_path"
+				else
+					local busyBacktrackPOIIndex = findBusyBacktrackPOIIndex(selectedPOIs, poiWaypointIndices, pathNodeIds)
+					if busyBacktrackPOIIndex then
+						droppedPOI = table.remove(selectedPOIs, busyBacktrackPOIIndex)
+						skipReason = "busy_backtrack"
+					else
+						local unreachableSocialPOIIndex =
+							findUnreachableSocialInternalPOIIndex(selectedPOIs, claimedSeatsByPoiId, chosenEntrances)
+						if unreachableSocialPOIIndex then
+							droppedPOI = table.remove(selectedPOIs, unreachableSocialPOIIndex)
+							skipReason = "social_internal_unreachable"
+						end
+					end
+				end
+
+			if not droppedPOI then
+				break
+			end
+
 			poiSkips += 1
-			diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=no_path", id, droppedPOI.id))
+			diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=%s", id, droppedPOI.id, skipReason))
 			local droppedClaim = claimedSeatsByPoiId[droppedPOI.id]
 			if droppedClaim then
-				releaseSeatClaim(droppedPOI.id, droppedClaim.seatIndex)
+				releaseSeatClaim(droppedPOI.id, droppedClaim.seatIndex, droppedClaim.npcId)
 				claimedSeatsByPoiId[droppedPOI.id] = nil
 			end
 
-			nodeSequence = buildNodeSequence(spawnId, selectedPOIs, despawnId)
+			-- Recalculate chosen entrances after dropping a POI
+			if chosenEntrances then
+				chosenEntrances = {}
+				local prevPos = graph.nodes[spawnId].position
+				for i, poi in ipairs(selectedPOIs) do
+					if poi.entranceNodeIds and #poi.entranceNodeIds > 1 then
+						local bestId = poi.entranceNodeIds[1]
+						local bestDist = (graph.nodes[bestId].position - prevPos).Magnitude
+						for _, entranceId in ipairs(poi.entranceNodeIds) do
+							local entranceNode = graph.nodes[entranceId]
+							if entranceNode then
+								local dist = (entranceNode.position - prevPos).Magnitude
+								if dist < bestDist then
+									bestDist = dist
+									bestId = entranceId
+								end
+							end
+						end
+						chosenEntrances[i] = bestId
+						prevPos = graph.nodes[bestId].position
+					else
+						prevPos = poi.waypointPosition
+					end
+				end
+			end
+
+			nodeSequence = buildNodeSequence(spawnId, selectedPOIs, despawnId, chosenEntrances)
 			pathNodeIds, poiWaypointIndices = RouteBuilder.computeMultiSegmentRoute(graph, nodeSequence)
 		end
 
@@ -825,9 +1270,9 @@ local function spawnNPC()
 			routeStuckTotal += 1
 			diagnostics(string.format("[WanderingProps] ROUTE_STUCK npc=%s spawn=%s", id, spawnId))
 			for poiId, claim in pairs(claimedSeatsByPoiId) do
-				releaseSeatClaim(poiId, claim.seatIndex)
+				releaseSeatClaim(poiId, claim.seatIndex, claim.npcId)
 			end
-			return
+			return false
 		end
 
 		local poiWaypointIndexSet = {}
@@ -849,13 +1294,72 @@ local function spawnNPC()
 
 		waypoints = convertNodeIdsToWaypoints(pathNodeIds, poiWaypointIndexSet)
 		for i, poi in ipairs(selectedPOIs) do
-			if poi.poiType == "scenic" and poi.waypointIsInsidePOI and poi.waypointSize then
+			local scenicStandFlowActive = Config.InternalNavigationEnabled
+				and poi.standPoints ~= nil
+				and #poi.standPoints > 0
+			local shouldRandomizeAreaStop = (poi.poiType == "busy")
+				or (poi.poiType == "scenic" and not scenicStandFlowActive)
+			if shouldRandomizeAreaStop and poi.waypointIsInsidePOI and poi.waypointSize then
 				local waypointIndex = poiWaypointIndices[i]
 				if waypointIndex and waypoints[waypointIndex] then
-					waypoints[waypointIndex] = randomizeScenicPOIWaypointPosition(waypoints[waypointIndex], poi.waypointSize)
+					waypoints[waypointIndex] = randomizePOIWaypointPosition(waypoints[waypointIndex], poi.waypointSize)
 				end
 			end
 		end
+
+		-- Pass 6: Internal navigation expansion
+		if Config.InternalNavigationEnabled then
+			-- Scenic/Social POIs: expand waypoints in forward order and keep POI indices aligned.
+			for i, poi in ipairs(selectedPOIs) do
+				if poi.poiType == "scenic" and poi.standPoints and #poi.standPoints > 0 then
+					local waypointIndex = poiWaypointIndices[i]
+					if waypointIndex and waypoints[waypointIndex] then
+						local standPoint, standAccessNodeId = selectStandPointPosition(poi.standPoints)
+						local chosenEntrance = if chosenEntrances then chosenEntrances[i] else nil
+						local newWaypoints, newPoiIndex, insertedCount =
+							expandScenicInternalWaypoints(
+								waypoints,
+								waypointIndex,
+								poi,
+								standPoint,
+								standAccessNodeId,
+								chosenEntrance
+							)
+						if insertedCount and insertedCount > 0 then
+							waypoints = newWaypoints
+							poiWaypointIndices[i] = newPoiIndex
+							for j = i + 1, #poiWaypointIndices do
+								poiWaypointIndices[j] += insertedCount
+							end
+							diagnostics(string.format(
+								"[WanderingProps] SCENIC_STAND_EXPAND %s poi=%s inserted=%d newIndex=%d",
+								id, poi.id, insertedCount, newPoiIndex
+							))
+						end
+					end
+				elseif poi.poiType == "social" then
+					local claim = claimedSeatsByPoiId[poi.id]
+
+					if poi.internalGraph and claim and claim.accessNodeId then
+						local chosenEntrance = if chosenEntrances then chosenEntrances[i] else nil
+						local newWaypoints, newPoiIndex, insertedCount =
+							expandSocialInternalWaypoints(waypoints, poiWaypointIndices[i], poi, claim.accessNodeId, chosenEntrance)
+						if insertedCount and insertedCount > 0 then
+							waypoints = newWaypoints
+							poiWaypointIndices[i] = newPoiIndex
+							for j = i + 1, #poiWaypointIndices do
+								poiWaypointIndices[j] += insertedCount
+							end
+							diagnostics(string.format(
+								"[WanderingProps] INTERNAL_NAV_EXPAND %s poi=%s inserted=%d newIndex=%d",
+								id, poi.id, insertedCount, newPoiIndex
+							))
+						end
+					end
+				end
+			end
+		end
+
 		totalDistance = routeDistance(waypoints)
 
 		local builtPoiStops = {}
@@ -883,13 +1387,14 @@ local function spawnNPC()
 					poiId = poi.id,
 					seatIndex = claim.seatIndex,
 					releaseTime = 0,
+					npcId = id,
 				})
 				claimPoiStopIndices[#builtSeatClaims] = i
 			end
 		end
 
-		if #builtPoiStops > 0 then
-			poiStops = builtPoiStops
+			if #builtPoiStops > 0 then
+				poiStops = builtPoiStops
 			poiRoutesTotal += 1
 			local poiTypes = {}
 			for _, poi in ipairs(poiStops) do
@@ -901,12 +1406,29 @@ local function spawnNPC()
 				#poiStops,
 				table.concat(poiTypes, ",")
 			))
-		end
-		if #builtSeatClaims > 0 then
-			seatClaims = builtSeatClaims
-		end
+			end
+			if #builtSeatClaims > 0 then
+				seatClaims = builtSeatClaims
+			end
 
-		if seatClaims and poiStops then
+			if bevelRuntimeEnabled and #waypoints > 2 then
+				local rawLegs = #waypoints - 1
+				waypoints, poiStops = PathSmoother.bevel(
+					waypoints,
+					poiStops,
+					bevelRuntimeRadius,
+					bevelRuntimeSegments
+				)
+				totalDistance = routeDistance(waypoints)
+				diagnostics(string.format(
+					"[WanderingProps] BEVEL_PATH %s raw_legs=%d smoothed_legs=%d",
+					id,
+					rawLegs,
+					math.max(0, #waypoints - 1)
+				))
+			end
+
+			if seatClaims and poiStops then
 			for claimIndex, claim in ipairs(seatClaims) do
 				local targetPOIIndex = claimPoiStopIndices[claimIndex]
 				local arrivalTime = 0
@@ -928,15 +1450,23 @@ local function spawnNPC()
 				end
 
 				claim.releaseTime = arrivalTime + poiStops[targetPOIIndex].dwellTime
+				local targetPoiStop = poiStops[targetPOIIndex]
+				if walkSpeed > 0 and targetPoiStop and targetPoiStop.seatCFrame then
+					local waypointPos = waypoints[targetPoiStop.waypointIndex]
+					if waypointPos then
+						local seatTravelDistance = (targetPoiStop.seatCFrame.Position - waypointPos).Magnitude
+						claim.releaseTime += (seatTravelDistance * 2) / walkSpeed
+					end
+				end
 			end
 		end
-	else
-		local nodeIds = buildRouteNodeIds(graph, preferNearestDespawn)
-		if not nodeIds then
-			routeFailures += 1
-			diagnostics(string.format("[WanderingProps] SPAWN_FAIL no valid route failures=%d", routeFailures))
-			return
-		end
+		else
+			local nodeIds = buildRouteNodeIds(graph, preferNearestDespawn)
+			if not nodeIds then
+				routeFailures += 1
+				diagnostics(string.format("[WanderingProps] SPAWN_FAIL no valid route failures=%d", routeFailures))
+				return false
+			end
 
 		local zoneCount = 0
 		for _, nodeId in ipairs(nodeIds) do
@@ -950,9 +1480,20 @@ local function spawnNPC()
 			diagnostics(string.format("[WanderingProps] ZONE_ROUTE %s zones=%d", id, zoneCount))
 		end
 
-		waypoints = convertNodeIdsToWaypoints(nodeIds, nil)
-		totalDistance = routeDistance(waypoints)
-	end
+			waypoints = convertNodeIdsToWaypoints(nodeIds, nil)
+			totalDistance = routeDistance(waypoints)
+			if bevelRuntimeEnabled and #waypoints > 2 then
+				local rawLegs = #waypoints - 1
+				waypoints = PathSmoother.bevel(waypoints, nil, bevelRuntimeRadius, bevelRuntimeSegments)
+				totalDistance = routeDistance(waypoints)
+				diagnostics(string.format(
+					"[WanderingProps] BEVEL_PATH %s raw_legs=%d smoothed_legs=%d",
+					id,
+					rawLegs,
+					math.max(0, #waypoints - 1)
+				))
+			end
+		end
 
 	local startTime = Workspace:GetServerTimeNow()
 	local totalDwellTime = 0
@@ -976,6 +1517,7 @@ local function spawnNPC()
 		poiStops = poiStops,
 		seatClaims = seatClaims,
 		nightDrainApplied = false,
+		routeVersion = routeVersion,
 	}
 
 	activeNPCs[id] = record
@@ -983,9 +1525,14 @@ local function spawnNPC()
 	npcsSpawnedTotal += 1
 
 	if record.seatClaims then
+		local scheduledRouteVersion = record.routeVersion or 1
 		for _, claim in ipairs(record.seatClaims) do
 			task.delay(claim.releaseTime, function()
-				releaseSeatClaim(claim.poiId, claim.seatIndex)
+				local current = activeNPCs[record.id]
+				if not current or current.routeVersion ~= scheduledRouteVersion then
+					return
+				end
+				releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
 			end)
 		end
 	end
@@ -1004,11 +1551,16 @@ local function spawnNPC()
 		Config.MaxPopulation,
 		npcsSpawnedTotal
 	))
+	return true
 end
 
 local function processSpawnDespawnQueues()
 	local despawnBudget = math.max(1, math.floor(Config.DespawnOpsPerHeartbeat or 8))
 	local spawnBudget = math.max(1, math.floor(Config.SpawnOpsPerHeartbeat or 4))
+	local spawnBuildBudgetMs = math.max(0, tonumber(Config.SpawnBuildTimeBudgetMs) or 0)
+	local spawnBuildDeadline = if spawnBuildBudgetMs > 0
+		then (os.clock() + (spawnBuildBudgetMs / 1000))
+		else math.huge
 
 	local despawnProcessed = 0
 	while despawnProcessed < despawnBudget and queuedDespawnHead <= #queuedDespawnIds do
@@ -1025,14 +1577,65 @@ local function processSpawnDespawnQueues()
 	end
 
 	local spawnProcessed = 0
-	while spawnProcessed < spawnBudget and queuedSpawnRequests > 0 do
+	while spawnProcessed < spawnBudget and os.clock() <= spawnBuildDeadline do
 		if activeCount >= getEffectiveMaxPopulation() then
-			queuedSpawnRequests = 0
 			break
 		end
-		spawnNPC()
-		queuedSpawnRequests -= 1
-		spawnProcessed += 1
+
+		local now = Workspace:GetServerTimeNow()
+		local didWork = false
+
+		if queuedRecycleHead <= #queuedRecycleRequests then
+			local recycleRequest = queuedRecycleRequests[queuedRecycleHead]
+			if recycleRequest and now >= (recycleRequest.readyAt or 0) then
+				queuedRecycleRequests[queuedRecycleHead] = nil
+				queuedRecycleHead += 1
+				didWork = true
+				spawnProcessed += 1
+
+				local recycled = spawnNPC({
+					reuseId = recycleRequest.reuseId,
+					model = recycleRequest.model,
+					walkSpeed = recycleRequest.walkSpeed,
+					routeVersion = recycleRequest.routeVersion,
+				})
+				if recycled then
+					diagnostics(string.format(
+						"[WanderingProps] RECYCLE_SPAWN %s active=%d/%d pending_recycle=%d",
+						recycleRequest.reuseId,
+						activeCount,
+						Config.MaxPopulation,
+						getQueuedRecycleCount()
+					))
+				else
+					queueRecycleRequest(recycleRequest, Config.RecycleRetryDelayMin, Config.RecycleRetryDelayMax)
+					diagnostics(string.format(
+						"[WanderingProps] RECYCLE_RETRY %s pending_recycle=%d",
+						recycleRequest.reuseId,
+						getQueuedRecycleCount()
+					))
+				end
+			end
+		end
+
+		if not didWork then
+			-- While recycle requests are pending (even if delayed), reserve slots and pause fresh spawns.
+			if getQueuedRecycleCount() > 0 then
+				break
+			end
+			if queuedSpawnRequests <= 0 then
+				break
+			end
+
+			spawnNPC()
+			queuedSpawnRequests -= 1
+			spawnProcessed += 1
+		end
+	end
+
+	if queuedRecycleHead > #queuedRecycleRequests then
+		queuedRecycleRequests = {}
+		queuedRecycleHead = 1
 	end
 end
 
@@ -1060,6 +1663,19 @@ local function startup()
 	end
 
 	collectValidModels(modelsFolder)
+
+	if bevelRuntimeEnabled then
+		if Config.BevelRadius <= 0 then
+			warn("[WanderingProps] WARNING: BevelRadius must be > 0. Beveling disabled.")
+			bevelRuntimeEnabled = false
+		end
+		if Config.BevelSegments < 2 then
+			warn("[WanderingProps] WARNING: BevelSegments must be >= 2. Using 2.")
+			bevelRuntimeSegments = 2
+		else
+			bevelRuntimeSegments = math.max(2, math.floor(Config.BevelSegments))
+		end
+	end
 
 	local waypointsFolder = wanderingFolder:FindFirstChild("Waypoints")
 	if not waypointsFolder or not waypointsFolder:IsA("Folder") then
@@ -1117,25 +1733,35 @@ local function startup()
 			local socialCount = 0
 			local totalSeats = 0
 			local hasSocial = false
+			local internalGraphCount = 0
+			local standPointPOICount = 0
 
 			for _, poi in ipairs(poiRegistry.pois) do
 				if poi.poiType == "scenic" then
 					scenicCount += 1
+					if poi.standPoints then
+						standPointPOICount += 1
+					end
 				elseif poi.poiType == "busy" then
 					busyCount += 1
 				elseif poi.poiType == "social" then
 					socialCount += 1
 					hasSocial = true
 					totalSeats += poi.totalSeats or 0
+					if poi.internalGraph then
+						internalGraphCount += 1
+					end
 				end
 			end
 
 			diagnostics(string.format(
-				"[WanderingProps] POI_REGISTRY_BUILT scenic=%d busy=%d social=%d seats=%d",
+				"[WanderingProps] POI_REGISTRY_BUILT scenic=%d busy=%d social=%d seats=%d internalGraphs=%d standPointPOIs=%d",
 				scenicCount,
 				busyCount,
 				socialCount,
-				totalSeats
+				totalSeats,
+				internalGraphCount,
+				standPointPOICount
 			))
 
 			if hasSocial and (Config.SitAnimationId == nil or Config.SitAnimationId == "") then
@@ -1182,13 +1808,14 @@ local function startup()
 	local nextNightDrainAt = 0
 	while true do
 		task.wait(math.max(0, Config.SpawnInterval or 0))
-		local now = Workspace:GetServerTimeNow()
-		if Config.NightDrainEnabled and now >= nextNightDrainAt then
-			applyNightDrain()
-			nextNightDrainAt = now + math.max(0.1, Config.NightDrainCheckInterval)
-		end
+			local now = Workspace:GetServerTimeNow()
+			if Config.NightDrainEnabled and now >= nextNightDrainAt then
+				applyNightDrain(now)
+				nextNightDrainAt = now + math.max(0.1, Config.NightDrainCheckInterval)
+			end
 		local effectiveMax = getEffectiveMaxPopulation()
-		if activeCount + queuedSpawnRequests < effectiveMax then
+		local pendingTotal = activeCount + queuedSpawnRequests + getQueuedRecycleCount()
+		if pendingTotal < effectiveMax then
 			requestSpawn(1)
 		end
 	end

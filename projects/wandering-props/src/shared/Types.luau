@@ -18,6 +18,29 @@ export type SeatClaim = {
 	poiId: string,
 	seatIndex: number,
 	releaseTime: number,
+	npcId: string,
+}
+
+export type InternalNode = {
+	id: string,
+	position: Vector3,
+	connections: { string },
+	isEntry: boolean,
+}
+
+export type InternalGraph = {
+	nodes: { [string]: InternalNode },
+	entryNodeIds: { string },
+	entryToEntranceMap: { [string]: string }?,
+	partToInternalId: { [Instance]: string }?,
+}
+
+export type StandPoint = {
+	position: Vector3,
+	size: Vector3,
+	cframe: CFrame,
+	accessNodeId: string?,
+	sourcePart: BasePart?,
 }
 
 export type LODTier = "near" | "low" | "mid" | "far"
@@ -49,6 +72,7 @@ export type NPCRecord = {
 	modelTemplate: Model?,
 	poiStops: { POIStopData }?,
 	seatClaims: { SeatClaim }?,
+	routeVersion: number?,
 }
 
 export type NPCState = {
@@ -73,8 +97,22 @@ export type NPCState = {
 	modelName: string,
 	startTime: number,
 	lodTier: LODTier,
+	lodPhase: number,
+	movePhase: number,
+	moveAccum: number,
 	raycastPhase: number,
 	lastKnownPosition: Vector3,
+	dwellFacingTarget: Vector3?,
+	fadeDirection: "in" | "out" | nil,
+	fadeProgress: number,
+	partTransparencies: { [BasePart]: number }?,
+	baseParts: { BasePart },
+	headLookNeckMotor: Motor6D?,
+	headLookOriginalC0: CFrame?,
+	headLookActive: boolean,
+	headLookEndTime: number,
+	headLookAlpha: number,
+	headLookNextCheckTime: number,
 }
 
 return nil

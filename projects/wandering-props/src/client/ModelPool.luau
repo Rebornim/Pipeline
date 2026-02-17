@@ -29,14 +29,42 @@ function ModelPool.acquire(modelName: string)
 	stopTrack(entry.idleTrack)
 	stopTrack(entry.sitTrack)
 
-	if entry.model then
-		entry.model.Parent = nil
-	end
-
 	return entry
 end
 
-function ModelPool.release(modelName: string, entry)
+function ModelPool.acquireAny(): (string?, any?)
+	local selectedModelName = nil
+	local selectedCount = 0
+	for modelName, pool in pairs(pooledByModelName) do
+		local count = #pool
+		if count > selectedCount then
+			selectedCount = count
+			selectedModelName = modelName
+		end
+	end
+
+	if not selectedModelName then
+		return nil, nil
+	end
+
+	local pool = pooledByModelName[selectedModelName]
+	if not pool or #pool == 0 then
+		return nil, nil
+	end
+
+	local entry = table.remove(pool)
+	if not entry then
+		return nil, nil
+	end
+
+	stopTrack(entry.walkTrack)
+	stopTrack(entry.idleTrack)
+	stopTrack(entry.sitTrack)
+
+	return selectedModelName, entry
+end
+
+function ModelPool.release(modelName: string, entry, poolParent: Instance?)
 	if not entry or not entry.model then
 		return
 	end
@@ -57,8 +85,18 @@ function ModelPool.release(modelName: string, entry)
 		return
 	end
 
-	entry.model.Parent = nil
+	if poolParent then
+		entry.model.Parent = poolParent
+	end
 	table.insert(pool, entry)
+end
+
+function ModelPool.getModelCount(modelName: string): number
+	local pool = pooledByModelName[modelName]
+	if not pool then
+		return 0
+	end
+	return #pool
 end
 
 function ModelPool.getStats()

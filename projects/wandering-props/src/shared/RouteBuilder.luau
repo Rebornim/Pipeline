@@ -9,7 +9,7 @@ local function shuffledCopy(list)
 	return out
 end
 
-function RouteBuilder.computeRoute(graph, spawnId: string, despawnId: string)
+function RouteBuilder.computeRoute(graph, spawnId: string, despawnId: string, excludeFirstHopId: string?)
 	if graph.nodes[spawnId] == nil or graph.nodes[despawnId] == nil then
 		return nil
 	end
@@ -39,6 +39,9 @@ function RouteBuilder.computeRoute(graph, spawnId: string, despawnId: string)
 		local node = graph.nodes[nodeId]
 		if node then
 			for _, neighborId in ipairs(shuffledCopy(node.connections)) do
+				if nodeId == spawnId and excludeFirstHopId and neighborId == excludeFirstHopId then
+					continue
+				end
 				if not visited[neighborId] then
 					visited[neighborId] = true
 					previous[neighborId] = nodeId
@@ -90,7 +93,16 @@ function RouteBuilder.computeMultiSegmentRoute(graph, nodeSequence: { string })
 	local poiIndices = {}
 
 	for i = 1, #nodeSequence - 1 do
-		local segment = RouteBuilder.computeRoute(graph, nodeSequence[i], nodeSequence[i + 1])
+		local excludeFirstHopId = nil
+		if #fullPath >= 2 then
+			excludeFirstHopId = fullPath[#fullPath - 1]
+		end
+
+		local segment = RouteBuilder.computeRoute(graph, nodeSequence[i], nodeSequence[i + 1], excludeFirstHopId)
+		if not segment and excludeFirstHopId then
+			-- Dead-end fallback: allow immediate backtrack when no alternative exists.
+			segment = RouteBuilder.computeRoute(graph, nodeSequence[i], nodeSequence[i + 1])
+		end
 		if not segment then
 			return nil, nil
 		end

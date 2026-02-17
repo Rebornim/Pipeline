@@ -23,12 +23,17 @@ function NPCAnimator.setup(animator: Animator)
 end
 
 function NPCAnimator.update(npc, isMoving: boolean)
+	-- Self-heal any lingering sit track when NPC is not in sitting state.
+	if npc.sitTrack and npc.sitTrack.IsPlaying then
+		npc.sitTrack:Stop(0.1)
+	end
+
 	if isMoving then
 		if npc.idleTrack.IsPlaying then
-			npc.idleTrack:Stop(0.15)
+			npc.idleTrack:Stop(0)
 		end
 		if not npc.walkTrack.IsPlaying then
-			npc.walkTrack:Play(0.15)
+			npc.walkTrack:Play(0.1)
 		end
 
 		local baseSpeed = Config.WalkAnimBaseSpeed
@@ -64,6 +69,9 @@ function NPCAnimator.playSit(npc)
 	end
 	if npc.sitTrack and not npc.sitTrack.IsPlaying then
 		npc.sitTrack:Play(0.15)
+	end
+	if npc.sitTrack then
+		npc.sitTrack:AdjustSpeed(1)
 	end
 end
 

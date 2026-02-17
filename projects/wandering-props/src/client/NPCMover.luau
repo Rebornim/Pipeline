@@ -124,7 +124,13 @@ function NPCMover.update(npc, dt: number, stopAtWaypoint: number?, skipRaycast: 
 		local rayDirection = Vector3.new(0, -Config.SnapRayLength, 0)
 		local hitResult = Workspace:Raycast(rayOrigin, rayDirection, raycastParams)
 		if hitResult then
-			snappedY = hitResult.Position.Y + Config.SnapHipOffset
+			local targetY = hitResult.Position.Y + Config.SnapHipOffset
+			if Config.GroundSnapSmoothing then
+				local alpha = math.min(1, dt * Config.GroundSnapLerpSpeed)
+				snappedY = npc.lastGroundY + (targetY - npc.lastGroundY) * alpha
+			else
+				snappedY = targetY
+			end
 			npc.lastGroundY = snappedY
 		end
 	end
@@ -134,7 +140,16 @@ function NPCMover.update(npc, dt: number, stopAtWaypoint: number?, skipRaycast: 
 
 	local newCFrame
 	if (targetFlat - snappedPosition).Magnitude > 0.001 then
-		newCFrame = CFrame.lookAt(snappedPosition, targetFlat)
+		local targetCFrame = CFrame.lookAt(snappedPosition, targetFlat)
+		if Config.TurnSmoothing and npc.model.PrimaryPart then
+			local currentRotation = npc.model.PrimaryPart.CFrame.Rotation
+			local targetRotation = targetCFrame.Rotation
+			local alpha = math.min(1, dt * Config.TurnLerpSpeed)
+			local smoothedRotation = currentRotation:Lerp(targetRotation, alpha)
+			newCFrame = smoothedRotation + snappedPosition
+		else
+			newCFrame = targetCFrame
+		end
 	else
 		newCFrame = CFrame.new(snappedPosition)
 	end

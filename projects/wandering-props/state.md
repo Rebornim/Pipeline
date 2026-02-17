@@ -1,12 +1,12 @@
 # Project State: wandering-props
 
-**Stage:** Pass 4 — Built + Critic Reviewed
-**Status:** pass_4_critic_passed
+**Stage:** Pass 6 — Proved
+**Status:** pass_6_complete
 **Pipeline Version:** v3 (cyclic)
-**Last Updated:** 2026-02-16
+**Last Updated:** 2026-02-17
 
 ## Context Files
-- Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `golden-tests.md`, `state.md`
+- Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `pass-5-design.md`, `golden-tests.md`, `state.md`
 - Source of truth for current behavior: `src/` code + this file + `golden-tests.md`
 
 ## Pass 1 Outcome
@@ -149,6 +149,97 @@ Design deviations introduced by request during stress tuning:
 - **4 flags noted (no action needed):** LOD distances tuned wider than design (tuning choice), raycast skip values increased (tuning choice), mid-tier seat slide without animation (acceptable at distance), duplicate RaycastParams setup between NPCClient and NPCMover (minor, future cleanup).
 - Verdict: APPROVED. 0 blocking issues remaining.
 
+## Pass 5 Design Summary
+- **6 visual polish features:** Corner beveling, smooth elevation, smooth body rotation, head look toward player, path lateral offset, spawn/despawn fade.
+- **Changes are mostly client-side.** One server-side change: lateral offset in `PopulationController.convertNodeIdsToWaypoints`.
+- **New modules:** `src/client/PathSmoother.luau`, `src/client/HeadLookController.luau`.
+- **Modified modules:** `NPCClient.client.luau`, `NPCMover.luau`, `Config.luau`, `Types.luau`, `PopulationController.server.luau`.
+- **No new RemoteEvents.** No changes to LODController, ModelPool, NPCAnimator, WaypointGraph, RouteBuilder, Remotes, POIRegistry.
+- All 6 features independently toggleable via Config flags. When all disabled, behavior = Pass 4.
+- Critic: APPROVED (rev 2). 1 blocking fixed (PathSmoother indexMap completeness), 9 flags noted.
+- Golden tests: Tests 19-24 added. Regression suite covers Tests 1, 2, 4, 5, 9, 11, 15, 16, 17.
+
+## Build Guardrails
+- All 6 features independently toggleable. When all disabled, identical to Pass 4.
+- Do NOT modify LODController, ModelPool, or NPCAnimator APIs.
+- Do NOT add new RemoteEvents.
+- PathSmoother must not modify POI stop waypoint positions.
+- HeadLookController must handle missing Neck Motor6D gracefully (skip, not error).
+- Fade must restore original transparencies before pool release.
+
+## Pass 6 Outcome (Built)
+Implemented as designed:
+1. **Social POI internal waypoint navigation** — internal waypoint graphs within social POIs for complex interior layouts, with BFS pathfinding and approach/exit waypoint expansion baked into the main waypoints array.
+2. **Scenic POI stand point collections** — multiple zone-sized stand positions within scenic POIs, randomly selected per visit.
+3. **Single config toggle** — `InternalNavigationEnabled` controls all Pass 6 features.
+
+## Pass 6 Build Details
+- Core Pass 6 implementation is server-driven waypoint expansion.
+- Internal graph discovery in `POIRegistry.discoverInternalGraph()` builds bidirectional mini-graph from `InternalWaypoints` folder children.
+- BFS pathfinding in `POIRegistry.computeInternalPath()` for small internal graphs.
+- Stand point discovery in `discoverStandPoints()` reads `StandPoints` folder children.
+- Seat groups gain `accessNodeId` via `AccessPoint` ObjectValue (fallback: closest internal node by distance).
+- `claimSeat()` returns third value: `accessNodeId`.
+- `expandSocialInternalWaypoints()` inserts approach/exit paths around POI waypoint in the flat waypoints array.
+- Forward-order processing with cumulative index offset tracking for multiple POI expansions.
+
+## Pass 6 Build Deltas From Original Pass 6 Design
+Design deviations introduced during prove/fix cycles:
+1. **Client changes were added (design originally expected server-only):**
+   - `PathSmoother` now excludes `busy` POI stops from protected bevel anchors so busy flow stays smooth.
+   - `NPCClient` walking flow now treats `busy` POIs as pass-through checkpoints (no forced stop frame).
+   - Why: user-observed hard-turn behavior at busy POIs during Pass 6 prove.
+2. **POI waypoint resolver generalized beyond name-specific rules:**
+   - Multi-entrance `ObjectValue` links are accepted as valid.
+   - Internal-entrance links can define canonical POI entry when no single dedicated POI waypoint part is present.
+   - Why: social/scenic multi-entrance authoring produced false ambiguity warnings under strict naming assumptions.
+3. **Scenic internal routing extended beyond initial Pass 6 summary:**
+   - Scenic POIs can use internal waypoints + stand access nodes for entrance -> stand -> exit flow (not only stand-point selection).
+   - Why: align scenic behavior with social interior traversal expectations in authored layouts.
+
+## Pass 6 Prove + Stabilization (2026-02-16)
+1. Golden prove runs covered Tests 25-29 intent plus regressions with minimal-log MCP loops and user visual verification.
+2. Social/scenic multi-entrance authoring no longer depends on a name-specific waypoint rule.
+3. Scenic stand flow now supports entrance/internal path -> stand -> internal path/entrance exit, with stand sampling in part-local space.
+4. POI stop anchoring was preserved for scenic/social while allowing busy POIs to remain smooth pass-through waypoints.
+5. Busy POIs now randomize stop position within authored POI area parts (when waypoint part is inside POI).
+6. Residual non-blocking follow-up: optional client startup ordering improvement to reduce occasional first-visibility delay.
+
+## Key Files Modified For Pass 6 Build
+- `src/server/POIRegistry.luau` (major: internal graph discovery, BFS, stand points, accessNodeId)
+- `src/server/PopulationController.server.luau` (moderate: waypoint expansion, stand point selection, busy/scenic area randomization)
+- `src/client/NPCClient.client.luau` (busy POI pass-through handling)
+- `src/client/PathSmoother.luau` (POI-stop protection behavior for smoothing)
+- `src/shared/Config.luau` (minor: InternalNavigationEnabled flag)
+- `src/shared/Types.luau` (minor: InternalNode, InternalGraph, StandPoint types)
+
+## Build Guardrails
+- `InternalNavigationEnabled = false` → skip all expansion, identical to Pass 5.
+- POIs without `InternalWaypoints` or `StandPoints` folders → current behavior unchanged.
+- No new RemoteEvents. Client-side changes remain limited to busy POI smoothing/pass-through behavior only.
+- Preserve all Pass 1-5 behavior and wire contracts.
+
+### Pass 6 Build Delta
+**Built as designed:**
+- Social POI internal waypoint navigation with internal graph traversal and seat access-node routing.
+- Scenic POI stand point collections with random stand selection per visit.
+- Single config toggle `InternalNavigationEnabled` governing Pass 6 behavior.
+
+**Deviations from design:**
+- Added targeted client/path-smoothing behavior so busy POIs are pass-through checkpoints (fix for observed hard-turn stop behavior).
+- Generalized POI waypoint/entrance resolution to support multi-entrance authoring without name-specific waypoint requirements.
+- Extended scenic flow to support full entrance -> internal path -> stand -> internal path -> exit behavior.
+- Reverted late despawn performance experiments (despawn jitter and client in-place recycle retarget) after user-reported regressions.
+
+**New runtime contracts:**
+- Social seat claims now include `accessNodeId` used by internal route expansion.
+- Scenic stand points are sampled in part-local space and can route via internal access nodes.
+- Busy POIs remain route checkpoints server-side but are handled as pass-through stops client-side.
+
+**Non-blocking follow-ups:**
+- Spawn/despawn hitch is still visible at higher NPC populations and is deferred to a dedicated optimization pass.
+- Optional startup ordering and spawn/despawn budget tuning are still open.
+
 ## Next Step
-- Plan Pass 5: original roadmap had 4 passes. Need to define Pass 5 scope/idea before designing.
-- Prove step for Pass 4 pending (golden tests 15-18 + regression suite).
+- Pass 7 market POI type documented as candidate in `feature-passes.md`. Open design questions remain (see feature-passes.md).
+- Pass 7 is tabled pending other work.

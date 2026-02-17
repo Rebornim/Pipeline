@@ -152,3 +152,101 @@ Re-run from previous passes:
 - **Test 11: Clock-Based Day/Night Hook**
 - **Test 12: Night Drain Route Shortening**
 - **Test 13: Social Seat Exit During Night Drain**
+
+---
+
+## Pass 5: Visual Polish
+
+### Test 19: Corner Beveling Smooth Pathing
+- **Setup:** Waypoint graph with at least two 90° turns (e.g., L-shaped or zigzag route). Config: BevelEnabled = true, BevelRadius = 3, BevelSegments = 4, MaxPopulation = 5, DiagnosticsEnabled = true.
+- **Action:** Start server. Observe NPCs navigating the sharp-turn waypoints.
+- **Expected:** NPCs follow visible curved paths at corners instead of sharp angle turns. The curves are smooth and natural-looking. NPCs do not clip through walls or geometry at beveled corners.
+- **Pass condition:** BEVEL_PATH diagnostics fire on spawn. No sharp angle turns at intermediate waypoints. POI stop positions are unchanged (NPCs still arrive at exact POI waypoint for dwell/seat).
+
+### Test 20: Smooth Elevation and Rotation
+- **Setup:** Waypoint graph with stairs/steps (elevation change > 1 stud between adjacent nodes) and at least one turn > 45°. Config: GroundSnapSmoothing = true, GroundSnapLerpSpeed = 15, TurnSmoothing = true, TurnLerpSpeed = 8.
+- **Action:** Start server. Observe NPCs walking over steps and turning at waypoints.
+- **Expected:** NPCs smoothly rise/fall over elevation changes instead of snapping vertically. Body rotation is gradual during turns — no instant facing snaps.
+- **Pass condition:** No visible vertical snapping on step transitions. No instant rotation snaps at corners. Scenic POI facing turns smoothly rather than snapping to view target.
+
+### Test 21: Head Look Player Recognition
+- **Setup:** Config: HeadLookEnabled = true, HeadLookChance = 1.0 (force trigger), HeadLookDistance = 30, HeadLookDuration = 3, MaxPopulation = 5, DiagnosticsEnabled = true.
+- **Action:** Start server. Walk player close to NPCs (within 30 studs). Observe head behavior.
+- **Expected:** NPC heads smoothly turn to track the player position. After HeadLookDuration seconds, heads smoothly turn back to neutral. Head does not exceed natural rotation limits (no 180° head spin).
+- **Pass condition:** HEAD_LOOK_START diagnostics fire. Head rotation is smooth (no snapping). Works during walking, dwelling, and sitting states. NPCs with no Neck Motor6D are silently skipped (no errors).
+
+### Test 22: Path Lateral Offset
+- **Setup:** Waypoint graph with straight paths between spawn and despawn (at least 3 intermediate waypoints). Config: PathLateralOffsetMax = 3, MaxPopulation = 10, DiagnosticsEnabled = true.
+- **Action:** Start server. Observe multiple NPCs walking the same path segment simultaneously.
+- **Expected:** NPCs walk slightly different lateral paths between the same waypoints. No ant-trail clustering along a single line.
+- **Pass condition:** Visible lateral spread between NPCs on the same route. Zone waypoints and POI waypoints remain unaffected.
+
+### Test 23: Spawn/Despawn Fade
+- **Setup:** Config: FadeEnabled = true, SpawnFadeDuration = 1.0, DespawnFadeDuration = 0.8, SpawnInterval = 2, MaxPopulation = 5, DiagnosticsEnabled = true.
+- **Action:** Start server. Observe NPC spawns and watch NPCs reach their route endpoint.
+- **Expected:** NPCs fade in gradually over 1 second on spawn (transparent → solid). NPCs fade out gradually over 0.8 seconds when reaching route end (solid → transparent). No pop-in or pop-out.
+- **Pass condition:** FADE_IN_START and FADE_OUT_START diagnostics fire. Fade is smooth and continuous. Pool models after despawn have correct (non-transparent) state when reused for next spawn.
+
+### Test 24: All Pass 5 Features Disabled Regression
+- **Setup:** Config: BevelEnabled = false, GroundSnapSmoothing = false, TurnSmoothing = false, HeadLookEnabled = false, PathLateralOffsetMax = 0, FadeEnabled = false, LODEnabled = true, PoolEnabled = true.
+- **Action:** Run all Pass 1-4 golden tests.
+- **Expected:** Behavior identical to pre-Pass-5.
+- **Pass condition:** No regressions when all Pass 5 features are disabled.
+
+### Regression Tests
+Re-run from previous passes:
+- **Test 1: Basic Spawn-Walk-Despawn Cycle**
+- **Test 2: Late-Join Sync**
+- **Test 4: Scenic POI Visit**
+- **Test 5: Social POI Sit and Walk In/Out**
+- **Test 9: Zone Waypoint Variation**
+- **Test 11: Clock-Based Day/Night Hook**
+- **Test 15: LOD Tier Visual Transitions**
+- **Test 16: Model Pool Reuse**
+- **Test 17: LOD + POI State Consistency**
+
+---
+
+## Pass 6: Internal POI Navigation
+
+### Test 25: Social POI with Internal Waypoints
+- **Setup:** Social POI with InternalWaypoints folder containing 3 connected BasePart nodes (IW_Entrance, IW_Hall, IW_Corner). IW_Entrance has ObjectValue linking to the POI's Waypoint part. Nodes linked sequentially: Entrance->Hall->Corner. Seat group has AccessPoint ObjectValue pointing to IW_Corner. Config: MaxPopulation = 5, InternalNavigationEnabled = true, DiagnosticsEnabled = true.
+- **Action:** Start server. Wait for NPCs to reach the social POI.
+- **Expected:** NPC walks to the POI waypoint, then walks through IW_Entrance -> IW_Hall -> IW_Corner (internal approach), sits at the seat, then walks back IW_Corner -> IW_Hall -> IW_Entrance (internal exit), and resumes the main route.
+- **Pass condition:** INTERNAL_NAV_EXPAND diagnostics fire. NPC visibly walks through interior waypoints before and after sitting. No teleportation between waypoints.
+
+### Test 26: Scenic POI with Stand Points
+- **Setup:** Scenic POI with StandPoints folder containing 2 BasePart children (SP1: Size 4x1x4, SP2: Size 4x1x4) at different positions within the POI area. ViewZone present. Config: MaxPopulation = 5, InternalNavigationEnabled = true, DiagnosticsEnabled = true.
+- **Action:** Start server. Observe multiple NPC visits to the same scenic POI.
+- **Expected:** NPCs walk to one of the stand point positions (not the original POI waypoint center). Different NPCs may choose different stand points. NPCs dwell facing ViewZone from the chosen stand point.
+- **Pass condition:** Visible position variation across stand points. No NPCs standing at the exact POI waypoint center when stand points exist.
+
+### Test 27: Backward Compatibility — POIs Without Internal Features
+- **Setup:** Social POI without InternalWaypoints folder. Scenic POI without StandPoints folder. Config: InternalNavigationEnabled = true.
+- **Action:** Start server. Observe NPCs visiting both POIs.
+- **Expected:** Social NPC walks directly to seat and back without internal waypoints. Scenic NPC stands at POI waypoint (or randomized within waypoint size) as in Pass 5.
+- **Pass condition:** Behavior identical to Pass 5 for POIs without the new folders.
+
+### Test 28: Feature Toggle Disabled
+- **Setup:** Social POI with InternalWaypoints folder and connected nodes. Scenic POI with StandPoints folder. Config: InternalNavigationEnabled = false, DiagnosticsEnabled = true.
+- **Action:** Start server. Observe NPC behavior.
+- **Expected:** Internal waypoint folders and stand point folders are completely ignored. Social NPCs walk directly to seats. Scenic NPCs use POI waypoint position (not stand points).
+- **Pass condition:** No INTERNAL_NAV_EXPAND diagnostics. Behavior identical to Pass 5.
+
+### Test 29: Late-Join with Internal Waypoints
+- **Setup:** Social POI with internal waypoints. Config: MaxPopulation = 10, InternalNavigationEnabled = true.
+- **Action:** Start server. Wait 15 seconds for NPCs to be mid-route (some walking through internal waypoints). Join with a second client.
+- **Expected:** Late-joining client receives bulk sync with expanded waypoints array. NPCs interpolate correctly through the longer route including internal waypoint positions.
+- **Pass condition:** No desync between clients. NPCs on the second client walk through internal waypoints at correct positions.
+
+### Regression Tests
+Re-run from previous passes:
+- **Test 1: Basic Spawn-Walk-Despawn Cycle**
+- **Test 2: Late-Join Sync**
+- **Test 4: Scenic POI Visit**
+- **Test 5: Social POI Sit and Walk In/Out**
+- **Test 9: Zone Waypoint Variation**
+- **Test 11: Clock-Based Day/Night Hook**
+- **Test 15: LOD Tier Visual Transitions**
+- **Test 16: Model Pool Reuse**
+- **Test 17: LOD + POI State Consistency**

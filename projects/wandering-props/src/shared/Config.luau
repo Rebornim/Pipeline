@@ -4,6 +4,12 @@ local Config = {}
 Config.MaxPopulation = 20
 Config.SpawnInterval = 2
 Config.InitialSpawnBurst = true
+Config.RecycleNPCsEnabled = true
+Config.RecycleRespawnDelayMin = 0.35
+Config.RecycleRespawnDelayMax = 1.00
+Config.RecycleRetryDelayMin = 0.40
+Config.RecycleRetryDelayMax = 1.20
+Config.SpawnBuildTimeBudgetMs = 1.5
 
 -- MOVEMENT
 Config.BaseWalkSpeed = 8
@@ -67,11 +73,17 @@ Config.LODMidDistance = 800
 Config.LODCheckInterval = 5
 Config.LODLowRaycastSkip = 4
 Config.LODMidRaycastSkip = 10
+Config.LODLowMoveSkip = 2
+Config.LODMidMoveSkip = 4
 
 -- MODEL POOLING
 Config.PoolEnabled = true
 Config.PoolMaxPerModel = 10
 Config.PoolPrewarmPerModel = 2
+Config.PoolFallbackAnyModel = true
+
+-- SPAWN LOAD SHEDDING
+Config.SpawnFadeDisableAboveCount = 8
 
 -- SPAWN/DESPAWN THROTTLE
 Config.SpawnOpsPerHeartbeat = 4
@@ -83,5 +95,40 @@ Config.EventBatchInterval = 0.05
 
 -- CLIENT EVENT APPLICATION THROTTLE
 Config.ClientEventOpsPerHeartbeat = 8
+
+-- CORNER BEVELING
+Config.BevelEnabled = true
+Config.BevelRadius = 3
+Config.BevelSegments = 4
+
+-- SMOOTH ELEVATION
+Config.GroundSnapSmoothing = true
+Config.GroundSnapLerpSpeed = 15
+
+-- SMOOTH ROTATION
+Config.TurnSmoothing = true
+Config.TurnLerpSpeed = 8
+
+-- HEAD LOOK
+Config.HeadLookEnabled = true
+Config.HeadLookDistance = 45
+Config.HeadLookChance = 0.35
+Config.HeadLookDuration = 3
+Config.HeadLookCheckInterval = 1.5
+Config.HeadLookMaxYaw = 70
+Config.HeadLookMaxPitch = 30
+Config.HeadLookLerpSpeed = 5
+Config.HeadLookDisableAboveCount = 40
+
+-- PATH LATERAL OFFSET
+Config.PathLateralOffsetMax = 2
+
+-- INTERNAL POI NAVIGATION
+Config.InternalNavigationEnabled = true
+
+-- SPAWN/DESPAWN FADE
+Config.FadeEnabled = true
+Config.SpawnFadeDuration = 0.8
+Config.DespawnFadeDuration = 0.6
 
 return Config
