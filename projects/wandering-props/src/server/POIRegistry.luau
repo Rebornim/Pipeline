@@ -491,6 +491,16 @@ local function discoverStandPoints(poiFolder: Folder): { any }?
 	return standPoints
 end
 
+local function findTaggedBaseParts(container: Instance, attributeName: string): { BasePart }
+	local parts = {}
+	for _, desc in ipairs(container:GetDescendants()) do
+		if desc:IsA("BasePart") and desc:GetAttribute(attributeName) == true then
+			table.insert(parts, desc)
+		end
+	end
+	return parts
+end
+
 local function discoverMarketStands(poiFolder: Folder): { any }?
 	local standsFolder = poiFolder:FindFirstChild("Stands")
 	if not standsFolder then
@@ -513,34 +523,40 @@ local function discoverMarketStands(poiFolder: Folder): { any }?
 	local defaultCapacity = math.max(1, math.floor(Config.MarketStandCapacity or 3))
 	for _, standContainer in ipairs(standsFolder:GetChildren()) do
 		if standContainer:IsA("Folder") or standContainer:IsA("Model") then
-			local standZone = standContainer:FindFirstChild("StandZone")
-			if not standZone or not standZone:IsA("BasePart") then
+			local standZoneParts = findTaggedBaseParts(standContainer, "MarketStandZone")
+			if #standZoneParts ~= 1 then
 				warn(string.format(
-					'[WanderingProps] WARNING: Stand "%s" in POI "%s" has no StandZone BasePart. Skipped.',
+					'[WanderingProps] WARNING: Stand "%s" in POI "%s" must have exactly one BasePart with Attribute MarketStandZone=true. Skipped.',
 					standContainer.Name,
 					poiFolder.Name
 				))
 				continue
 			end
+			local standZone = standZoneParts[1]
 
-			local viewTarget = standContainer:FindFirstChild("ViewTarget")
-			if not (viewTarget and viewTarget:IsA("BasePart")) then
-				viewTarget = standContainer:FindFirstChild("ViewZone")
-			end
-			if not (viewTarget and viewTarget:IsA("BasePart")) then
+			local viewTarget = nil
+			local viewTargetParts = findTaggedBaseParts(standContainer, "MarketViewTarget")
+			if #viewTargetParts > 1 then
 				warn(string.format(
-					'[WanderingProps] WARNING: Stand "%s" in POI "%s" has no ViewTarget BasePart. ViewTarget will be nil.',
+					'[WanderingProps] WARNING: Stand "%s" in POI "%s" has multiple BaseParts with Attribute MarketViewTarget=true. Using first.',
 					standContainer.Name,
 					poiFolder.Name
 				))
-				viewTarget = nil
+				viewTarget = viewTargetParts[1]
+			elseif #viewTargetParts == 1 then
+				viewTarget = viewTargetParts[1]
+			end
+			if not viewTarget then
+				warn(string.format(
+					'[WanderingProps] WARNING: Stand "%s" in POI "%s" has no BasePart with Attribute MarketViewTarget=true. Using stand zone as view target.',
+					standContainer.Name,
+					poiFolder.Name
+				))
 			end
 
 			if Config.HideMarkersAtRuntime then
 				standZone.Transparency = 1
-				if viewTarget then
-					viewTarget.Transparency = 1
-				end
+				if viewTarget then viewTarget.Transparency = 1 end
 			end
 			standZone.CanCollide = false
 			standZone.Anchored = true
@@ -549,17 +565,19 @@ local function discoverMarketStands(poiFolder: Folder): { any }?
 				viewTarget.Anchored = true
 			end
 
-			table.insert(stands, {
-				standZonePosition = standZone.Position,
-				standZoneSize = standZone.Size,
-				standZoneCFrame = standZone.CFrame,
-				viewTargetPosition = if viewTarget then viewTarget.Position else standZone.Position,
-				viewTargetSize = if viewTarget then viewTarget.Size else Vector3.zero,
-				accessNodeId = nil,
-				occupiedCount = 0,
-				capacity = defaultCapacity,
-			})
-		end
+				table.insert(stands, {
+					standZonePosition = standZone.Position,
+					standZoneSize = standZone.Size,
+					standZoneCFrame = standZone.CFrame,
+					viewTargetPosition = if viewTarget then viewTarget.Position else standZone.Position,
+					viewTargetSize = if viewTarget then viewTarget.Size else Vector3.zero,
+					accessNodeId = nil,
+					occupiedCount = 0,
+					capacity = defaultCapacity,
+					sourceContainer = standContainer,
+					sourceStandZonePart = standZone,
+				})
+			end
 	end
 
 	if #stands == 0 then
@@ -567,6 +585,56 @@ local function discoverMarketStands(poiFolder: Folder): { any }?
 	end
 
 	return stands
+end
+
+local function resolveMarketStandIndexFromTarget(target: Instance?, stands): number?
+	if not target then
+		return nil
+	end
+	if target:IsA("ObjectValue") then
+		return resolveMarketStandIndexFromTarget(target.Value, stands)
+	end
+	if target:IsA("Attachment") and target.Parent and target.Parent:IsA("BasePart") then
+		target = target.Parent
+	end
+
+	for standIndex, stand in ipairs(stands) do
+		local standContainer = stand.sourceContainer
+		local standZonePart = stand.sourceStandZonePart
+		if target == standContainer or target == standZonePart then
+			return standIndex
+		end
+		if standContainer and target:IsDescendantOf(standContainer) then
+			return standIndex
+		end
+	end
+
+	return nil
+end
+
+local function resolveMarketStandAccessNodeIdsFromInternalLinks(stands, internalGraph): { [number]: string }
+	local standAccessByIndex = {}
+	local partToInternalId = if internalGraph and internalGraph.partToInternalId then internalGraph.partToInternalId else {}
+	for part, internalNodeId in pairs(partToInternalId) do
+		if part and part:IsA("BasePart") and internalNodeId and internalGraph.nodes[internalNodeId] then
+			for _, ov in ipairs(part:GetDescendants()) do
+				if ov:IsA("ObjectValue") and ov.Value then
+					local standIndex = resolveMarketStandIndexFromTarget(ov.Value, stands)
+					if standIndex then
+						if not standAccessByIndex[standIndex] then
+							standAccessByIndex[standIndex] = internalNodeId
+						elseif standAccessByIndex[standIndex] ~= internalNodeId then
+							warn(string.format(
+								'[WanderingProps] WARNING: Market stand "%s" has links from multiple internal waypoints. Using first.',
+								tostring(stands[standIndex].sourceContainer and stands[standIndex].sourceContainer.Name or standIndex)
+							))
+						end
+					end
+				end
+			end
+		end
+	end
+	return standAccessByIndex
 end
 
 local function resolveGroupAccessNodeId(groupFolder: Instance, internalGraph, partToInternalId: { [Instance]: string }): string?
@@ -955,19 +1023,37 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 					end
 				end
 
+				local standAccessByIndex = resolveMarketStandAccessNodeIdsFromInternalLinks(stands, internalGraph)
+				local resolvedStands = {}
 				local standAccessNodeIds = {}
 				local standAccessSet = {}
-				for _, stand in ipairs(stands) do
-					stand.accessNodeId = findClosestInternalNode(stand.standZonePosition, internalGraph)
-					if stand.accessNodeId and not standAccessSet[stand.accessNodeId] then
-						standAccessSet[stand.accessNodeId] = true
-						table.insert(standAccessNodeIds, stand.accessNodeId)
+				for standIndex, stand in ipairs(stands) do
+					stand.accessNodeId = standAccessByIndex[standIndex]
+					if stand.accessNodeId then
+						table.insert(resolvedStands, stand)
+						if not standAccessSet[stand.accessNodeId] then
+							standAccessSet[stand.accessNodeId] = true
+							table.insert(standAccessNodeIds, stand.accessNodeId)
+						end
+					else
+						warn(string.format(
+							'[WanderingProps] WARNING: Market stand "%s" in POI "%s" has no internal waypoint ObjectValue link. Skipped.',
+							tostring(stand.sourceContainer and stand.sourceContainer.Name or standIndex),
+							child.Name
+						))
 					end
+				end
+				if #resolvedStands == 0 then
+					warn(string.format(
+						'[WanderingProps] WARNING: Market POI "%s" has no stands with valid internal waypoint links. Skipped.',
+						child.Name
+					))
+					continue
 				end
 				buildCachedInternalPaths(poi, standAccessNodeIds)
 
-				poi.stands = stands
-				poi.totalStands = #stands
+				poi.stands = resolvedStands
+				poi.totalStands = #resolvedStands
 				if Config.DiagnosticsEnabled then
 					print(string.format(
 						"[WanderingProps] MARKET_DISCOVER poi=%s stands=%d entries=%d",
