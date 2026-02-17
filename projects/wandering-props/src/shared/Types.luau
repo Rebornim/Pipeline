@@ -7,11 +7,13 @@ export type Node = {
 }
 
 export type POIStopData = {
-	type: "scenic" | "busy" | "social",
+	type: "scenic" | "busy" | "social" | "market",
 	waypointIndex: number,
 	dwellTime: number,
 	viewTarget: Vector3?,
 	seatCFrame: CFrame?,
+	scanTarget: Vector3?,
+	scanExtent: number?,
 }
 
 export type SeatClaim = {
@@ -43,6 +45,24 @@ export type StandPoint = {
 	sourcePart: BasePart?,
 }
 
+export type MarketStand = {
+	standZonePosition: Vector3,
+	standZoneSize: Vector3,
+	standZoneCFrame: CFrame,
+	viewTargetPosition: Vector3,
+	viewTargetSize: Vector3,
+	accessNodeId: string?,
+	occupiedCount: number,
+	capacity: number,
+}
+
+export type MarketStandClaim = {
+	poiId: string,
+	standIndex: number,
+	npcId: string,
+	releaseTime: number,
+}
+
 export type LODTier = "near" | "low" | "mid" | "far"
 
 export type Graph = {
@@ -72,6 +92,7 @@ export type NPCRecord = {
 	modelTemplate: Model?,
 	poiStops: { POIStopData }?,
 	seatClaims: { SeatClaim }?,
+	marketStandClaims: { MarketStandClaim }?,
 	routeVersion: number?,
 }
 
@@ -113,6 +134,10 @@ export type NPCState = {
 	headLookEndTime: number,
 	headLookAlpha: number,
 	headLookNextCheckTime: number,
+	scanActive: boolean,
+	scanTarget: Vector3?,
+	scanExtent: number?,
+	scanTime: number,
 }
 
 return nil

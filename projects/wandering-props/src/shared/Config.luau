@@ -50,6 +50,15 @@ Config.SocialDwellMax = 30
 Config.SocialCapacityPercent = 0.75
 Config.SocialWeight = 0.7
 
+-- MARKET POI
+Config.MarketStandsMin = 2
+Config.MarketStandsMax = 4
+Config.MarketStandCapacity = 3
+Config.MarketBrowseDwellMin = 4
+Config.MarketBrowseDwellMax = 10
+Config.MarketWeight = 0.8
+Config.MarketHeadScanSpeed = 0.4
+
 -- RANDOM WANDERING (disabled)
 Config.WanderChance = 0
 Config.WanderMaxDistance = 50

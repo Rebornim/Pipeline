@@ -14,6 +14,10 @@ function HeadLookController.init(npc, neckMotor: Motor6D?, neckOriginalC0: CFram
 	npc.headLookEndTime = 0
 	local checkInterval = math.max(0.1, Config.HeadLookCheckInterval)
 	npc.headLookNextCheckTime = Workspace:GetServerTimeNow() + math.random() * checkInterval
+	npc.scanActive = false
+	npc.scanTarget = nil
+	npc.scanExtent = nil
+	npc.scanTime = 0
 
 	if not npc.headLookNeckMotor or not npc.headLookOriginalC0 then
 		for _, desc in ipairs(npc.model:GetDescendants()) do
@@ -122,6 +126,62 @@ function HeadLookController.update(npc, playerPosition: Vector3, dt: number, now
 	neckMotor.C0 = originalC0 * rotation
 end
 
+function HeadLookController.startScan(npc, scanTarget: Vector3, scanExtent: number)
+	npc.scanActive = true
+	npc.scanTarget = scanTarget
+	npc.scanExtent = math.max(0, scanExtent or 0)
+	npc.scanTime = 0
+end
+
+function HeadLookController.stopScan(npc)
+	npc.scanActive = false
+	npc.scanTarget = nil
+	npc.scanExtent = nil
+	npc.scanTime = 0
+	if npc.headLookNeckMotor and npc.headLookOriginalC0 then
+		npc.headLookNeckMotor.C0 = npc.headLookOriginalC0
+	end
+end
+
+function HeadLookController.applyScan(npc, dt: number)
+	if not npc.scanActive then
+		return
+	end
+
+	local neckMotor = npc.headLookNeckMotor
+	local originalC0 = npc.headLookOriginalC0
+	if not neckMotor or not originalC0 or not neckMotor.Parent then
+		return
+	end
+	if not npc.scanTarget then
+		return
+	end
+
+	-- Player look always overrides marketplace scan.
+	if npc.headLookActive or (npc.headLookAlpha or 0) > 0.01 then
+		return
+	end
+
+	npc.scanTime = (npc.scanTime or 0) + math.max(0, dt)
+	local rootPart = npc.model.PrimaryPart
+	if not rootPart then
+		return
+	end
+
+	local headPos = rootPart.Position
+	if neckMotor.Part1 then
+		headPos = neckMotor.Part1.Position
+	end
+	local distToTarget = (npc.scanTarget - headPos).Magnitude
+	local extent = math.max(0, npc.scanExtent or 0)
+	local scanYawRange = math.atan2(extent, math.max(1, distToTarget))
+	scanYawRange = math.min(scanYawRange, math.rad(Config.HeadLookMaxYaw))
+
+	local scanSpeed = math.max(0.01, Config.MarketHeadScanSpeed or 0.4)
+	local yaw = math.sin((npc.scanTime or 0) * scanSpeed * 2 * math.pi) * scanYawRange
+	neckMotor.C0 = originalC0 * CFrame.Angles(0, -yaw, 0)
+end
+
 function HeadLookController.reset(npc)
 	if npc.headLookNeckMotor and npc.headLookOriginalC0 then
 		npc.headLookNeckMotor.C0 = npc.headLookOriginalC0
@@ -130,6 +190,10 @@ function HeadLookController.reset(npc)
 	npc.headLookActive = false
 	npc.headLookEndTime = 0
 	npc.headLookNextCheckTime = 0
+	npc.scanActive = false
+	npc.scanTarget = nil
+	npc.scanExtent = nil
+	npc.scanTime = 0
 end
 
 return HeadLookController

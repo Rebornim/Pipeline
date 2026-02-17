@@ -431,6 +431,32 @@ local function releaseSeatClaim(poiId: string, seatIndex: number, expectedNpcId:
 	))
 end
 
+local function releaseMarketStandClaim(poiId: string, standIndex: number, expectedNpcId: string?)
+	if not poiRegistry then
+		return
+	end
+
+	local poi = POIRegistry.getPOI(poiRegistry, poiId)
+	if not poi or poi.poiType ~= "market" or not poi.stands or not poi.stands[standIndex] then
+		return
+	end
+
+	local stand = poi.stands[standIndex]
+	local occupiedCount = stand.occupiedCount or 0
+	if occupiedCount <= 0 then
+		return
+	end
+
+	POIRegistry.releaseMarketStand(poi, standIndex)
+	diagnostics(string.format(
+		"[WanderingProps] MARKET_CLAIM_RELEASE poi=%s stand=%d occupied=%d/%d",
+		poi.id,
+		standIndex,
+		math.max(0, (stand.occupiedCount or 0)),
+		stand.capacity or 0
+	))
+end
+
 local spawnNPC
 
 local function despawnNPC(id: string)
@@ -442,6 +468,11 @@ local function despawnNPC(id: string)
 	if record.seatClaims then
 		for _, claim in ipairs(record.seatClaims) do
 			releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
+		end
+	end
+	if record.marketStandClaims then
+		for _, claim in ipairs(record.marketStandClaims) do
+			releaseMarketStandClaim(claim.poiId, claim.standIndex, claim.npcId)
 		end
 	end
 
@@ -727,7 +758,13 @@ local function trimRouteForNightDrain(record, now: number): boolean
 			releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
 		end
 	end
+	if record.marketStandClaims then
+		for _, claim in ipairs(record.marketStandClaims) do
+			releaseMarketStandClaim(claim.poiId, claim.standIndex, claim.npcId)
+		end
+	end
 	record.seatClaims = nil
+	record.marketStandClaims = nil
 	record.poiStops = newPoiStops
 	record.waypoints = newWaypoints
 	record.startTime = now
@@ -981,6 +1018,134 @@ local function expandScenicInternalWaypoints(
 	return newWaypoints, newPoiWaypointIndex, insertedCount
 end
 
+local function selectMarketStandPosition(stand): Vector3
+	local halfX = stand.standZoneSize.X / 2
+	local halfZ = stand.standZoneSize.Z / 2
+	local localOffset = Vector3.new(
+		rng:NextNumber(-halfX, halfX),
+		0,
+		rng:NextNumber(-halfZ, halfZ)
+	)
+	if stand.standZoneCFrame then
+		return stand.standZoneCFrame:PointToWorldSpace(localOffset)
+	end
+	return stand.standZonePosition + localOffset
+end
+
+local function pathDistance(path: { Vector3 }): number
+	local total = 0
+	for i = 1, #path - 1 do
+		total += (path[i + 1] - path[i]).Magnitude
+	end
+	return total
+end
+
+local function appendUniquePathPoints(dst: { Vector3 }, path: { Vector3 })
+	for _, point in ipairs(path) do
+		if #dst == 0 or (dst[#dst] - point).Magnitude > 0.01 then
+			table.insert(dst, point)
+		end
+	end
+end
+
+local function expandMarketInternalWaypoints(
+	waypoints: { Vector3 },
+	poiWaypointIndex: number,
+	poi,
+	selectedStandIndices: { number },
+	chosenEntranceNodeId: string?
+): ({ Vector3 }, { number }, number)
+	if not poi.internalGraph or not poi.stands or not selectedStandIndices or #selectedStandIndices == 0 then
+		return waypoints, {}, 0
+	end
+
+	local candidateEntryIds = poi.internalGraph.entryNodeIds
+	if chosenEntranceNodeId and poi.internalGraph.entryToEntranceMap then
+		local filtered = {}
+		for _, entryId in ipairs(poi.internalGraph.entryNodeIds) do
+			if poi.internalGraph.entryToEntranceMap[entryId] == chosenEntranceNodeId then
+				table.insert(filtered, entryId)
+			end
+		end
+		if #filtered > 0 then
+			candidateEntryIds = filtered
+		end
+	end
+	if not candidateEntryIds or #candidateEntryIds == 0 then
+		return waypoints, {}, 0
+	end
+
+	local entryNodeId = candidateEntryIds[1]
+	local firstStand = poi.stands[selectedStandIndices[1]]
+	local firstAccessNodeId = if firstStand then firstStand.accessNodeId else nil
+	if firstAccessNodeId then
+		local bestPathDistance = math.huge
+		for _, candidateEntryId in ipairs(candidateEntryIds) do
+			local candidatePath = POIRegistry.computeInternalPath(poi.internalGraph, candidateEntryId, firstAccessNodeId)
+			if candidatePath and #candidatePath >= 1 then
+				local distance = pathDistance(candidatePath)
+				if distance < bestPathDistance then
+					bestPathDistance = distance
+					entryNodeId = candidateEntryId
+				end
+			end
+		end
+	end
+
+	local newWaypoints = {}
+	for i = 1, poiWaypointIndex do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	local standWaypointIndices = {}
+	local currentAccessNodeId = entryNodeId
+	for _, standIndex in ipairs(selectedStandIndices) do
+		local stand = poi.stands[standIndex]
+		if not stand or not stand.accessNodeId then
+			continue
+		end
+
+		local standPath = POIRegistry.computeInternalPath(poi.internalGraph, currentAccessNodeId, stand.accessNodeId)
+		if standPath and #standPath >= 1 then
+			appendUniquePathPoints(newWaypoints, standPath)
+		else
+			diagnostics(string.format(
+				"[WanderingProps] MARKET_SKIP_STAND poi=%s stand=%d reason=no_path",
+				poi.id,
+				standIndex
+			))
+			continue
+		end
+
+		table.insert(newWaypoints, selectMarketStandPosition(stand))
+		table.insert(standWaypointIndices, #newWaypoints)
+		currentAccessNodeId = stand.accessNodeId
+	end
+
+	if #standWaypointIndices == 0 then
+		return waypoints, {}, 0
+	end
+
+	if currentAccessNodeId ~= entryNodeId then
+		local exitPath = POIRegistry.computeInternalPath(poi.internalGraph, currentAccessNodeId, entryNodeId)
+		if exitPath and #exitPath >= 1 then
+			appendUniquePathPoints(newWaypoints, exitPath)
+		end
+	end
+
+	-- Return through the external market entry node before continuing route.
+	if waypoints[poiWaypointIndex] then
+		table.insert(newWaypoints, waypoints[poiWaypointIndex])
+	end
+
+	for i = poiWaypointIndex + 1, #waypoints do
+		table.insert(newWaypoints, waypoints[i])
+	end
+
+	local insertedCount = #newWaypoints - #waypoints
+	return newWaypoints, standWaypointIndices, insertedCount
+end
+
 local function findUnreachableSocialInternalPOIIndex(selectedPOIs, claimedSeatsByPoiId, chosenEntrances): number?
 	if not Config.InternalNavigationEnabled then
 		return nil
@@ -1081,6 +1246,7 @@ spawnNPC = function(options)
 	local totalDistance = 0
 	local poiStops = nil
 	local seatClaims = nil
+	local marketStandClaims = nil
 
 	if poiRegistry and #poiRegistry.pois > 0 then
 		local minPoiCount = Config.POICountMin
@@ -1097,14 +1263,15 @@ spawnNPC = function(options)
 		end
 		count = math.min(count, #poiRegistry.pois)
 
-		local spawnId = RouteBuilder.pickRandomSpawn(graph)
-		local selectedPOIs = POIRegistry.selectPOIs(poiRegistry, count, graph.nodes[spawnId].position)
-		local claimedSeatsByPoiId = {}
+			local spawnId = RouteBuilder.pickRandomSpawn(graph)
+			local selectedPOIs = POIRegistry.selectPOIs(poiRegistry, count, graph.nodes[spawnId].position)
+			local claimedSeatsByPoiId = {}
+			local marketStandsByPoiId = {}
 
-		local filteredPOIs = {}
-		for _, poi in ipairs(selectedPOIs) do
-			if poi.poiType == "social" then
-				local seatIndex, seatCFrame, accessNodeId = POIRegistry.claimSeat(poi, id)
+			local filteredPOIs = {}
+			for _, poi in ipairs(selectedPOIs) do
+				if poi.poiType == "social" then
+					local seatIndex, seatCFrame, accessNodeId = POIRegistry.claimSeat(poi, id)
 				if seatIndex and seatCFrame then
 					claimedSeatsByPoiId[poi.id] = {
 						seatIndex = seatIndex,
@@ -1123,14 +1290,62 @@ spawnNPC = function(options)
 						totalSeats
 					))
 					table.insert(filteredPOIs, poi)
+					else
+						poiSkips += 1
+						diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=capacity_full", id, poi.id))
+					end
+				elseif poi.poiType == "market" then
+					local stands = poi.stands or {}
+					local standsMin = math.max(1, math.floor(Config.MarketStandsMin or 1))
+					local standsMax = math.max(1, math.floor(Config.MarketStandsMax or standsMin))
+					if standsMax < standsMin then
+						standsMin, standsMax = standsMax, standsMin
+					end
+					local requestedCount = rng:NextInteger(standsMin, standsMax)
+
+					local availableStandIndices = {}
+					for standIndex, stand in ipairs(stands) do
+						local capacity = math.max(1, math.floor(stand.capacity or Config.MarketStandCapacity or 1))
+						if (stand.occupiedCount or 0) < capacity then
+							table.insert(availableStandIndices, standIndex)
+						end
+					end
+
+					if #availableStandIndices == 0 then
+						poiSkips += 1
+						diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=no_available_stands", id, poi.id))
+					else
+						local visitCount = math.min(requestedCount, #availableStandIndices)
+						for idx = #availableStandIndices, 2, -1 do
+							local swapIdx = rng:NextInteger(1, idx)
+							availableStandIndices[idx], availableStandIndices[swapIdx] =
+								availableStandIndices[swapIdx], availableStandIndices[idx]
+						end
+
+						local selectedStandIndices = {}
+						local claimedAny = false
+						for i = 1, visitCount do
+							local standIndex = availableStandIndices[i]
+							if standIndex and POIRegistry.claimMarketStand(poi, standIndex, id) then
+								table.insert(selectedStandIndices, standIndex)
+								claimedAny = true
+							end
+						end
+
+						if claimedAny and #selectedStandIndices > 0 then
+							marketStandsByPoiId[poi.id] = {
+								standIndices = selectedStandIndices,
+							}
+							table.insert(filteredPOIs, poi)
+						else
+							poiSkips += 1
+							diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=claim_failed", id, poi.id))
+						end
+					end
 				else
-					poiSkips += 1
-					diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=capacity_full", id, poi.id))
+					table.insert(filteredPOIs, poi)
 				end
-			else
-				table.insert(filteredPOIs, poi)
 			end
-		end
 		selectedPOIs = filteredPOIs
 
 		-- Pick best external entrance for each POI with multiple entrances
@@ -1207,11 +1422,18 @@ spawnNPC = function(options)
 
 			poiSkips += 1
 			diagnostics(string.format("[WanderingProps] POI_SKIP %s poi=%s reason=%s", id, droppedPOI.id, skipReason))
-			local droppedClaim = claimedSeatsByPoiId[droppedPOI.id]
-			if droppedClaim then
-				releaseSeatClaim(droppedPOI.id, droppedClaim.seatIndex, droppedClaim.npcId)
-				claimedSeatsByPoiId[droppedPOI.id] = nil
-			end
+				local droppedClaim = claimedSeatsByPoiId[droppedPOI.id]
+				if droppedClaim then
+					releaseSeatClaim(droppedPOI.id, droppedClaim.seatIndex, droppedClaim.npcId)
+					claimedSeatsByPoiId[droppedPOI.id] = nil
+				end
+				local droppedMarket = marketStandsByPoiId[droppedPOI.id]
+				if droppedMarket and droppedMarket.standIndices then
+					for _, standIndex in ipairs(droppedMarket.standIndices) do
+						releaseMarketStandClaim(droppedPOI.id, standIndex, id)
+					end
+					marketStandsByPoiId[droppedPOI.id] = nil
+				end
 
 			-- Recalculate chosen entrances after dropping a POI
 			if chosenEntrances then
@@ -1269,11 +1491,16 @@ spawnNPC = function(options)
 			routeFailures += 1
 			routeStuckTotal += 1
 			diagnostics(string.format("[WanderingProps] ROUTE_STUCK npc=%s spawn=%s", id, spawnId))
-			for poiId, claim in pairs(claimedSeatsByPoiId) do
-				releaseSeatClaim(poiId, claim.seatIndex, claim.npcId)
+				for poiId, claim in pairs(claimedSeatsByPoiId) do
+					releaseSeatClaim(poiId, claim.seatIndex, claim.npcId)
+				end
+				for poiId, marketData in pairs(marketStandsByPoiId) do
+					for _, standIndex in ipairs(marketData.standIndices or {}) do
+						releaseMarketStandClaim(poiId, standIndex, id)
+					end
+				end
+				return false
 			end
-			return false
-		end
 
 		local poiWaypointIndexSet = {}
 		for _, idx in ipairs(poiWaypointIndices) do
@@ -1337,11 +1564,11 @@ spawnNPC = function(options)
 							))
 						end
 					end
-				elseif poi.poiType == "social" then
-					local claim = claimedSeatsByPoiId[poi.id]
+					elseif poi.poiType == "social" then
+						local claim = claimedSeatsByPoiId[poi.id]
 
-					if poi.internalGraph and claim and claim.accessNodeId then
-						local chosenEntrance = if chosenEntrances then chosenEntrances[i] else nil
+						if poi.internalGraph and claim and claim.accessNodeId then
+							local chosenEntrance = if chosenEntrances then chosenEntrances[i] else nil
 						local newWaypoints, newPoiIndex, insertedCount =
 							expandSocialInternalWaypoints(waypoints, poiWaypointIndices[i], poi, claim.accessNodeId, chosenEntrance)
 						if insertedCount and insertedCount > 0 then
@@ -1353,62 +1580,137 @@ spawnNPC = function(options)
 							diagnostics(string.format(
 								"[WanderingProps] INTERNAL_NAV_EXPAND %s poi=%s inserted=%d newIndex=%d",
 								id, poi.id, insertedCount, newPoiIndex
-							))
+								))
+							end
+						end
+					elseif poi.poiType == "market" then
+						local marketData = marketStandsByPoiId[poi.id]
+						if poi.internalGraph and marketData and marketData.standIndices and #marketData.standIndices > 0 then
+							local chosenEntrance = if chosenEntrances then chosenEntrances[i] else nil
+							local newWaypoints, standWaypointIndices, insertedCount = expandMarketInternalWaypoints(
+								waypoints,
+								poiWaypointIndices[i],
+								poi,
+								marketData.standIndices,
+								chosenEntrance
+							)
+							if insertedCount and insertedCount > 0 and standWaypointIndices and #standWaypointIndices > 0 then
+								waypoints = newWaypoints
+								marketData.standWaypointIndices = standWaypointIndices
+								-- Keep representative index for this POI aligned to first stand stop.
+								poiWaypointIndices[i] = standWaypointIndices[1]
+								for j = i + 1, #poiWaypointIndices do
+									poiWaypointIndices[j] += insertedCount
+								end
+								diagnostics(string.format(
+									"[WanderingProps] MARKET_EXPAND %s poi=%s stands=%d inserted=%d",
+									id,
+									poi.id,
+									#standWaypointIndices,
+									insertedCount
+								))
+							end
 						end
 					end
 				end
 			end
-		end
 
 		totalDistance = routeDistance(waypoints)
 
-		local builtPoiStops = {}
-		local builtSeatClaims = {}
-		local claimPoiStopIndices = {}
-		for i, poi in ipairs(selectedPOIs) do
-			local dwellTime = 0
-			if poi.poiType ~= "busy" then
-				local dwellMin = poi.dwellMin or 0
-				local dwellMax = poi.dwellMax or dwellMin
-				dwellTime = rng:NextNumber(dwellMin, dwellMax)
-			end
+			local builtPoiStops = {}
+			local builtSeatClaims = {}
+			local builtSeatClaimStopIndices = {}
+			local builtMarketStandClaims = {}
+			local builtMarketClaimStopIndices = {}
 
-			local claim = claimedSeatsByPoiId[poi.id]
-			builtPoiStops[i] = {
-				type = poi.poiType,
-				waypointIndex = poiWaypointIndices[i],
-				dwellTime = dwellTime,
-				viewTarget = if poi.poiType == "scenic" then poi.viewTarget else nil,
-				seatCFrame = if poi.poiType == "social" and claim then claim.seatCFrame else nil,
-			}
+				for i, poi in ipairs(selectedPOIs) do
+					if poi.poiType == "market" then
+						local marketData = marketStandsByPoiId[poi.id]
+						local standIndices = if marketData and marketData.standIndices then marketData.standIndices else {}
+						local standWaypointIndices = if marketData and marketData.standWaypointIndices then marketData.standWaypointIndices else {}
+						local usedStandIndices = {}
 
-			if poi.poiType == "social" and claim and builtPoiStops[i].seatCFrame then
-				table.insert(builtSeatClaims, {
-					poiId = poi.id,
-					seatIndex = claim.seatIndex,
-					releaseTime = 0,
-					npcId = id,
-				})
-				claimPoiStopIndices[#builtSeatClaims] = i
+						for standOrder, standIndex in ipairs(standIndices) do
+							local stand = poi.stands and poi.stands[standIndex]
+							local standWaypointIndex = standWaypointIndices[standOrder]
+							if stand and standWaypointIndex then
+							local dwellTime = rng:NextNumber(Config.MarketBrowseDwellMin, Config.MarketBrowseDwellMax)
+							local scanExtent = math.max(0, (stand.viewTargetSize and stand.viewTargetSize.X or 0) / 2)
+							table.insert(builtPoiStops, {
+								type = "market",
+								waypointIndex = standWaypointIndex,
+								dwellTime = dwellTime,
+								viewTarget = stand.viewTargetPosition,
+								seatCFrame = nil,
+								scanTarget = stand.viewTargetPosition,
+								scanExtent = scanExtent,
+							})
+								table.insert(builtMarketStandClaims, {
+									poiId = poi.id,
+									standIndex = standIndex,
+									npcId = id,
+									releaseTime = 0,
+								})
+								builtMarketClaimStopIndices[#builtMarketStandClaims] = #builtPoiStops
+								usedStandIndices[standIndex] = true
+							end
+						end
+
+						for _, standIndex in ipairs(standIndices) do
+							if not usedStandIndices[standIndex] then
+								releaseMarketStandClaim(poi.id, standIndex, id)
+							end
+						end
+					else
+					local dwellTime = 0
+					if poi.poiType ~= "busy" then
+						local dwellMin = poi.dwellMin or 0
+						local dwellMax = poi.dwellMax or dwellMin
+						dwellTime = rng:NextNumber(dwellMin, dwellMax)
+					end
+
+					local claim = claimedSeatsByPoiId[poi.id]
+					table.insert(builtPoiStops, {
+						type = poi.poiType,
+						waypointIndex = poiWaypointIndices[i],
+						dwellTime = dwellTime,
+						viewTarget = if poi.poiType == "scenic" then poi.viewTarget else nil,
+						seatCFrame = if poi.poiType == "social" and claim then claim.seatCFrame else nil,
+						scanTarget = nil,
+						scanExtent = nil,
+					})
+
+					if poi.poiType == "social" and claim and builtPoiStops[#builtPoiStops].seatCFrame then
+						table.insert(builtSeatClaims, {
+							poiId = poi.id,
+							seatIndex = claim.seatIndex,
+							releaseTime = 0,
+							npcId = id,
+						})
+						builtSeatClaimStopIndices[#builtSeatClaims] = #builtPoiStops
+					end
+				end
 			end
-		end
 
 			if #builtPoiStops > 0 then
 				poiStops = builtPoiStops
-			poiRoutesTotal += 1
-			local poiTypes = {}
-			for _, poi in ipairs(poiStops) do
-				table.insert(poiTypes, poi.type)
-			end
-			diagnostics(string.format(
-				"[WanderingProps] POI_ROUTE %s pois=%d types=%s",
-				id,
-				#poiStops,
-				table.concat(poiTypes, ",")
-			))
+				poiRoutesTotal += 1
+				local poiTypes = {}
+				for _, poiStop in ipairs(poiStops) do
+					table.insert(poiTypes, poiStop.type)
+				end
+				diagnostics(string.format(
+					"[WanderingProps] POI_ROUTE %s pois=%d types=%s",
+					id,
+					#poiStops,
+					table.concat(poiTypes, ",")
+				))
 			end
 			if #builtSeatClaims > 0 then
 				seatClaims = builtSeatClaims
+			end
+			if #builtMarketStandClaims > 0 then
+				marketStandClaims = builtMarketStandClaims
 			end
 
 			if bevelRuntimeEnabled and #waypoints > 2 then
@@ -1428,39 +1730,56 @@ spawnNPC = function(options)
 				))
 			end
 
-			if seatClaims and poiStops then
-			for claimIndex, claim in ipairs(seatClaims) do
-				local targetPOIIndex = claimPoiStopIndices[claimIndex]
-				local arrivalTime = 0
-				local lastResumeIdx = 1
+			if poiStops then
+				local function computeClaimReleaseTime(targetPOIIndex: number): number
+					local arrivalTime = 0
+					local lastResumeIdx = 1
 
-				for p = 1, targetPOIIndex do
-					local poiStop = poiStops[p]
-					local walkDist = 0
-					for w = lastResumeIdx, poiStop.waypointIndex - 1 do
-						walkDist += (waypoints[w + 1] - waypoints[w]).Magnitude
+					for p = 1, targetPOIIndex do
+						local poiStop = poiStops[p]
+						local walkDist = 0
+						for w = lastResumeIdx, poiStop.waypointIndex - 1 do
+							walkDist += (waypoints[w + 1] - waypoints[w]).Magnitude
+						end
+						if walkSpeed > 0 then
+							arrivalTime += walkDist / walkSpeed
+						end
+						if p < targetPOIIndex then
+							arrivalTime += poiStop.dwellTime
+						end
+						lastResumeIdx = poiStop.waypointIndex
 					end
-					if walkSpeed > 0 then
-						arrivalTime += walkDist / walkSpeed
-					end
-					if p < targetPOIIndex then
-						arrivalTime += poiStop.dwellTime
-					end
-					lastResumeIdx = poiStop.waypointIndex
+
+					return arrivalTime + poiStops[targetPOIIndex].dwellTime
 				end
 
-				claim.releaseTime = arrivalTime + poiStops[targetPOIIndex].dwellTime
-				local targetPoiStop = poiStops[targetPOIIndex]
-				if walkSpeed > 0 and targetPoiStop and targetPoiStop.seatCFrame then
-					local waypointPos = waypoints[targetPoiStop.waypointIndex]
-					if waypointPos then
-						local seatTravelDistance = (targetPoiStop.seatCFrame.Position - waypointPos).Magnitude
-						claim.releaseTime += (seatTravelDistance * 2) / walkSpeed
+				if seatClaims then
+					for claimIndex, claim in ipairs(seatClaims) do
+						local targetPOIIndex = builtSeatClaimStopIndices[claimIndex]
+						if targetPOIIndex then
+							claim.releaseTime = computeClaimReleaseTime(targetPOIIndex)
+							local targetPoiStop = poiStops[targetPOIIndex]
+							if walkSpeed > 0 and targetPoiStop and targetPoiStop.seatCFrame then
+								local waypointPos = waypoints[targetPoiStop.waypointIndex]
+								if waypointPos then
+									local seatTravelDistance = (targetPoiStop.seatCFrame.Position - waypointPos).Magnitude
+									claim.releaseTime += (seatTravelDistance * 2) / walkSpeed
+								end
+							end
+						end
+					end
+				end
+
+				if marketStandClaims then
+					for claimIndex, claim in ipairs(marketStandClaims) do
+						local targetPOIIndex = builtMarketClaimStopIndices[claimIndex]
+						if targetPOIIndex then
+							claim.releaseTime = computeClaimReleaseTime(targetPOIIndex)
+						end
 					end
 				end
 			end
-		end
-		else
+			else
 			local nodeIds = buildRouteNodeIds(graph, preferNearestDespawn)
 			if not nodeIds then
 				routeFailures += 1
@@ -1506,36 +1825,49 @@ spawnNPC = function(options)
 		totalDuration += totalDistance / walkSpeed
 	end
 
-	local record = {
-		id = id,
-		modelName = model.Name,
-		modelTemplate = model,
+		local record = {
+			id = id,
+			modelName = model.Name,
+			modelTemplate = model,
 		walkSpeed = walkSpeed,
 		waypoints = waypoints,
 		startTime = startTime,
-		totalDuration = totalDuration,
-		poiStops = poiStops,
-		seatClaims = seatClaims,
-		nightDrainApplied = false,
-		routeVersion = routeVersion,
-	}
+			totalDuration = totalDuration,
+			poiStops = poiStops,
+			seatClaims = seatClaims,
+			marketStandClaims = marketStandClaims,
+			nightDrainApplied = false,
+			routeVersion = routeVersion,
+		}
 
 	activeNPCs[id] = record
 	activeCount += 1
 	npcsSpawnedTotal += 1
 
-	if record.seatClaims then
-		local scheduledRouteVersion = record.routeVersion or 1
-		for _, claim in ipairs(record.seatClaims) do
+		if record.seatClaims then
+			local scheduledRouteVersion = record.routeVersion or 1
+			for _, claim in ipairs(record.seatClaims) do
 			task.delay(claim.releaseTime, function()
 				local current = activeNPCs[record.id]
 				if not current or current.routeVersion ~= scheduledRouteVersion then
 					return
 				end
 				releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
-			end)
+				end)
+			end
 		end
-	end
+		if record.marketStandClaims then
+			local scheduledRouteVersion = record.routeVersion or 1
+			for _, claim in ipairs(record.marketStandClaims) do
+				task.delay(claim.releaseTime, function()
+					local current = activeNPCs[record.id]
+					if not current or current.routeVersion ~= scheduledRouteVersion then
+						return
+					end
+					releaseMarketStandClaim(claim.poiId, claim.standIndex, claim.npcId)
+				end)
+			end
+		end
 
 	queueSpawnBroadcast(makeSpawnData(record))
 	scheduleNPCDespawn(record, totalDuration)
@@ -1728,13 +2060,15 @@ local function startup()
 		poiRegistry = POIRegistry.discover(poisFolder, graph)
 
 		if poiRegistry then
-			local scenicCount = 0
-			local busyCount = 0
-			local socialCount = 0
-			local totalSeats = 0
-			local hasSocial = false
-			local internalGraphCount = 0
-			local standPointPOICount = 0
+				local scenicCount = 0
+				local busyCount = 0
+				local socialCount = 0
+				local marketCount = 0
+				local totalSeats = 0
+				local totalMarketStands = 0
+				local hasSocial = false
+				local internalGraphCount = 0
+				local standPointPOICount = 0
 
 			for _, poi in ipairs(poiRegistry.pois) do
 				if poi.poiType == "scenic" then
@@ -1744,25 +2078,33 @@ local function startup()
 					end
 				elseif poi.poiType == "busy" then
 					busyCount += 1
-				elseif poi.poiType == "social" then
-					socialCount += 1
-					hasSocial = true
-					totalSeats += poi.totalSeats or 0
-					if poi.internalGraph then
-						internalGraphCount += 1
+					elseif poi.poiType == "social" then
+						socialCount += 1
+						hasSocial = true
+						totalSeats += poi.totalSeats or 0
+						if poi.internalGraph then
+							internalGraphCount += 1
+						end
+					elseif poi.poiType == "market" then
+						marketCount += 1
+						totalMarketStands += poi.totalStands or (poi.stands and #poi.stands or 0)
+						if poi.internalGraph then
+							internalGraphCount += 1
+						end
 					end
 				end
-			end
 
-			diagnostics(string.format(
-				"[WanderingProps] POI_REGISTRY_BUILT scenic=%d busy=%d social=%d seats=%d internalGraphs=%d standPointPOIs=%d",
-				scenicCount,
-				busyCount,
-				socialCount,
-				totalSeats,
-				internalGraphCount,
-				standPointPOICount
-			))
+				diagnostics(string.format(
+					"[WanderingProps] POI_REGISTRY_BUILT scenic=%d busy=%d social=%d market=%d seats=%d marketStands=%d internalGraphs=%d standPointPOIs=%d",
+					scenicCount,
+					busyCount,
+					socialCount,
+					marketCount,
+					totalSeats,
+					totalMarketStands,
+					internalGraphCount,
+					standPointPOICount
+				))
 
 			if hasSocial and (Config.SitAnimationId == nil or Config.SitAnimationId == "") then
 				error("[WanderingProps] FATAL: Social POIs found but SitAnimationId not set in Config.")

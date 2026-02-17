@@ -491,6 +491,84 @@ local function discoverStandPoints(poiFolder: Folder): { any }?
 	return standPoints
 end
 
+local function discoverMarketStands(poiFolder: Folder): { any }?
+	local standsFolder = poiFolder:FindFirstChild("Stands")
+	if not standsFolder then
+		warn(string.format(
+			'[WanderingProps] WARNING: POI "%s" is market type but has no Stands folder. Skipped.',
+			poiFolder.Name
+		))
+		return nil
+	end
+	if not standsFolder:IsA("Folder") then
+		warn(string.format(
+			'[WanderingProps] WARNING: POI "%s" Stands must be a Folder (got %s). Skipped.',
+			poiFolder.Name,
+			standsFolder.ClassName
+		))
+		return nil
+	end
+
+	local stands = {}
+	local defaultCapacity = math.max(1, math.floor(Config.MarketStandCapacity or 3))
+	for _, standContainer in ipairs(standsFolder:GetChildren()) do
+		if standContainer:IsA("Folder") or standContainer:IsA("Model") then
+			local standZone = standContainer:FindFirstChild("StandZone")
+			if not standZone or not standZone:IsA("BasePart") then
+				warn(string.format(
+					'[WanderingProps] WARNING: Stand "%s" in POI "%s" has no StandZone BasePart. Skipped.',
+					standContainer.Name,
+					poiFolder.Name
+				))
+				continue
+			end
+
+			local viewTarget = standContainer:FindFirstChild("ViewTarget")
+			if not (viewTarget and viewTarget:IsA("BasePart")) then
+				viewTarget = standContainer:FindFirstChild("ViewZone")
+			end
+			if not (viewTarget and viewTarget:IsA("BasePart")) then
+				warn(string.format(
+					'[WanderingProps] WARNING: Stand "%s" in POI "%s" has no ViewTarget BasePart. ViewTarget will be nil.',
+					standContainer.Name,
+					poiFolder.Name
+				))
+				viewTarget = nil
+			end
+
+			if Config.HideMarkersAtRuntime then
+				standZone.Transparency = 1
+				if viewTarget then
+					viewTarget.Transparency = 1
+				end
+			end
+			standZone.CanCollide = false
+			standZone.Anchored = true
+			if viewTarget then
+				viewTarget.CanCollide = false
+				viewTarget.Anchored = true
+			end
+
+			table.insert(stands, {
+				standZonePosition = standZone.Position,
+				standZoneSize = standZone.Size,
+				standZoneCFrame = standZone.CFrame,
+				viewTargetPosition = if viewTarget then viewTarget.Position else standZone.Position,
+				viewTargetSize = if viewTarget then viewTarget.Size else Vector3.zero,
+				accessNodeId = nil,
+				occupiedCount = 0,
+				capacity = defaultCapacity,
+			})
+		end
+	end
+
+	if #stands == 0 then
+		return nil
+	end
+
+	return stands
+end
+
 local function resolveGroupAccessNodeId(groupFolder: Instance, internalGraph, partToInternalId: { [Instance]: string }): string?
 	-- Look for AccessPoint ObjectValue in the group
 	local accessPoint = groupFolder:FindFirstChild("AccessPoint")
@@ -607,14 +685,14 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 	for _, child in ipairs(poisFolder:GetChildren()) do
 		if child:IsA("Folder") then
 			local poiType = child:GetAttribute("POIType")
-			if poiType ~= "scenic" and poiType ~= "busy" and poiType ~= "social" then
+			if poiType ~= "scenic" and poiType ~= "busy" and poiType ~= "social" and poiType ~= "market" then
 				warn(string.format('[WanderingProps] WARNING: POI "%s" has invalid or missing POIType. Skipped.', child.Name))
 				continue
 			end
 
 			local hasInternalWaypoints = child:FindFirstChild("InternalWaypoints") ~= nil
 			local precomputedInternalGraph = nil
-			if hasInternalWaypoints and (poiType == "social" or poiType == "scenic") then
+			if hasInternalWaypoints and (poiType == "social" or poiType == "scenic" or poiType == "market") then
 				precomputedInternalGraph = discoverInternalGraph(child, graph)
 			end
 
@@ -678,7 +756,7 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 				poi.waypointIsInsidePOI = waypointPart:IsDescendantOf(child)
 			end
 
-				if poiType == "scenic" then
+			if poiType == "scenic" then
 				local dwellMin, dwellMax = resolveDwellRange(child, child.Name, Config.ScenicDwellMin, Config.ScenicDwellMax)
 				poi.dwellMin = dwellMin
 				poi.dwellMax = dwellMax
@@ -714,25 +792,25 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 				local partToInternalId = if internalGraph and internalGraph.partToInternalId
 					then internalGraph.partToInternalId
 					else {}
-					poi.standPoints = discoverStandPoints(child)
-					if poi.standPoints and internalGraph then
-						local standAccessNodeIds = {}
-						for _, standPoint in ipairs(poi.standPoints) do
-							local standPointPart = standPoint.sourcePart
-							if standPointPart and standPointPart:IsA("BasePart") then
+				poi.standPoints = discoverStandPoints(child)
+				if poi.standPoints and internalGraph then
+					local standAccessNodeIds = {}
+					for _, standPoint in ipairs(poi.standPoints) do
+						local standPointPart = standPoint.sourcePart
+						if standPointPart and standPointPart:IsA("BasePart") then
 							local accessNodeId = resolveStandPointAccessNodeId(standPointPart, internalGraph, partToInternalId)
 							if not accessNodeId then
 								accessNodeId = findClosestInternalNode(standPointPart.Position, internalGraph)
-								end
-								standPoint.accessNodeId = accessNodeId
-								if accessNodeId then
-									table.insert(standAccessNodeIds, accessNodeId)
-								end
+							end
+							standPoint.accessNodeId = accessNodeId
+							if accessNodeId then
+								table.insert(standAccessNodeIds, accessNodeId)
 							end
 						end
-						buildCachedInternalPaths(poi, standAccessNodeIds)
 					end
-				elseif poiType == "social" then
+					buildCachedInternalPaths(poi, standAccessNodeIds)
+				end
+			elseif poiType == "social" then
 				local dwellMin, dwellMax = resolveDwellRange(child, child.Name, Config.SocialDwellMin, Config.SocialDwellMax)
 				poi.dwellMin = dwellMin
 				poi.dwellMax = dwellMax
@@ -762,9 +840,9 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 					then internalGraph.partToInternalId
 					else {}
 
-					local seats = {}
-					local groups = {}
-					local groupAccessNodeIds = {}
+				local seats = {}
+				local groups = {}
+				local groupAccessNodeIds = {}
 
 				for _, groupChild in ipairs(child:GetChildren()) do
 					if (groupChild:IsA("Folder") or groupChild:IsA("Model"))
@@ -787,49 +865,118 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 							end
 						end
 
-							if #seatIndices > 0 then
-								-- Resolve access node ID for this group.
-								-- Fallback to nearest internal node if no explicit AccessPoint is authored.
-								local groupAccessNodeId = nil
-								if internalGraph then
-									groupAccessNodeId = resolveGroupAccessNodeId(groupChild, internalGraph, partToInternalId)
-									if not groupAccessNodeId then
-										local centroid = Vector3.zero
-										for _, seatIndex in ipairs(seatIndices) do
-											local seat = seats[seatIndex]
-											if seat then
-												centroid += seat.cframe.Position
-											end
+						if #seatIndices > 0 then
+							-- Resolve access node ID for this group.
+							-- Fallback to nearest internal node if no explicit AccessPoint is authored.
+							local groupAccessNodeId = nil
+							if internalGraph then
+								groupAccessNodeId = resolveGroupAccessNodeId(groupChild, internalGraph, partToInternalId)
+								if not groupAccessNodeId then
+									local centroid = Vector3.zero
+									for _, seatIndex in ipairs(seatIndices) do
+										local seat = seats[seatIndex]
+										if seat then
+											centroid += seat.cframe.Position
 										end
-										centroid /= #seatIndices
-										groupAccessNodeId = findClosestInternalNode(centroid, internalGraph)
 									end
-								end
-
-									table.insert(groups, {
-										id = groupChild.Name,
-										seatIndices = seatIndices,
-										occupiedCount = 0,
-										accessNodeId = groupAccessNodeId,
-									})
-									if groupAccessNodeId then
-										table.insert(groupAccessNodeIds, groupAccessNodeId)
-									end
+									centroid /= #seatIndices
+									groupAccessNodeId = findClosestInternalNode(centroid, internalGraph)
 								end
 							end
+
+							table.insert(groups, {
+								id = groupChild.Name,
+								seatIndices = seatIndices,
+								occupiedCount = 0,
+								accessNodeId = groupAccessNodeId,
+							})
+							if groupAccessNodeId then
+								table.insert(groupAccessNodeIds, groupAccessNodeId)
+							end
 						end
+					end
+				end
 
 				if #seats == 0 then
 					warn(string.format('[WanderingProps] WARNING: Social POI "%s" has no valid seats. Skipped.', child.Name))
 					continue
 				end
 
-					poi.seats = seats
-					poi.groups = groups
-					poi.totalSeats = #seats
-					poi.occupiedCount = 0
-					buildCachedInternalPaths(poi, groupAccessNodeIds)
+				poi.seats = seats
+				poi.groups = groups
+				poi.totalSeats = #seats
+				poi.occupiedCount = 0
+				buildCachedInternalPaths(poi, groupAccessNodeIds)
+			elseif poiType == "market" then
+				if not Config.InternalNavigationEnabled then
+					warn(string.format(
+						'[WanderingProps] WARNING: POI "%s" is market type but InternalNavigationEnabled=false. Skipped.',
+						child.Name
+					))
+					continue
 				end
+
+				local internalGraph = precomputedInternalGraph
+				if not internalGraph then
+					warn(string.format(
+						'[WanderingProps] WARNING: POI "%s" is market type but has no InternalWaypoints folder. Skipped.',
+						child.Name
+					))
+					continue
+				end
+
+				local stands = discoverMarketStands(child)
+				if not stands then
+					continue
+				end
+
+				local dwellMin, dwellMax = resolveDwellRange(
+					child,
+					child.Name,
+					Config.MarketBrowseDwellMin,
+					Config.MarketBrowseDwellMax
+				)
+				poi.dwellMin = dwellMin
+				poi.dwellMax = dwellMax
+				poi.weight = resolveNumberAttribute(child, "Weight", Config.MarketWeight)
+				poi.internalGraph = internalGraph
+
+				if internalGraph.entryToEntranceMap then
+					local entranceSet = {}
+					local entranceNodeIds = {}
+					for _, entranceId in pairs(internalGraph.entryToEntranceMap) do
+						if not entranceSet[entranceId] then
+							entranceSet[entranceId] = true
+							table.insert(entranceNodeIds, entranceId)
+						end
+					end
+					if #entranceNodeIds > 0 then
+						poi.entranceNodeIds = entranceNodeIds
+					end
+				end
+
+				local standAccessNodeIds = {}
+				local standAccessSet = {}
+				for _, stand in ipairs(stands) do
+					stand.accessNodeId = findClosestInternalNode(stand.standZonePosition, internalGraph)
+					if stand.accessNodeId and not standAccessSet[stand.accessNodeId] then
+						standAccessSet[stand.accessNodeId] = true
+						table.insert(standAccessNodeIds, stand.accessNodeId)
+					end
+				end
+				buildCachedInternalPaths(poi, standAccessNodeIds)
+
+				poi.stands = stands
+				poi.totalStands = #stands
+				if Config.DiagnosticsEnabled then
+					print(string.format(
+						"[WanderingProps] MARKET_DISCOVER poi=%s stands=%d entries=%d",
+						poi.id,
+						#stands,
+						if poi.entranceNodeIds then #poi.entranceNodeIds else 0
+					))
+				end
+			end
 
 			table.insert(registry.pois, poi)
 			registry.totalWeight += poi.weight
@@ -1046,6 +1193,59 @@ function POIRegistry.releaseSeat(poi, seatIndex: number)
 		end
 		if poi.occupiedCount and poi.occupiedCount > 0 then
 			poi.occupiedCount -= 1
+		end
+	end
+end
+
+function POIRegistry.claimMarketStand(poi, standIndex: number, npcId: string): boolean
+	if poi.poiType ~= "market" or not poi.stands then
+		return false
+	end
+
+	local stand = poi.stands[standIndex]
+	if not stand then
+		return false
+	end
+
+	local capacity = math.max(1, math.floor(stand.capacity or Config.MarketStandCapacity or 1))
+	stand.capacity = capacity
+	local occupiedCount = stand.occupiedCount or 0
+	if occupiedCount >= capacity then
+		return false
+	end
+
+	stand.occupiedCount = occupiedCount + 1
+	if Config.DiagnosticsEnabled then
+		print(string.format(
+			"[WanderingProps] MARKET_STAND_CLAIM poi=%s stand=%d npc=%s occupied=%d/%d",
+			tostring(poi.id),
+			standIndex,
+			npcId,
+			stand.occupiedCount,
+			stand.capacity
+		))
+	end
+	return true
+end
+
+function POIRegistry.releaseMarketStand(poi, standIndex: number)
+	if poi.poiType ~= "market" or not poi.stands then
+		return
+	end
+
+	local stand = poi.stands[standIndex]
+	if not stand then
+		return
+	end
+
+	if (stand.occupiedCount or 0) > 0 then
+		stand.occupiedCount -= 1
+		if Config.DiagnosticsEnabled then
+			print(string.format(
+				"[WanderingProps] MARKET_CLAIM_RELEASE poi=%s stand=%d",
+				tostring(poi.id),
+				standIndex
+			))
 		end
 	end
 end

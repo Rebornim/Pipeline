@@ -304,12 +304,23 @@ local function calculateRouteState(waypoints: { Vector3 }, walkSpeed: number, el
 		timeConsumed += walkTime
 
 		if poi.type ~= "busy" and poi.dwellTime > 0 then
-			if elapsed < timeConsumed + poi.dwellTime then
-				local dwellElapsed = elapsed - timeConsumed
-				local dwellRemaining = poi.dwellTime - dwellElapsed
-				local position = waypoints[poi.waypointIndex]
+				if elapsed < timeConsumed + poi.dwellTime then
+					local dwellElapsed = elapsed - timeConsumed
+					local dwellRemaining = poi.dwellTime - dwellElapsed
+					local position = waypoints[poi.waypointIndex]
 
-				if poi.type == "scenic" then
+					if poi.type == "social" then
+						return {
+							state = "sitting",
+							position = position,
+							currentLeg = poi.waypointIndex,
+							legProgress = 0,
+							nextPoiStopIdx = poiIdx,
+							dwellEndTime = Workspace:GetServerTimeNow() + dwellRemaining,
+							seatCFrame = poi.seatCFrame,
+						}
+					end
+
 					return {
 						state = "dwelling",
 						position = position,
@@ -318,19 +329,10 @@ local function calculateRouteState(waypoints: { Vector3 }, walkSpeed: number, el
 						nextPoiStopIdx = poiIdx,
 						dwellEndTime = Workspace:GetServerTimeNow() + dwellRemaining,
 						viewTarget = poi.viewTarget,
-					}
-				elseif poi.type == "social" then
-					return {
-						state = "sitting",
-						position = position,
-						currentLeg = poi.waypointIndex,
-						legProgress = 0,
-						nextPoiStopIdx = poiIdx,
-						dwellEndTime = Workspace:GetServerTimeNow() + dwellRemaining,
-						seatCFrame = poi.seatCFrame,
+						scanTarget = poi.scanTarget,
+						scanExtent = poi.scanExtent,
 					}
 				end
-			end
 			timeConsumed += poi.dwellTime
 		end
 
@@ -407,6 +409,7 @@ local function restoreFromFarTier(npc)
 			npc.model.PrimaryPart.CFrame = routeState.seatCFrame
 			npc.preSeatCFrame = CFrame.new(snappedPos)
 			npc.seatTargetCFrame = routeState.seatCFrame
+			HeadLookController.stopScan(npc)
 		elseif routeState.state == "dwelling" and routeState.viewTarget then
 			local flatTarget = Vector3.new(routeState.viewTarget.X, snappedPos.Y, routeState.viewTarget.Z)
 			if (flatTarget - snappedPos).Magnitude > 0.01 then
@@ -416,10 +419,16 @@ local function restoreFromFarTier(npc)
 			end
 			npc.preSeatCFrame = nil
 			npc.seatTargetCFrame = nil
+			if routeState.scanTarget then
+				HeadLookController.startScan(npc, routeState.scanTarget, routeState.scanExtent or 2)
+			else
+				HeadLookController.stopScan(npc)
+			end
 		else
 			npc.model.PrimaryPart.CFrame = CFrame.new(snappedPos)
 			npc.preSeatCFrame = nil
 			npc.seatTargetCFrame = nil
+			HeadLookController.stopScan(npc)
 		end
 	end
 
@@ -776,12 +785,16 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 		partTransparencies = nil,
 		headLookNeckMotor = nil,
 		headLookOriginalC0 = nil,
-		headLookActive = false,
-		headLookEndTime = 0,
-		headLookAlpha = 0,
-		headLookNextCheckTime = 0,
-		baseParts = baseParts,
-	}
+			headLookActive = false,
+			headLookEndTime = 0,
+			headLookAlpha = 0,
+			headLookNextCheckTime = 0,
+			scanActive = false,
+			scanTarget = nil,
+			scanExtent = nil,
+			scanTime = 0,
+			baseParts = baseParts,
+		}
 	HeadLookController.init(npc, modelData.neckMotor, modelData.neckOriginalC0)
 
 	local shouldFadeIn = Config.FadeEnabled
@@ -816,6 +829,9 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 			if (flatTarget - pos).Magnitude > 0.01 then
 				npc.model.PrimaryPart.CFrame = CFrame.lookAt(pos, flatTarget)
 			end
+		end
+		if routeState.scanTarget then
+			HeadLookController.startScan(npc, routeState.scanTarget, routeState.scanExtent or 2)
 		end
 		npc.dwellFacingTarget = nil
 		applyAnimationForState(npc)
@@ -1122,16 +1138,21 @@ local function startup()
 					npc.nextPoiStopIdx += 1
 				end
 
-				if npc.poiStops and npc.nextPoiStopIdx <= #npc.poiStops then
-					local poi = npc.poiStops[npc.nextPoiStopIdx]
-					if poi.type ~= "busy" and npc.currentLeg >= poi.waypointIndex then
-						if poi.type == "scenic" then
-							npc.state = "dwelling"
-							npc.dwellEndTime = now + poi.dwellTime
-							npc.dwellFacingTarget = poi.viewTarget
-							if not Config.TurnSmoothing and poi.viewTarget and npc.model.PrimaryPart then
-								local pos = npc.model.PrimaryPart.Position
-								local flatTarget = Vector3.new(poi.viewTarget.X, pos.Y, poi.viewTarget.Z)
+					if npc.poiStops and npc.nextPoiStopIdx <= #npc.poiStops then
+						local poi = npc.poiStops[npc.nextPoiStopIdx]
+						if poi.type ~= "busy" and npc.currentLeg >= poi.waypointIndex then
+							if poi.type ~= "social" then
+								npc.state = "dwelling"
+								npc.dwellEndTime = now + poi.dwellTime
+								npc.dwellFacingTarget = poi.viewTarget
+								if poi.scanTarget then
+									HeadLookController.startScan(npc, poi.scanTarget, poi.scanExtent or 2)
+								else
+									HeadLookController.stopScan(npc)
+								end
+								if not Config.TurnSmoothing and poi.viewTarget and npc.model.PrimaryPart then
+									local pos = npc.model.PrimaryPart.Position
+									local flatTarget = Vector3.new(poi.viewTarget.X, pos.Y, poi.viewTarget.Z)
 								if (flatTarget - pos).Magnitude > 0.01 then
 									npc.model.PrimaryPart.CFrame = CFrame.lookAt(pos, flatTarget)
 								end
@@ -1139,10 +1160,11 @@ local function startup()
 							if not lodRuntimeEnabled or LODController.shouldAnimate(npc.lodTier) then
 								NPCAnimator.update(npc, false)
 							end
-						elseif poi.type == "social" then
-							npc.state = "walking_to_seat"
-							npc.dwellEndTime = now + poi.dwellTime
-							if npc.model.PrimaryPart then
+							elseif poi.type == "social" then
+								HeadLookController.stopScan(npc)
+								npc.state = "walking_to_seat"
+								npc.dwellEndTime = now + poi.dwellTime
+								if npc.model.PrimaryPart then
 								npc.preSeatCFrame = npc.model.PrimaryPart.CFrame
 							end
 							npc.seatTargetCFrame = poi.seatCFrame
@@ -1193,10 +1215,16 @@ local function startup()
 						npc.model.PrimaryPart.CFrame = smoothedRotation + pos
 					end
 				end
+				if npc.scanActive then
+					HeadLookController.applyScan(npc, dt)
+				end
 				if not lodRuntimeEnabled or LODController.shouldAnimate(npc.lodTier) then
 					NPCAnimator.update(npc, false)
 				end
 				if npc.dwellEndTime and now >= npc.dwellEndTime then
+					if npc.scanActive then
+						HeadLookController.stopScan(npc)
+					end
 					npc.nextPoiStopIdx += 1
 					npc.state = "walking"
 					npc.dwellEndTime = nil
