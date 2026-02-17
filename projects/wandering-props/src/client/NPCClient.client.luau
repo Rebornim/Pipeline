@@ -21,6 +21,7 @@ local pendingSpawnOps = {}
 local pendingSpawnOpsHead = 1
 local pendingDespawnOps = {}
 local pendingDespawnOpsHead = 1
+local desynced = false
 
 local globalFrame = 0
 local lodRuntimeEnabled = Config.LODEnabled
@@ -944,11 +945,27 @@ local function beginFadeOut(npc)
 	diagnostics(string.format("[WanderingProps] FADE_OUT_START %s duration=%.2f", npc.id, Config.DespawnFadeDuration))
 end
 
+local function clearAllClientNPCs()
+	pendingSpawnOps = {}
+	pendingSpawnOpsHead = 1
+	pendingDespawnOps = {}
+	pendingDespawnOpsHead = 1
+
+	local ids = {}
+	for id in pairs(activeNPCs) do
+		table.insert(ids, id)
+	end
+	for _, id in ipairs(ids) do
+		removeNPC(id)
+	end
+end
+
 local function startup()
 	local remotesFolder = ReplicatedStorage:WaitForChild("WanderingPropsRemotes")
 	local npcSpawnedRemote = remotesFolder:WaitForChild(Remotes.NPCSpawned)
 	local npcDespawnedRemote = remotesFolder:WaitForChild(Remotes.NPCDespawned)
 	local npcBulkSyncRemote = remotesFolder:WaitForChild(Remotes.NPCBulkSync)
+	local npcDesyncRemote = remotesFolder:WaitForChild(Remotes.NPCDesync)
 
 	local wanderingFolder = Workspace:WaitForChild("WanderingProps")
 	local waypointsFolder = wanderingFolder:WaitForChild("Waypoints")
@@ -987,15 +1004,36 @@ local function startup()
 	initRestoreRaycastParams(waypointsFolder, activeNPCsFolder)
 
 	npcSpawnedRemote.OnClientEvent:Connect(function(payload)
+		if desynced then
+			return
+		end
 		queueSpawnPayload(payload)
 	end)
 
 	npcDespawnedRemote.OnClientEvent:Connect(function(payload)
+		if desynced then
+			return
+		end
 		queueDespawnPayload(payload)
 	end)
 
 	npcBulkSyncRemote.OnClientEvent:Connect(function(entries)
+		if desynced then
+			return
+		end
 		queueSpawnPayload(entries)
+	end)
+
+	npcDesyncRemote.OnClientEvent:Connect(function(state)
+		local shouldDesync = state == true
+		if shouldDesync then
+			desynced = true
+			clearAllClientNPCs()
+			diagnostics("[WanderingProps] CLIENT_DESYNC state=true")
+		else
+			desynced = false
+			diagnostics("[WanderingProps] CLIENT_DESYNC state=false")
+		end
 	end)
 
 	RunService.Heartbeat:Connect(function(dt)
