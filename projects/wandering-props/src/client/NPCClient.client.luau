@@ -667,11 +667,52 @@ local function prewarmModelPool(modelsFolder: Folder)
 	end
 end
 
-local function spawnNPCFromData(data, modelsFolder: Folder)
-	removeNPC(data.id)
-
+local function computeExpectedDespawnTimeFromData(data): number
 	local waypoints = data.waypoints
 	local poiStops = data.poiStops
+	local walkTime = 0
+	local totalDistance = routeDistance(waypoints)
+	local socialTravelDistance = socialSeatTravelDistance(waypoints, poiStops)
+	totalDistance += socialTravelDistance
+	if data.walkSpeed > 0 then
+		walkTime = totalDistance / data.walkSpeed
+	end
+	local totalDwellTime = 0
+	for _, poi in ipairs(poiStops or {}) do
+		totalDwellTime += poi.dwellTime
+	end
+	return data.startTime + walkTime + totalDwellTime + Config.ClientDespawnBuffer
+end
+
+local function applySpawnDataToExistingNPC(npc, data): boolean
+	if not npc or not npc.model or not npc.model.PrimaryPart then
+		return false
+	end
+
+	npc.walkSpeed = data.walkSpeed
+	npc.waypoints = data.waypoints
+	npc.poiStops = data.poiStops
+	npc.startTime = data.startTime
+	npc.expectedDespawnTime = computeExpectedDespawnTimeFromData(data)
+	npc.modelName = data.modelName or npc.modelName
+	npc.fadeDirection = nil
+	npc.fadeProgress = 0
+	restorePartTransparencies(npc)
+
+	restoreFromFarTier(npc)
+	applyAnimationForState(npc)
+	return true
+end
+
+local function spawnNPCFromData(data, modelsFolder: Folder)
+	local waypoints = data.waypoints
+	local poiStops = data.poiStops
+	local existingNpc = activeNPCs[data.id]
+	if existingNpc and applySpawnDataToExistingNPC(existingNpc, data) then
+		return
+	end
+
+	removeNPC(data.id)
 
 	local poolEntry = nil
 	local resolvedModelName = data.modelName
@@ -737,18 +778,7 @@ local function spawnNPCFromData(data, modelsFolder: Folder)
 
 	walkTrack, idleTrack, sitTrack = ensureModelDataTracks(modelData)
 
-	local walkTime = 0
-	local totalDistance = routeDistance(waypoints)
-	local socialTravelDistance = socialSeatTravelDistance(waypoints, poiStops)
-	totalDistance += socialTravelDistance
-	if data.walkSpeed > 0 then
-		walkTime = totalDistance / data.walkSpeed
-	end
-	local totalDwellTime = 0
-	for _, poi in ipairs(poiStops or {}) do
-		totalDwellTime += poi.dwellTime
-	end
-	local expectedDespawnTime = data.startTime + walkTime + totalDwellTime + Config.ClientDespawnBuffer
+	local expectedDespawnTime = computeExpectedDespawnTimeFromData(data)
 
 	local maxPhase = math.max(1, math.max(Config.LODLowRaycastSkip, Config.LODMidRaycastSkip))
 	local maxLODPhase = math.max(1, lodCheckInterval)

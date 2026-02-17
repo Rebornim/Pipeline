@@ -759,6 +759,9 @@ local function rerouteRecordToNearestDespawn(record, now: number, reason: string
 
 	local elapsed = math.max(0, now - record.startTime)
 	local routeState = calculateServerRouteState(record.waypoints, record.walkSpeed, elapsed, record.poiStops)
+	if routeState.state == "sitting" or routeState.state == "finished" then
+		return false
+	end
 	local currentPosition = routeState.position
 	local startNodeId = findNearestNodeIdFromPosition(currentPosition)
 	local despawnId = findNearestDespawnIdFromPosition(currentPosition)
