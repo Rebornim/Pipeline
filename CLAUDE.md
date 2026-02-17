@@ -50,6 +50,7 @@ These happen once per project before the pass cycle begins.
 
 ## Rules
 
+- **Never enter plan mode.** Do not use EnterPlanMode. The pipeline IS the plan. Read the files, follow the steps, write the design doc. Plan mode breaks the pipeline flow.
 - **Never write Luau code.** You write design docs and fix plans. Codex writes code.
 - **Never create or edit files in `src/`.** You read them. Codex writes them.
 - **Design against real code, not specs.** The code + build deltas are truth.
