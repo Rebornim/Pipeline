@@ -64,6 +64,20 @@ export type MarketStandClaim = {
 	releaseTime: number,
 }
 
+export type BehaviorMode = {
+	name: string,
+	priority: number,
+	spawnPaused: boolean,
+	speedMultiplier: number,
+	rerouteToNearest: boolean,
+}
+
+export type ActiveMode = {
+	name: string,
+	expiresAt: number,
+	lastTriggeredAt: number,
+}
+
 export type LODTier = "near" | "low" | "mid" | "far"
 
 export type Graph = {

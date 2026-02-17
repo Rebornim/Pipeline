@@ -135,6 +135,11 @@ Config.PathLateralOffsetMax = 2
 -- INTERNAL POI NAVIGATION
 Config.InternalNavigationEnabled = true
 
+-- BEHAVIOR API
+Config.ModeRetriggerCooldown = 2
+Config.ScatterSpeedMultiplier = 2.0
+Config.EvacuateSpeedMultiplier = 1.0
+
 -- SPAWN/DESPAWN FADE
 Config.FadeEnabled = true
 Config.SpawnFadeDuration = 0.8
