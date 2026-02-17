@@ -144,14 +144,20 @@ function NPCMover.update(npc, dt: number, stopAtWaypoint: number?, skipRaycast: 
 		if Config.TurnSmoothing and npc.model.PrimaryPart then
 			local currentRotation = npc.model.PrimaryPart.CFrame.Rotation
 			local targetRotation = targetCFrame.Rotation
-			local alpha = math.min(1, dt * Config.TurnLerpSpeed)
+			-- Cap turn blend per update so accumulated LOD dt cannot cause single-frame snaps.
+			local alpha = math.min(0.35, math.min(1, dt * Config.TurnLerpSpeed))
 			local smoothedRotation = currentRotation:Lerp(targetRotation, alpha)
 			newCFrame = smoothedRotation + snappedPosition
 		else
 			newCFrame = targetCFrame
 		end
 	else
-		newCFrame = CFrame.new(snappedPosition)
+		-- Preserve facing when movement direction is effectively zero for this frame.
+		if npc.model.PrimaryPart then
+			newCFrame = npc.model.PrimaryPart.CFrame.Rotation + snappedPosition
+		else
+			newCFrame = CFrame.new(snappedPosition)
+		end
 	end
 
 	if npc.model.PrimaryPart then

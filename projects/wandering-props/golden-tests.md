@@ -250,3 +250,57 @@ Re-run from previous passes:
 - **Test 15: LOD Tier Visual Transitions**
 - **Test 16: Model Pool Reuse**
 - **Test 17: LOD + POI State Consistency**
+
+---
+
+## Pass 7: Market POI Type
+
+### Test 30: Market POI Basic Flow
+- **Setup:** Market POI with `Stands/` folder (3 stands), `InternalWaypoints/` folder (3 nodes, entry linked to graph). Config: MarketStandsMin = 2, MarketStandsMax = 3, MaxPopulation = 5, InternalNavigationEnabled = true, DiagnosticsEnabled = true.
+- **Action:** Start server. Wait for NPC to reach market POI.
+- **Expected:** NPC enters market via internal waypoints, visits 2-3 stands (dwells at each), then exits via internal waypoints and continues route.
+- **Pass condition:** `[P7_TEST] MARKET_EXPAND` shows `stands_visited=2` or `3`. NPC visually walks to stands and pauses at each. `[P7_TEST] MARKET_STOP` entries logged for each stand visit.
+
+### Test 31: Market Stand Capacity
+- **Setup:** Market with 2 stands, MarketStandCapacity = 1. Config: MaxPopulation = 5, MarketStandsMin = 2.
+- **Action:** Start server. Spawn 2 NPCs that both select the same market.
+- **Expected:** Each NPC claims a different stand. If both stands are occupied, subsequent NPCs skip the market.
+- **Pass condition:** `[P7_TEST] MARKET_STAND_CLAIM` shows 2 separate claims on different stands. No stand exceeds capacity.
+
+### Test 32: Market Skip When No Stands Available
+- **Setup:** Market with 1 stand, MarketStandCapacity = 1. 1 NPC already claimed the stand. Config: MaxPopulation = 5.
+- **Action:** 2nd NPC tries to select this market.
+- **Expected:** Market skipped entirely (like social capacity skip).
+- **Pass condition:** `[P7_TEST] MARKET_POI_SKIP reason=no_available_stands` logged. NPC routes through other POIs normally.
+
+### Test 33: Market Head Scanning
+- **Setup:** Market with 1 stand + ViewTarget part. Config: HeadLookEnabled = true, MarketHeadScanSpeed = 0.4, MaxPopulation = 3.
+- **Action:** NPC arrives at market stand and begins dwell. Player walks near NPC during dwell.
+- **Expected:** Head sweeps horizontally toward ViewTarget during dwell. When player is nearby, player head-look overrides scan. When player leaves, scan resumes.
+- **Pass condition:** `[P7_TEST] SCAN_START` logged. Visual head sweep visible. Player proximity triggers normal head-look behavior.
+
+### Test 34: Market Backward Compatibility — InternalNavigationEnabled=false
+- **Setup:** Market POI exists in world. Config: InternalNavigationEnabled = false, MaxPopulation = 5, DiagnosticsEnabled = true.
+- **Action:** Start server. Spawn NPCs.
+- **Expected:** Market POI skipped during discovery (not in registry). NPCs route through other POIs normally.
+- **Pass condition:** No `[P7_TEST] MARKET_DISCOVER` logged. System behaves identically to Pass 6.
+
+### Test 35: Market with Night Drain
+- **Setup:** Market NPC mid-route browsing stands. Config: DayNightEnabled = true, NightDrainEnabled = true, NightPopulationMultiplier = 0.3.
+- **Action:** Trigger night drain by setting Lighting.ClockTime to night.
+- **Expected:** Market stand claims released. NPC rerouted to despawn.
+- **Pass condition:** `[P7_TEST] MARKET_CLAIM_RELEASE reason=drain` logged. NPC despawns via despawn waypoint.
+
+### Regression Tests
+Re-run from previous passes:
+- **Test 1: Basic Spawn-Walk-Despawn Cycle**
+- **Test 2: Late-Join Sync**
+- **Test 4: Scenic POI Visit**
+- **Test 5: Social POI Sit and Walk In/Out**
+- **Test 9: Zone Waypoint Variation**
+- **Test 11: Clock-Based Day/Night Hook**
+- **Test 15: LOD Tier Visual Transitions**
+- **Test 16: Model Pool Reuse**
+- **Test 17: LOD + POI State Consistency**
+- **Test 25: Social POI with Internal Waypoints**
+- **Test 27: Backward Compatibility — POIs Without Internal Features**

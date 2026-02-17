@@ -1215,9 +1215,6 @@ local function startup()
 						npc.model.PrimaryPart.CFrame = smoothedRotation + pos
 					end
 				end
-				if npc.scanActive then
-					HeadLookController.applyScan(npc, dt)
-				end
 				if not lodRuntimeEnabled or LODController.shouldAnimate(npc.lodTier) then
 					NPCAnimator.update(npc, false)
 				end
@@ -1339,10 +1336,12 @@ local function startup()
 					end
 					elseif npc.state == "finished" then
 						beginFadeOut(npc)
-						if not lodRuntimeEnabled or LODController.shouldAnimate(npc.lodTier) then
-							NPCAnimator.update(npc, false)
-						end
+					if not lodRuntimeEnabled or LODController.shouldAnimate(npc.lodTier) then
+						NPCAnimator.update(npc, false)
 					end
+				end
+
+			HeadLookController.applyScan(npc, dt)
 
 			if headLookAllowed and npc.lodTier == "near" and playerPosition then
 				local wasActive = npc.headLookActive

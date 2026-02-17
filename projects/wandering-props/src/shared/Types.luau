@@ -52,6 +52,7 @@ export type MarketStand = {
 	viewTargetPosition: Vector3,
 	viewTargetSize: Vector3,
 	accessNodeId: string?,
+	accessNodeIds: { string }?,
 	occupiedCount: number,
 	capacity: number,
 }

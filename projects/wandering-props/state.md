@@ -1,12 +1,12 @@
 # Project State: wandering-props
 
-**Stage:** Pass 6 — Proved
-**Status:** pass_6_complete
+**Stage:** Pass 7 — Complete
+**Status:** pass_7_complete
 **Pipeline Version:** v3 (cyclic)
 **Last Updated:** 2026-02-17
 
 ## Context Files
-- Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `pass-5-design.md`, `golden-tests.md`, `state.md`
+- Read: `feature-passes.md`, `idea-locked.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-2-build-notes.md`, `pass-3-design.md`, `pass-4-design.md`, `pass-5-design.md`, `pass-7-design.md`, `golden-tests.md`, `state.md`
 - Source of truth for current behavior: `src/` code + this file + `golden-tests.md`
 
 ## Pass 1 Outcome
@@ -240,6 +240,37 @@ Design deviations introduced during prove/fix cycles:
 - Spawn/despawn hitch is still visible at higher NPC populations and is deferred to a dedicated optimization pass.
 - Optional startup ordering and spawn/despawn budget tuning are still open.
 
+## Pass 7 Design Summary
+- **New POI type: `"market"`** — NPCs enter marketplace, visit random stands (2-4), browse with head scanning, leave.
+- **1:N POI-to-stop mapping** — single market POI expands into N scenic-like dwell stops in `builtPoiStops`.
+- **Stand capacity** — per-stand `MarketStandCapacity` with claim/release lifecycle (same pattern as social seats).
+- **Head scanning** — sinusoidal neck yaw sweep during market dwell via HeadLookController scan functions.
+- **Server-side waypoint expansion** — multi-stand visits baked into flat waypoints array using live Dijkstra.
+- **Files to modify:** Types.luau, Config.luau, POIRegistry.luau (major), PopulationController.server.luau (moderate), HeadLookController.luau (moderate), NPCClient.client.luau (minor).
+- **No new RemoteEvents.** Markets require `InternalNavigationEnabled = true`.
+- Golden tests: Tests 30-35 added. Regression suite covers Tests 1, 2, 4, 5, 9, 11, 15, 16, 17, 25, 27.
+
+### Pass 7 Build Delta
+**Built as designed:**
+- Market POI type is implemented with server-side expansion from one selected market POI into multiple stand browse stops.
+- Per-stand market capacity claim/release lifecycle is implemented and integrated with despawn/night-trim cleanup paths.
+- Client-side market dwell supports head-look scanning behavior with market stop metadata (`scanTarget`, `scanExtent`) flowing through existing spawn payloads.
+
+**Deviations from design:**
+- Market stand authoring was implemented with attribute-based discovery (`MarketStandZone`, `MarketViewTarget`) plus internal-waypoint `ObjectValue` links to stands, replacing name-specific stand child requirements.
+- Stand access mapping supports multiple internal access nodes per stand and picks best runtime path, rather than only closest-single-node mapping.
+- Head scan behavior was changed from pure sinusoidal sweep to a state-machine gaze pattern (look/hold/look/hold with occasional short glide) per visual feedback.
+- Market stand cap was tuned to `2` (from the original Pass 7 design default `3`) per user request.
+- Additional movement stability fixes were applied in client mover to eliminate intermittent one-frame rotation snaps at waypoint transitions.
+
+**New runtime contracts:**
+- Market stand capacity is globally capped by `Config.MarketStandCapacity` during both stand selection and claim time.
+- Market stand access-node resolution accepts one-to-many internal waypoint links, and route expansion chooses best path from current access node.
+- Market stand discovery now depends on stand attributes (`MarketStandZone`, optional `MarketViewTarget`) and internal waypoint link graphing to determine stand eligibility.
+
+**Non-blocking follow-ups:**
+- If any rare rotation pop remains under extreme waypoint topologies, add temporary heading-delta instrumentation around waypoint boundary frames to isolate route-shape edge cases.
+- Optional visual tuning pass can further adjust gaze hold/transition/glide timing without contract changes.
+
 ## Next Step
-- Pass 7 market POI type documented as candidate in `feature-passes.md`. Open design questions remain (see feature-passes.md).
-- Pass 7 is tabled pending other work.
+- Pass 7 complete. Ready for Pass 8 design.

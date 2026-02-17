@@ -43,6 +43,20 @@ local function resolveLinkTargetPart(value: Instance?, requiredRoot: Instance?):
 	return part
 end
 
+local function findDirectPOIAncestor(part: Instance, poisFolder: Folder?): Folder?
+	if not poisFolder then
+		return nil
+	end
+	local current = part
+	while current and current.Parent do
+		if current.Parent == poisFolder and current:IsA("Folder") then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
 function WaypointGraph.build(waypointsFolder: Folder)
 	local nodes = {}
 	local spawns = {}
@@ -178,14 +192,21 @@ function WaypointGraph.build(waypointsFolder: Folder)
 					end
 				end
 
-				if targetId and nodes[targetId] ~= nil then
-					ensureConnection(node, targetId)
-					ensureConnection(nodes[targetId], nodeId)
-				else
-					local valueName = "nil"
-					if target and target:IsA("Instance") then
-						valueName = target.Name
-					end
+					if targetId and nodes[targetId] ~= nil then
+						ensureConnection(node, targetId)
+						ensureConnection(nodes[targetId], nodeId)
+					else
+						if poisFolder and sourcePart:IsDescendantOf(poisFolder) and target and target:IsA("Instance") then
+							local sourcePOI = findDirectPOIAncestor(sourcePart, poisFolder)
+							if sourcePOI and target:IsDescendantOf(sourcePOI) then
+								-- POI-local links (internal waypoint graph / market stand routing) are resolved by POI modules.
+								continue
+							end
+						end
+						local valueName = "nil"
+						if target and target:IsA("Instance") then
+							valueName = target.Name
+						end
 					warn(string.format(
 						"[WanderingProps] WARNING: Node \"%s\" has connection to invalid target \"%s\". Ignored.",
 						sourcePart.Name,

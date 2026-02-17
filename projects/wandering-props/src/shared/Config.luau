@@ -53,7 +53,7 @@ Config.SocialWeight = 0.7
 -- MARKET POI
 Config.MarketStandsMin = 2
 Config.MarketStandsMax = 4
-Config.MarketStandCapacity = 3
+Config.MarketStandCapacity = 2
 Config.MarketBrowseDwellMin = 4
 Config.MarketBrowseDwellMax = 10
 Config.MarketWeight = 0.8

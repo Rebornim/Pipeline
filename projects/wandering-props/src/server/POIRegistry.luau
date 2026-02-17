@@ -229,6 +229,7 @@ end
 
 local function discoverInternalGraph(poiFolder: Folder, graph): any?
 	local iwFolder = poiFolder:FindFirstChild("InternalWaypoints")
+	local standsFolder = poiFolder:FindFirstChild("Stands")
 	if not iwFolder then
 		warn(string.format(
 			'[WanderingProps] WARNING: POI "%s" has no InternalWaypoints folder. Internal graph disabled for this POI.',
@@ -299,18 +300,22 @@ local function discoverInternalGraph(poiFolder: Folder, graph): any?
 						local targetPart = resolveLinkTargetPart(ov.Value, nil)
 						if targetPart then
 							local targetInternalId = partToInternalId[targetPart]
-							if targetInternalId then
-								if not table.find(nodes[fromId].connections, targetInternalId) then
-									table.insert(nodes[fromId].connections, targetInternalId)
-								end
-								if not table.find(nodes[targetInternalId].connections, fromId) then
-									table.insert(nodes[targetInternalId].connections, fromId)
-								end
-							else
-								local graphNodeId = graph.partToId[targetPart]
-								if graphNodeId then
-									markEntryNode(fromId, graphNodeId)
+								if targetInternalId then
+									if not table.find(nodes[fromId].connections, targetInternalId) then
+										table.insert(nodes[fromId].connections, targetInternalId)
+									end
+									if not table.find(nodes[targetInternalId].connections, fromId) then
+										table.insert(nodes[targetInternalId].connections, fromId)
+									end
 								else
+									-- Market authoring may intentionally link internal nodes to stand objects.
+									if standsFolder and targetPart:IsDescendantOf(standsFolder) then
+										continue
+									end
+									local graphNodeId = graph.partToId[targetPart]
+									if graphNodeId then
+										markEntryNode(fromId, graphNodeId)
+									else
 									warn(string.format(
 										'[WanderingProps] WARNING: POI "%s" internal link "%s" targets "%s", which is not an internal node or graph waypoint.',
 										poiFolder.Name,
@@ -520,7 +525,7 @@ local function discoverMarketStands(poiFolder: Folder): { any }?
 	end
 
 	local stands = {}
-	local defaultCapacity = math.max(1, math.floor(Config.MarketStandCapacity or 3))
+	local defaultCapacity = math.max(1, math.floor(Config.MarketStandCapacity or 2))
 	for _, standContainer in ipairs(standsFolder:GetChildren()) do
 		if standContainer:IsA("Folder") or standContainer:IsA("Model") then
 			local standZoneParts = findTaggedBaseParts(standContainer, "MarketStandZone")
@@ -612,7 +617,7 @@ local function resolveMarketStandIndexFromTarget(target: Instance?, stands): num
 	return nil
 end
 
-local function resolveMarketStandAccessNodeIdsFromInternalLinks(stands, internalGraph): { [number]: string }
+local function resolveMarketStandAccessNodeIdsFromInternalLinks(stands, internalGraph): { [number]: { string } }
 	local standAccessByIndex = {}
 	local partToInternalId = if internalGraph and internalGraph.partToInternalId then internalGraph.partToInternalId else {}
 	for part, internalNodeId in pairs(partToInternalId) do
@@ -622,12 +627,11 @@ local function resolveMarketStandAccessNodeIdsFromInternalLinks(stands, internal
 					local standIndex = resolveMarketStandIndexFromTarget(ov.Value, stands)
 					if standIndex then
 						if not standAccessByIndex[standIndex] then
-							standAccessByIndex[standIndex] = internalNodeId
-						elseif standAccessByIndex[standIndex] ~= internalNodeId then
-							warn(string.format(
-								'[WanderingProps] WARNING: Market stand "%s" has links from multiple internal waypoints. Using first.',
-								tostring(stands[standIndex].sourceContainer and stands[standIndex].sourceContainer.Name or standIndex)
-							))
+							standAccessByIndex[standIndex] = {}
+						end
+						local existing = standAccessByIndex[standIndex]
+						if not table.find(existing, internalNodeId) then
+							table.insert(existing, internalNodeId)
 						end
 					end
 				end
@@ -1028,12 +1032,16 @@ function POIRegistry.discover(poisFolder: Folder, graph)
 				local standAccessNodeIds = {}
 				local standAccessSet = {}
 				for standIndex, stand in ipairs(stands) do
-					stand.accessNodeId = standAccessByIndex[standIndex]
-					if stand.accessNodeId then
+					local linkedAccessNodeIds = standAccessByIndex[standIndex]
+					if linkedAccessNodeIds and #linkedAccessNodeIds > 0 then
+						stand.accessNodeIds = linkedAccessNodeIds
+						stand.accessNodeId = linkedAccessNodeIds[1]
 						table.insert(resolvedStands, stand)
-						if not standAccessSet[stand.accessNodeId] then
-							standAccessSet[stand.accessNodeId] = true
-							table.insert(standAccessNodeIds, stand.accessNodeId)
+						for _, accessNodeId in ipairs(linkedAccessNodeIds) do
+							if not standAccessSet[accessNodeId] then
+								standAccessSet[accessNodeId] = true
+								table.insert(standAccessNodeIds, accessNodeId)
+							end
 						end
 					else
 						warn(string.format(
@@ -1293,7 +1301,9 @@ function POIRegistry.claimMarketStand(poi, standIndex: number, npcId: string): b
 		return false
 	end
 
-	local capacity = math.max(1, math.floor(stand.capacity or Config.MarketStandCapacity or 1))
+	local configuredCap = math.max(1, math.floor(Config.MarketStandCapacity or 2))
+	local capacity = math.max(1, math.floor(stand.capacity or configuredCap))
+	capacity = math.min(capacity, configuredCap)
 	stand.capacity = capacity
 	local occupiedCount = stand.occupiedCount or 0
 	if occupiedCount >= capacity then

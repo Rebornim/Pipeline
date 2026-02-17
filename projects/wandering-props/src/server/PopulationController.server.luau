@@ -1048,6 +1048,44 @@ local function appendUniquePathPoints(dst: { Vector3 }, path: { Vector3 })
 	end
 end
 
+local function resolveStandAccessNodeIds(stand): { string }
+	local ids = {}
+	if stand.accessNodeIds then
+		for _, nodeId in ipairs(stand.accessNodeIds) do
+			if nodeId and not table.find(ids, nodeId) then
+				table.insert(ids, nodeId)
+			end
+		end
+	end
+	if stand.accessNodeId and not table.find(ids, stand.accessNodeId) then
+		table.insert(ids, stand.accessNodeId)
+	end
+	return ids
+end
+
+local function pickBestStandPath(internalGraph, fromNodeId: string, stand): ({ Vector3 }?, string?)
+	local candidateNodeIds = resolveStandAccessNodeIds(stand)
+	if #candidateNodeIds == 0 then
+		return nil, nil
+	end
+
+	local bestPath = nil
+	local bestNodeId = nil
+	local bestDistance = math.huge
+	for _, accessNodeId in ipairs(candidateNodeIds) do
+		local candidatePath = POIRegistry.computeInternalPath(internalGraph, fromNodeId, accessNodeId)
+		if candidatePath and #candidatePath >= 1 then
+			local distance = pathDistance(candidatePath)
+			if distance < bestDistance then
+				bestDistance = distance
+				bestPath = candidatePath
+				bestNodeId = accessNodeId
+			end
+		end
+	end
+	return bestPath, bestNodeId
+end
+
 local function expandMarketInternalWaypoints(
 	waypoints: { Vector3 },
 	poiWaypointIndex: number,
@@ -1077,16 +1115,18 @@ local function expandMarketInternalWaypoints(
 
 	local entryNodeId = candidateEntryIds[1]
 	local firstStand = poi.stands[selectedStandIndices[1]]
-	local firstAccessNodeId = if firstStand then firstStand.accessNodeId else nil
-	if firstAccessNodeId then
+	local firstAccessNodeIds = if firstStand then resolveStandAccessNodeIds(firstStand) else {}
+	if #firstAccessNodeIds > 0 then
 		local bestPathDistance = math.huge
 		for _, candidateEntryId in ipairs(candidateEntryIds) do
-			local candidatePath = POIRegistry.computeInternalPath(poi.internalGraph, candidateEntryId, firstAccessNodeId)
-			if candidatePath and #candidatePath >= 1 then
-				local distance = pathDistance(candidatePath)
-				if distance < bestPathDistance then
-					bestPathDistance = distance
-					entryNodeId = candidateEntryId
+			for _, firstAccessNodeId in ipairs(firstAccessNodeIds) do
+				local candidatePath = POIRegistry.computeInternalPath(poi.internalGraph, candidateEntryId, firstAccessNodeId)
+				if candidatePath and #candidatePath >= 1 then
+					local distance = pathDistance(candidatePath)
+					if distance < bestPathDistance then
+						bestPathDistance = distance
+						entryNodeId = candidateEntryId
+					end
 				end
 			end
 		end
@@ -1101,11 +1141,11 @@ local function expandMarketInternalWaypoints(
 	local currentAccessNodeId = entryNodeId
 	for _, standIndex in ipairs(selectedStandIndices) do
 		local stand = poi.stands[standIndex]
-		if not stand or not stand.accessNodeId then
+		if not stand then
 			continue
 		end
 
-		local standPath = POIRegistry.computeInternalPath(poi.internalGraph, currentAccessNodeId, stand.accessNodeId)
+		local standPath, chosenStandAccessNodeId = pickBestStandPath(poi.internalGraph, currentAccessNodeId, stand)
 		if standPath and #standPath >= 1 then
 			appendUniquePathPoints(newWaypoints, standPath)
 		else
@@ -1119,7 +1159,9 @@ local function expandMarketInternalWaypoints(
 
 		table.insert(newWaypoints, selectMarketStandPosition(stand))
 		table.insert(standWaypointIndices, #newWaypoints)
-		currentAccessNodeId = stand.accessNodeId
+		if chosenStandAccessNodeId then
+			currentAccessNodeId = chosenStandAccessNodeId
+		end
 	end
 
 	if #standWaypointIndices == 0 then
@@ -1305,7 +1347,9 @@ spawnNPC = function(options)
 
 					local availableStandIndices = {}
 					for standIndex, stand in ipairs(stands) do
-						local capacity = math.max(1, math.floor(stand.capacity or Config.MarketStandCapacity or 1))
+						local configuredCap = math.max(1, math.floor(Config.MarketStandCapacity or 2))
+						local capacity = math.max(1, math.floor(stand.capacity or configuredCap))
+						capacity = math.min(capacity, configuredCap)
 						if (stand.occupiedCount or 0) < capacity then
 							table.insert(availableStandIndices, standIndex)
 						end
