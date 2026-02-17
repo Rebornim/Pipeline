@@ -12,6 +12,7 @@ local RouteBuilder = require(sharedFolder:WaitForChild("RouteBuilder"))
 local WaypointGraph = require(sharedFolder:WaitForChild("WaypointGraph"))
 local PathSmoother = require(sharedFolder:WaitForChild("PathSmoother"))
 local POIRegistry = require(script.Parent:WaitForChild("POIRegistry"))
+local PopulationHooks = require(script.Parent:WaitForChild("PopulationHooks"))
 
 local activeNPCs = {}
 local activeCount = 0
@@ -35,6 +36,7 @@ local zoneRoutesTotal = 0
 local npcSpawnedRemote
 local npcDespawnedRemote
 local npcBulkSyncRemote
+local npcDesyncRemote
 
 local graph
 local poiRegistry = nil
@@ -178,10 +180,24 @@ local function setupRemotes()
 	npcSpawnedRemote = createRemoteEvent(remotesFolder, Remotes.NPCSpawned)
 	npcDespawnedRemote = createRemoteEvent(remotesFolder, Remotes.NPCDespawned)
 	npcBulkSyncRemote = createRemoteEvent(remotesFolder, Remotes.NPCBulkSync)
+	npcDesyncRemote = createRemoteEvent(remotesFolder, Remotes.NPCDesync)
 end
 
 local function isEventBatchingEnabled(): boolean
 	return Config.EventBatchingEnabled ~= false
+end
+
+local function fireRemoteWithDesyncFilter(remote: RemoteEvent, payload)
+	if next(PopulationHooks.desyncedPlayers) == nil then
+		remote:FireAllClients(payload)
+		return
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if not PopulationHooks.desyncedPlayers[player] then
+			remote:FireClient(player, payload)
+		end
+	end
 end
 
 local function flushQueuedRemoteEvents(force: boolean?)
@@ -202,14 +218,14 @@ local function flushQueuedRemoteEvents(force: boolean?)
 
 	if #queuedDespawnEvents > 0 then
 		local despawnPayload = if #queuedDespawnEvents == 1 then queuedDespawnEvents[1] else queuedDespawnEvents
-		npcDespawnedRemote:FireAllClients(despawnPayload)
+		fireRemoteWithDesyncFilter(npcDespawnedRemote, despawnPayload)
 		queuedDespawnEvents = {}
 		queuedDespawnEventSet = {}
 	end
 
 	if #queuedSpawnEvents > 0 then
 		local spawnPayload = if #queuedSpawnEvents == 1 then queuedSpawnEvents[1] else queuedSpawnEvents
-		npcSpawnedRemote:FireAllClients(spawnPayload)
+		fireRemoteWithDesyncFilter(npcSpawnedRemote, spawnPayload)
 		queuedSpawnEvents = {}
 	end
 
@@ -484,7 +500,7 @@ local function despawnNPC(id: string)
 		queueRecycleRequest({
 			reuseId = id,
 			model = record.modelTemplate,
-			walkSpeed = record.walkSpeed,
+			baseWalkSpeed = record.baseWalkSpeed or record.walkSpeed,
 			routeVersion = (record.routeVersion or 1) + 1,
 		}, Config.RecycleRespawnDelayMin, Config.RecycleRespawnDelayMax)
 		queueDespawnBroadcast(id)
@@ -703,6 +719,107 @@ local function scheduleNPCDespawn(record, duration: number)
 			requestDespawn(record.id)
 		end
 	end)
+end
+
+local function findNearestNodeIdFromPosition(position: Vector3): string?
+	local nearestId = nil
+	local nearestDist = math.huge
+	for nodeId, node in pairs(graph.nodes) do
+		if node then
+			local dist = (node.position - position).Magnitude
+			if dist < nearestDist then
+				nearestDist = dist
+				nearestId = nodeId
+			end
+		end
+	end
+	return nearestId
+end
+
+local function findNearestDespawnIdFromPosition(position: Vector3): string?
+	local nearestId = nil
+	local nearestDist = math.huge
+	for _, despawnId in ipairs(graph.despawns) do
+		local node = graph.nodes[despawnId]
+		if node then
+			local dist = (node.position - position).Magnitude
+			if dist < nearestDist then
+				nearestDist = dist
+				nearestId = despawnId
+			end
+		end
+	end
+	return nearestId
+end
+
+local function rerouteRecordToNearestDespawn(record, now: number, reason: string): boolean
+	if not record or not record.waypoints or #record.waypoints < 1 then
+		return false
+	end
+
+	local elapsed = math.max(0, now - record.startTime)
+	local routeState = calculateServerRouteState(record.waypoints, record.walkSpeed, elapsed, record.poiStops)
+	local currentPosition = routeState.position
+	local startNodeId = findNearestNodeIdFromPosition(currentPosition)
+	local despawnId = findNearestDespawnIdFromPosition(currentPosition)
+
+	if not startNodeId or not despawnId then
+		return false
+	end
+
+	local routeNodeIds = RouteBuilder.computeRoute(graph, startNodeId, despawnId)
+	local newWaypoints = nil
+	if routeNodeIds and #routeNodeIds > 0 then
+		newWaypoints = convertNodeIdsToWaypoints(routeNodeIds, nil)
+	else
+		newWaypoints = { graph.nodes[despawnId].position }
+	end
+	if #newWaypoints == 0 then
+		return false
+	end
+	if (newWaypoints[1] - currentPosition).Magnitude > 0.01 then
+		table.insert(newWaypoints, 1, currentPosition)
+	else
+		newWaypoints[1] = currentPosition
+	end
+	if #newWaypoints < 2 then
+		return false
+	end
+
+	if record.seatClaims then
+		for _, claim in ipairs(record.seatClaims) do
+			releaseSeatClaim(claim.poiId, claim.seatIndex, claim.npcId)
+		end
+	end
+	if record.marketStandClaims then
+		for _, claim in ipairs(record.marketStandClaims) do
+			releaseMarketStandClaim(claim.poiId, claim.standIndex, claim.npcId)
+		end
+	end
+
+	record.seatClaims = nil
+	record.marketStandClaims = nil
+	record.poiStops = nil
+	record.waypoints = newWaypoints
+	record.startTime = now
+	record.nightDrainApplied = true
+	record.routeVersion = (record.routeVersion or 1) + 1
+
+	local duration = 0
+	if record.walkSpeed > 0 then
+		duration = routeDistance(newWaypoints) / record.walkSpeed
+	end
+	record.totalDuration = duration
+	scheduleNPCDespawn(record, duration)
+	queueSpawnBroadcast(makeSpawnData(record))
+
+	diagnostics(string.format(
+		"[WanderingProps] REROUTE_%s %s legs=%d",
+		reason,
+		record.id,
+		math.max(0, #newWaypoints - 1)
+	))
+	return true
 end
 
 local function trimRouteForNightDrain(record, now: number): boolean
@@ -1262,14 +1379,17 @@ spawnNPC = function(options)
 		model = pickRandomModel()
 	end
 
-	local walkSpeed = nil
-	if options and options.walkSpeed ~= nil then
-		walkSpeed = math.max(0.1, options.walkSpeed)
+	local baseWalkSpeed = nil
+	if options and options.baseWalkSpeed ~= nil then
+		baseWalkSpeed = math.max(0.1, options.baseWalkSpeed)
+	elseif options and options.walkSpeed ~= nil then
+		baseWalkSpeed = math.max(0.1, options.walkSpeed)
 	else
 		local walkVariation = math.abs(Config.WalkSpeedVariation or 0)
 		local sampledWalkSpeed = Config.BaseWalkSpeed + rng:NextNumber(-walkVariation, walkVariation)
-		walkSpeed = math.max(0.1, sampledWalkSpeed)
+		baseWalkSpeed = math.max(0.1, sampledWalkSpeed)
 	end
+	local walkSpeed = baseWalkSpeed * math.max(0.1, PopulationHooks.walkSpeedMultiplier or 1.0)
 
 	local id = nil
 	if options and options.reuseId then
@@ -1873,6 +1993,7 @@ spawnNPC = function(options)
 			id = id,
 			modelName = model.Name,
 			modelTemplate = model,
+		baseWalkSpeed = baseWalkSpeed,
 		walkSpeed = walkSpeed,
 		waypoints = waypoints,
 		startTime = startTime,
@@ -1930,6 +2051,52 @@ spawnNPC = function(options)
 	return true
 end
 
+local function rebroadcastAllSpeeds(multiplier: number)
+	local appliedMultiplier = math.max(0.1, multiplier or 1.0)
+	PopulationHooks.walkSpeedMultiplier = appliedMultiplier
+
+	local affected = 0
+	for _, record in pairs(activeNPCs) do
+		local base = math.max(0.1, record.baseWalkSpeed or record.walkSpeed or Config.BaseWalkSpeed)
+		record.baseWalkSpeed = base
+		record.walkSpeed = base * appliedMultiplier
+		queueSpawnBroadcast(makeSpawnData(record))
+		affected += 1
+	end
+
+	print(string.format("[P8_TEST] SPEED_MULTIPLIER value=%.2f affected=%d", appliedMultiplier, affected))
+	diagnostics(string.format("[WanderingProps] SPEED_MULTIPLIER value=%.2f", appliedMultiplier))
+end
+
+local function rerouteAllToNearestDespawn()
+	local now = Workspace:GetServerTimeNow()
+	local rerouted = 0
+	for _, record in pairs(activeNPCs) do
+		if rerouteRecordToNearestDespawn(record, now, "MODE") then
+			rerouted += 1
+		end
+	end
+
+	print(string.format("[P8_TEST] REROUTE_ALL count=%d", rerouted))
+	diagnostics(string.format("[WanderingProps] REROUTE_ALL count=%d", rerouted))
+end
+
+local function sendBulkSyncToPlayer(player: Player): number
+	if not player then
+		return 0
+	end
+	if PopulationHooks.desyncedPlayers[player] then
+		return 0
+	end
+
+	local bulk = {}
+	for _, record in pairs(activeNPCs) do
+		table.insert(bulk, makeSpawnData(record))
+	end
+	npcBulkSyncRemote:FireClient(player, bulk)
+	return #bulk
+end
+
 local function processSpawnDespawnQueues()
 	local despawnBudget = math.max(1, math.floor(Config.DespawnOpsPerHeartbeat or 8))
 	local spawnBudget = math.max(1, math.floor(Config.SpawnOpsPerHeartbeat or 4))
@@ -1954,6 +2121,9 @@ local function processSpawnDespawnQueues()
 
 	local spawnProcessed = 0
 	while spawnProcessed < spawnBudget and os.clock() <= spawnBuildDeadline do
+		if PopulationHooks.spawnPaused then
+			break
+		end
 		if activeCount >= getEffectiveMaxPopulation() then
 			break
 		end
@@ -1972,7 +2142,7 @@ local function processSpawnDespawnQueues()
 				local recycled = spawnNPC({
 					reuseId = recycleRequest.reuseId,
 					model = recycleRequest.model,
-					walkSpeed = recycleRequest.walkSpeed,
+					baseWalkSpeed = recycleRequest.baseWalkSpeed or recycleRequest.walkSpeed,
 					routeVersion = recycleRequest.routeVersion,
 				})
 				if recycled then
@@ -2016,13 +2186,12 @@ local function processSpawnDespawnQueues()
 end
 
 local function onPlayerAdded(player: Player)
-	local bulk = {}
-	for _, record in pairs(activeNPCs) do
-		table.insert(bulk, makeSpawnData(record))
+	if PopulationHooks.desyncedPlayers[player] then
+		return
 	end
 
-	npcBulkSyncRemote:FireClient(player, bulk)
-	diagnostics(string.format("[WanderingProps] BULK_SYNC player=%s npcs_sent=%d", player.Name, #bulk))
+	local sent = sendBulkSyncToPlayer(player)
+	diagnostics(string.format("[WanderingProps] BULK_SYNC player=%s npcs_sent=%d", player.Name, sent))
 end
 
 local function startup()
@@ -2163,6 +2332,9 @@ local function startup()
 
 	setupRemotes()
 	nextEventFlushAt = Workspace:GetServerTimeNow()
+	PopulationHooks.rerouteAllToNearestDespawn = rerouteAllToNearestDespawn
+	PopulationHooks.rebroadcastAllSpeeds = rebroadcastAllSpeeds
+	PopulationHooks.sendBulkSyncToPlayer = sendBulkSyncToPlayer
 
 	local edgeCount = 0
 	local nodeCount = 0
@@ -2201,7 +2373,7 @@ local function startup()
 			end
 		local effectiveMax = getEffectiveMaxPopulation()
 		local pendingTotal = activeCount + queuedSpawnRequests + getQueuedRecycleCount()
-		if pendingTotal < effectiveMax then
+		if not PopulationHooks.spawnPaused and pendingTotal < effectiveMax then
 			requestSpawn(1)
 		end
 	end

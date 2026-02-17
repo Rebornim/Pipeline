@@ -84,6 +84,8 @@ local function applyMode(modeName: string, previousModeName: string)
 
 	PopulationHooks.spawnPaused = modeDef.spawnPaused
 	PopulationHooks.walkSpeedMultiplier = math.max(0.1, modeDef.speedMultiplier or 1.0)
+	print(string.format("[P8_TEST] SPAWN_PAUSED state=%s", tostring(PopulationHooks.spawnPaused)))
+	diagnostics(string.format("[WanderingProps] SPAWN_PAUSED state=%s", tostring(PopulationHooks.spawnPaused)))
 
 	if PopulationHooks.rebroadcastAllSpeeds then
 		PopulationHooks.rebroadcastAllSpeeds(PopulationHooks.walkSpeedMultiplier)
