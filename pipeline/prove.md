@@ -37,18 +37,7 @@ Specifically verify that behaviors from previous passes still work correctly:
 
 If a regression is found: **this is a blocking issue.** Fix it before this pass can be locked. The fix goes through the normal build process (categorize issue, send to Codex with diagnostics, one fix at a time).
 
-### Step 4: Contract Check
-
-Tell Claude: "Pass N prove for [project-name]."
-
-Claude does a focused contract check on the new/modified code (NOT a full critic review):
-1. Do function signatures match the pass design doc?
-2. Do cross-module calls pass the right arguments and handle returns?
-3. Are diagnostics and validators hooked up as specified?
-
-This is quick — focused on verifying the build matches the design, not a comprehensive code review.
-
-### Step 5: Clean Up AI Build Prints
+### Step 4: Clean Up AI Build Prints
 
 **Codex removes all temporary AI build prints** added during the build step:
 - All `[TAG] key=value` print statements
@@ -57,7 +46,7 @@ This is quick — focused on verifying the build matches the design, not a compr
 
 Keep permanent diagnostics (the `DEBUG_MODE`-gated logging, lifecycle reason codes, health counters). Those are human-focused and stay in the codebase. Only the temporary AI-focused prints get removed.
 
-### Step 6: Build Delta + Handoff
+### Step 5: Build Delta + Handoff
 
 **Codex writes the build delta.** Before locking the pass, tell Codex to document what actually changed vs what was planned:
 - What was built exactly as designed
@@ -68,18 +57,18 @@ This goes into `state.md` so Claude reads it before designing the next pass.
 
 **Codex commits and pushes.** All scripts get committed and pushed to `git@github.com:Rebornim/Pipeline.git` with a clear commit message: `pass N complete: [pass name]`
 
-**Codex produces a Claude handoff prompt.** File pointers and action only. No summaries, no context, no explanations. The files contain the information.
+**Codex produces a Claude handoff prompt.** File pointers and action only. No summaries, no context, no explanations. Claude reads the build delta in state.md and uses it to design the next pass.
 
 Format:
 ```
-Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Prove pass N.
+Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Design pass [N+1].
 ```
 
 That's it. Nothing more.
 
-### Step 7: Lock This Pass
+### Step 6: Lock This Pass
 
-When contract check passes, AI prints are cleaned, build delta is written, and code is pushed:
+When AI prints are cleaned, build delta is written, and code is pushed:
 - Update `state.md` with build deltas and next pass info
 - The code on disk is now **proven foundation** for the next pass
 - Move to next pass's Design step (or Ship if this was the last pass)
@@ -89,7 +78,6 @@ When contract check passes, AI prints are cleaned, build delta is written, and c
 - [ ] All golden tests pass (this pass + all previous)
 - [ ] Diagnostics health check clean (no anomalies, stable counts)
 - [ ] No regressions on previous pass behavior
-- [ ] Contract check passed (build matches design)
 - [ ] AI build prints removed (only permanent diagnostics remain)
 - [ ] Build delta documented in state.md
 - [ ] Code committed and pushed to GitHub

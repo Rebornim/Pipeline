@@ -110,10 +110,10 @@ git add -A && git commit -m "pass N complete: [name]" && git push origin main
 File pointers and action only. No summaries, no context, no explanations.
 
 ```
-Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Prove pass N.
+Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Design pass [N+1].
 ```
 
-That's it. Nothing more. state.md has all the context.
+That's it. Nothing more. state.md has the build delta. Claude uses it to design the next pass.
 
 ## Rojo + MCP Coexistence
 

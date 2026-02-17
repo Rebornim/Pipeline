@@ -17,7 +17,7 @@ The human user has minimal Luau/Roblox scripting knowledge. The AIs carry the te
 ### Per-pass cycle (repeat for each feature pass)
 - **Design** — Claude architects this pass against real tested code from previous passes. Integration pass traces data across modules. Golden test scenarios defined. Produces a handoff prompt for Codex.
 - **Build** — Codex implements from the design doc. Codex tests automatically via MCP (start playtest, read logs, fix). User does a final visual check. If Codex can't fix after 3 test-fix cycles, Claude writes a fix plan.
-- **Prove** — All golden tests pass (this pass + all previous = regression check). Codex writes a build delta (what actually changed vs the design), commits, pushes, and produces a handoff prompt for Claude.
+- **Prove** — All golden tests pass (this pass + all previous = regression check). Codex cleans up AI build prints, writes a build delta (what actually changed vs the design), commits, pushes, and hands off to Claude to design the next pass.
 
 ### Ship
 When all passes are proven. Final critic review on the full codebase.
