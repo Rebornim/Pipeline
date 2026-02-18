@@ -9,9 +9,9 @@ Tests accumulate across passes. Every prove step runs ALL tests, not just the cu
 ### Test 1: Direct Fire Hits
 - **Added in:** Pass 1
 - **Setup:** Placeholder turret (empire, blaster_turret config) at (0, 5, 0). Target dummy (rebel, target_dummy config, hullHP=200) at (0, 5, 50). Direct line of sight. TestHarnessEnabled = true.
-- **Action:** Harness fires 5 projectiles from turret at target with calculated aim direction.
-- **Expected:** All 5 hit. Target HP decreases from 200 to 150 (5 hits x 10 damage each).
-- **Pass condition:** 5 `[P1_HIT]` logs, 5 `[P1_DAMAGE]` logs each showing -10 HP, final target HP = 150.
+- **Action:** Harness fires 3 projectiles from turret at target with calculated aim direction.
+- **Expected:** All 3 hit. Target HP decreases from 200 to 80 (3 hits x 40 damage each).
+- **Pass condition:** 3 `[P1_HIT]` logs, 3 `[P1_DAMAGE]` logs each showing -40 HP, final target HP = 80.
 
 ### Test 2: Friendly Fire Prevention
 - **Added in:** Pass 1
@@ -22,9 +22,9 @@ Tests accumulate across passes. Every prove step runs ALL tests, not just the cu
 
 ### Test 3: Destruction + Respawn
 - **Added in:** Pass 1
-- **Setup:** Target with hullHP=30, respawnTime=5, damage=10 per hit. TestHarnessEnabled = true.
-- **Action:** Harness fires 3 shots (lethal), then waits 6 seconds.
-- **Expected:** Target destroyed after 3 hits. Respawns ~5 seconds later with full HP.
+- **Setup:** Target with hullHP=30, respawnTime=5, damage=40 per hit. TestHarnessEnabled = true.
+- **Action:** Harness fires 1 shot (lethal), then waits 6 seconds.
+- **Expected:** Target destroyed after 1 hit. Respawns ~5 seconds later with full HP.
 - **Pass condition:** `[P1_DESTROYED]` log, then `[P1_RESPAWNED]` log 5 +/- 1 seconds later. Target HP restored to 30.
 
 ### Test 4: Max Range Expiry

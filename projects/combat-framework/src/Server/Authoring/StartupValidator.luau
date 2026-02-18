@@ -7,6 +7,7 @@ local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatEnums = require(sharedRoot:WaitForChild("CombatEnums"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
+local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
 
 type ValidatedEntity = CombatTypes.ValidatedEntity
 
@@ -17,6 +18,10 @@ local validFactionSet = {
 	[CombatEnums.Faction.Rebel] = true,
 	[CombatEnums.Faction.Neutral] = true,
 }
+
+local function normalizeFaction(rawFaction: string): string
+	return string.lower(string.gsub(rawFaction, "^%s*(.-)%s*$", "%1"))
+end
 
 local function fail(modelName: string, message: string)
 	warn(string.format("[VALIDATE_FAIL] %s: %s", modelName, message))
@@ -31,6 +36,35 @@ local function findTaggedDescendant(model: Model, tagName: string, className: st
 		end
 	end
 	return nil
+end
+
+local function collectTaggedDescendants(model: Model, tagName: string, className: string?): { Instance }
+	local tagged: { Instance } = {}
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if CollectionService:HasTag(descendant, tagName) then
+			if className == nil or descendant:IsA(className) then
+				table.insert(tagged, descendant)
+			end
+		end
+	end
+
+	table.sort(tagged, function(a: Instance, b: Instance)
+		return a:GetFullName() < b:GetFullName()
+	end)
+
+	return tagged
+end
+
+local function isMuzzleAttachment(candidate: Instance): boolean
+	if not candidate:IsA("Attachment") then
+		return false
+	end
+
+	if CollectionService:HasTag(candidate, "MuzzlePoint") then
+		return true
+	end
+
+	return candidate.Name == "MuzzlePoint" or string.sub(candidate.Name, 1, 11) == "MuzzlePoint"
 end
 
 function StartupValidator.validate(): { ValidatedEntity }
@@ -53,7 +87,8 @@ function StartupValidator.validate(): { ValidatedEntity }
 			continue
 		end
 
-		if not validFactionSet[faction] then
+		local normalizedFaction = normalizeFaction(faction)
+		if not validFactionSet[normalizedFaction] then
 			fail(modelName, string.format("invalid Faction '%s'", tostring(faction)))
 			continue
 		end
@@ -72,6 +107,7 @@ function StartupValidator.validate(): { ValidatedEntity }
 		local weaponMount: BasePart? = nil
 		local muzzlePoint: Attachment? = nil
 		local turretSeat: Seat? = nil
+		local mountCount = 0
 
 		if entityConfig.weaponId ~= nil then
 			if CombatConfig.Weapons[entityConfig.weaponId] == nil then
@@ -79,16 +115,34 @@ function StartupValidator.validate(): { ValidatedEntity }
 				continue
 			end
 
-			local mountCandidate = findTaggedDescendant(model, "WeaponMount", "BasePart")
-			if mountCandidate == nil then
+			local mountCandidates = collectTaggedDescendants(model, "WeaponMount", "BasePart")
+			mountCount = #mountCandidates
+			if mountCount == 0 then
 				fail(modelName, "has weaponId but no WeaponMount tagged child")
 				continue
 			end
 
-			weaponMount = mountCandidate :: BasePart
-			local muzzle = weaponMount:FindFirstChild("MuzzlePoint")
-			if muzzle ~= nil and muzzle:IsA("Attachment") then
-				muzzlePoint = muzzle
+			weaponMount = mountCandidates[1] :: BasePart
+			local resolvedAimAxis, _aimAxisLabel = WeaponRig.resolveAimAxis(weaponMount)
+			if resolvedAimAxis == nil then
+				fail(
+					modelName,
+					string.format(
+						"mount '%s' has no resolved facing; set AimAxis (+X/-X/+Y/-Y/+Z/-Z) or orient MuzzlePoint.Axis forward",
+						weaponMount:GetFullName()
+					)
+				)
+				continue
+			end
+
+			for _, mount in ipairs(mountCandidates) do
+				for _, descendant in ipairs((mount :: Instance):GetDescendants()) do
+					if isMuzzleAttachment(descendant) then
+						if muzzlePoint == nil then
+							muzzlePoint = descendant :: Attachment
+						end
+					end
+				end
 			end
 
 			local seatCandidate = findTaggedDescendant(model, "TurretSeat", "Seat")
@@ -103,15 +157,11 @@ function StartupValidator.validate(): { ValidatedEntity }
 		table.insert(validated, {
 			instance = model,
 			configId = configId,
-			faction = faction,
+			faction = normalizedFaction,
 			weaponMount = weaponMount,
 			muzzlePoint = muzzlePoint,
 			turretSeat = turretSeat,
 		})
-
-		local seatStatus = turretSeat and "seat OK" or "no seat required"
-		local mountStatus = weaponMount and "mount OK" or "no mount required"
-		print(string.format("[P1_VALIDATE] %s: PASS (%s, %s, %s, %s)", modelName, faction, configId, seatStatus, mountStatus))
 	end
 
 	return validated

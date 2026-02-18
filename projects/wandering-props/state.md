@@ -1,7 +1,7 @@
 # Project State: wandering-props
 
-**Stage:** Pass 8 — Redesign Complete
-**Status:** pass_8_ready
+**Stage:** Complete (8 passes)
+**Status:** complete
 **Pipeline Version:** v3 (cyclic)
 **Last Updated:** 2026-02-17
 
@@ -317,9 +317,6 @@ Design deviations introduced during prove/fix cycles:
 - **1 new RemoteEvent:** `NPCDesync`.
 - Golden tests: Tests 36-42 (replaced v1 tests). Regression suite covers Tests 1, 2, 4, 5, 9, 11, 15, 16, 17, 25, 27, 30.
 
-## Next Step
-- Pass 8 redesign complete. Ready for Codex build.
-
 ### Pass 8 Build Delta
 **Built as designed:**
 - Added external behavior API surface in `WanderingPropsAPI` with priority mode resolution, mode expiry/fallback, and per-player desync/resync.
@@ -341,3 +338,15 @@ Design deviations introduced during prove/fix cycles:
 **Non-blocking follow-ups:**
 - Rare heading artifacts can still occur on extreme waypoint topologies; if needed, add temporary heading-delta instrumentation around reroute boundary frames for targeted tuning.
 - Golden test docs still reference pass-tag log markers from the prove phase and should be refreshed to match post-wrap runtime logging expectations.
+
+## Project Complete
+
+All 8 passes built and validated. The system covers:
+- **Pass 1:** Core spawn/walk/despawn loop with waypoint graph
+- **Pass 2:** POI system (scenic, busy, social) with seat claims
+- **Pass 3:** Waypoint zones, day/night population hook, night drain
+- **Pass 4:** LOD tiers, model pooling, spawn/despawn throttling
+- **Pass 5:** Corner beveling, smooth elevation/rotation, head look, lateral offset, fade
+- **Pass 6:** Internal POI navigation, multi-entrance support, stand point collections
+- **Pass 7:** Market POI type with stand browsing and head scanning
+- **Pass 8:** External behavior API (modes, priority, drain, per-player desync)

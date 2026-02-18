@@ -2,6 +2,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
@@ -31,6 +32,24 @@ local remotesFolder: Folder? = nil
 local damageAppliedRemote: RemoteEvent? = nil
 local entityDestroyedRemote: RemoteEvent? = nil
 local entityRespawnedRemote: RemoteEvent? = nil
+local explosionOverlapParams = OverlapParams.new()
+
+local function readConfigNumber(name: string, defaultValue: number): number
+	local raw = CombatConfig[name]
+	if type(raw) == "number" then
+		return raw
+	end
+	return defaultValue
+end
+
+local function distancePointToPartBounds(point: Vector3, part: BasePart): number
+	local localPoint = part.CFrame:PointToObjectSpace(point)
+	local halfSize = part.Size * 0.5
+	local dx = math.max(math.abs(localPoint.X) - halfSize.X, 0)
+	local dy = math.max(math.abs(localPoint.Y) - halfSize.Y, 0)
+	local dz = math.max(math.abs(localPoint.Z) - halfSize.Z, 0)
+	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
 
 local function getRemotes(): (RemoteEvent, RemoteEvent, RemoteEvent)
 	local damageRemote = damageAppliedRemote
@@ -80,6 +99,106 @@ local function restoreParts(state: HealthStateInternal)
 	state.partStates = nil
 end
 
+local function findEntityIdFromInstance(instance: Instance): string?
+	local current: Instance? = instance
+	while current ~= nil do
+		if current:IsA("Model") then
+			local knownEntityId = modelToEntityId[current]
+			if knownEntityId ~= nil then
+				return knownEntityId
+			end
+
+			local attributeId = current:GetAttribute("EntityId")
+			if type(attributeId) == "string" and entitiesById[attributeId] ~= nil then
+				return attributeId
+			end
+		end
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat: Seat?, operatorHumanoid: Humanoid?)
+	if turretSeat == nil then
+		return
+	end
+
+	local radius = math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
+	local maxDamage = math.max(0, readConfigNumber("TurretDeathExplosionDamage", 220))
+	if radius <= 0 or maxDamage <= 0 then
+		return
+	end
+
+	local center = turretSeat.Position
+	local explosionVisual = Instance.new("Explosion")
+	explosionVisual.Position = center
+	explosionVisual.BlastRadius = radius
+	explosionVisual.BlastPressure = 0
+	explosionVisual.DestroyJointRadiusPercent = 0
+	explosionVisual.Parent = Workspace
+
+	-- The turret operator always dies when their turret is destroyed.
+	if operatorHumanoid ~= nil and operatorHumanoid.Health > 0 then
+		operatorHumanoid:TakeDamage(1_000_000)
+	end
+
+	explosionOverlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	explosionOverlapParams.FilterDescendantsInstances = { state.instance }
+	explosionOverlapParams.MaxParts = 256
+	local nearbyParts = Workspace:GetPartBoundsInRadius(center, radius, explosionOverlapParams)
+	local closestDistanceByEntityId: { [string]: number } = {}
+	local closestDistanceByModel: { [Model]: number } = {}
+
+	for _, part in ipairs(nearbyParts) do
+		local distance = distancePointToPartBounds(center, part)
+		if distance > radius then
+			continue
+		end
+
+		local targetEntityId = findEntityIdFromInstance(part)
+		if targetEntityId ~= nil then
+			if targetEntityId ~= state.entityId and HealthManager.isAlive(targetEntityId) then
+				local previous = closestDistanceByEntityId[targetEntityId]
+				if previous == nil or distance < previous then
+					closestDistanceByEntityId[targetEntityId] = distance
+				end
+			end
+		else
+			local model = part:FindFirstAncestorOfClass("Model")
+			if model ~= nil then
+				local previous = closestDistanceByModel[model]
+				if previous == nil or distance < previous then
+					closestDistanceByModel[model] = distance
+				end
+			end
+		end
+	end
+
+	for targetEntityId, distance in pairs(closestDistanceByEntityId) do
+		local scale = math.clamp(1 - (distance / math.max(radius, 1e-4)), 0, 1)
+		local damage = math.max(0, math.floor(maxDamage * scale + 0.5))
+		if damage > 0 then
+			HealthManager.applyDamage(targetEntityId, damage, "explosion", state.faction, center, true)
+		end
+	end
+
+	for model, distance in pairs(closestDistanceByModel) do
+		if model ~= state.instance then
+			local humanoid = model:FindFirstChildOfClass("Humanoid")
+			if humanoid ~= nil and humanoid.Health > 0 then
+				local scale = math.clamp(1 - (distance / math.max(radius, 1e-4)), 0, 1)
+				local damage = math.max(0, math.floor(maxDamage * scale + 0.5))
+				if damage > 0 then
+					humanoid:TakeDamage(damage)
+				end
+			end
+		end
+	end
+
+	print(string.format("[P1_TURRET_EXPLOSION] entity=%s radius=%.1f maxDamage=%.1f", state.entityId, radius, maxDamage))
+end
+
 local function destroyEntity(state: HealthStateInternal)
 	if state.state ~= CombatEnums.EntityState.Active then
 		return
@@ -88,9 +207,12 @@ local function destroyEntity(state: HealthStateInternal)
 	state.state = CombatEnums.EntityState.Destroyed
 
 	local seat = state.instance:FindFirstChildWhichIsA("Seat", true)
+	local operatorHumanoid: Humanoid? = nil
 	if seat ~= nil and seat.Occupant ~= nil then
+		operatorHumanoid = seat.Occupant
 		seat.Occupant.Sit = false
 	end
+	applyTurretDeathExplosion(state, seat, operatorHumanoid)
 
 	state.partStates = collectAndHideParts(state.instance)
 
@@ -163,7 +285,8 @@ function HealthManager.applyDamage(
 	damage: number,
 	damageType: string,
 	attackerFaction: string,
-	hitPosition: Vector3
+	hitPosition: Vector3,
+	ignoreFactionCheck: boolean?
 ): boolean
 	local state = entitiesById[entityId]
 	if state == nil then
@@ -174,7 +297,7 @@ function HealthManager.applyDamage(
 		return false
 	end
 
-	if state.faction == attackerFaction then
+	if not ignoreFactionCheck and not CombatConfig.FriendlyFireEnabled and state.faction == attackerFaction then
 		print(string.format("[P1_FACTION_BLOCK] attackerFaction=%s targetEntityId=%s", attackerFaction, entityId))
 		return false
 	end
@@ -219,23 +342,7 @@ function HealthManager.getFaction(entityId: string): string?
 end
 
 function HealthManager.findEntityFromInstance(instance: Instance): string?
-	local current: Instance? = instance
-	while current ~= nil do
-		if current:IsA("Model") then
-			local knownEntityId = modelToEntityId[current]
-			if knownEntityId ~= nil then
-				return knownEntityId
-			end
-
-			local attributeId = current:GetAttribute("EntityId")
-			if type(attributeId) == "string" and entitiesById[attributeId] ~= nil then
-				return attributeId
-			end
-		end
-		current = current.Parent
-	end
-
-	return nil
+	return findEntityIdFromInstance(instance)
 end
 
 return HealthManager

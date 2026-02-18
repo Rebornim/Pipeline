@@ -13,9 +13,21 @@ local StartupValidator = require(serverRoot:WaitForChild("Authoring"):WaitForChi
 local HealthManager = require(serverRoot:WaitForChild("Health"):WaitForChild("HealthManager"))
 local ProjectileServer = require(serverRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileServer"))
 local WeaponServer = require(serverRoot:WaitForChild("Weapons"):WaitForChild("WeaponServer"))
-local Runner = require(serverRoot:WaitForChild("TestHarness"):WaitForChild("Runner"))
 
 type ValidatedEntity = CombatTypes.ValidatedEntity
+
+local function normalizeTeamOrFaction(raw: string?): string?
+	if raw == nil then
+		return nil
+	end
+
+	local trimmed = string.match(raw, "^%s*(.-)%s*$")
+	if trimmed == nil or trimmed == "" then
+		return nil
+	end
+
+	return string.lower(trimmed)
+end
 
 local function createRemoteEvent(parent: Folder, name: string): RemoteEvent
 	local existing = parent:FindFirstChild(name)
@@ -47,8 +59,11 @@ local function createRemotesFolder(): Folder
 	end
 
 	createRemoteEvent(folder, "FireWeapon")
+	createRemoteEvent(folder, "UpdateTurretAim")
 	createRemoteEvent(folder, "ProjectileFired")
+	createRemoteEvent(folder, "ProjectileImpact")
 	createRemoteEvent(folder, "DamageApplied")
+	createRemoteEvent(folder, "HitConfirm")
 	createRemoteEvent(folder, "EntityDestroyed")
 	createRemoteEvent(folder, "EntityRespawned")
 
@@ -75,6 +90,31 @@ local function addTurretPrompt(turretSeat: Seat, entityId: string)
 			return
 		end
 
+		local turretFaction = normalizeTeamOrFaction(HealthManager.getFaction(entityId))
+		if turretFaction == nil then
+			return
+		end
+
+		local team = player.Team
+		if team == nil then
+			print(string.format("[P1_TURRET_DENY] player=%s entity=%s reason=no_team", player.Name, entityId))
+			return
+		end
+
+		local playerFaction = normalizeTeamOrFaction(team.Name)
+		if playerFaction == nil or playerFaction ~= turretFaction then
+			print(
+				string.format(
+					"[P1_TURRET_DENY] player=%s entity=%s team=%s faction=%s reason=faction_mismatch",
+					player.Name,
+					entityId,
+					tostring(team.Name),
+					tostring(turretFaction)
+				)
+			)
+			return
+		end
+
 		local character = player.Character
 		if character == nil then
 			return
@@ -95,10 +135,6 @@ HealthManager.init(remotesFolder)
 ProjectileServer.init(remotesFolder)
 WeaponServer.init(remotesFolder)
 
-if CombatConfig.TestHarnessEnabled then
-	Runner.setup()
-end
-
 local validatedEntities: { ValidatedEntity } = StartupValidator.validate()
 local nextEntityIndex = 0
 
@@ -108,15 +144,10 @@ for _, validatedEntity in ipairs(validatedEntities) do
 
 	validatedEntity.instance:SetAttribute("EntityId", entityId)
 	HealthManager.registerEntity(entityId, validatedEntity)
+	WeaponServer.registerEntity(entityId)
 
 	if validatedEntity.turretSeat ~= nil then
 		CollectionService:AddTag(validatedEntity.turretSeat, "TurretSeat")
 		addTurretPrompt(validatedEntity.turretSeat, entityId)
 	end
-end
-
-if CombatConfig.TestHarnessEnabled then
-	task.spawn(function()
-		Runner.run()
-	end)
 end

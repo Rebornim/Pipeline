@@ -15,7 +15,9 @@ local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD
 local remotesFolder = ReplicatedStorage:WaitForChild("CombatRemotes") :: Folder
 local fireWeaponRemote = remotesFolder:WaitForChild("FireWeapon") :: RemoteEvent
 local projectileFiredRemote = remotesFolder:WaitForChild("ProjectileFired") :: RemoteEvent
+local projectileImpactRemote = remotesFolder:WaitForChild("ProjectileImpact") :: RemoteEvent
 local damageAppliedRemote = remotesFolder:WaitForChild("DamageApplied") :: RemoteEvent
+local hitConfirmRemote = remotesFolder:WaitForChild("HitConfirm") :: RemoteEvent
 local entityDestroyedRemote = remotesFolder:WaitForChild("EntityDestroyed") :: RemoteEvent
 local entityRespawnedRemote = remotesFolder:WaitForChild("EntityRespawned") :: RemoteEvent
 
@@ -69,9 +71,15 @@ ProjectileVisuals.init(remotesFolder)
 -- Keep references so all required remotes are guaranteed to exist in pass 1.
 local _ = fireWeaponRemote
 _ = projectileFiredRemote
+_ = projectileImpactRemote
+_ = hitConfirmRemote
 
 damageAppliedRemote.OnClientEvent:Connect(function(payload)
 	CombatHUD.onDamageApplied(payload)
+end)
+
+hitConfirmRemote.OnClientEvent:Connect(function(payload)
+	CombatHUD.onHitConfirm(payload)
 end)
 
 entityDestroyedRemote.OnClientEvent:Connect(onEntityDestroyed)

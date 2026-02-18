@@ -3,11 +3,20 @@
 local CombatTypes = {}
 
 export type WeaponConfig = {
+	weaponClass: string?,
 	damageType: string,
 	damage: number,
 	fireRate: number,
 	projectileSpeed: number,
 	maxRange: number,
+	boltColor: Color3?,
+	splashRadius: number?,
+	burstCount: number?,
+	burstInterval: number?,
+	heatMax: number?,
+	heatPerShot: number?,
+	heatDecayPerSecond: number?,
+	heatRecoverThreshold: number?,
 }
 
 export type EntityConfig = {
@@ -31,6 +40,7 @@ export type ProjectileData = {
 	projectileId: string,
 	sourceEntityId: string,
 	sourceInstance: Model,
+	sourceCharacter: Model?,
 	origin: Vector3,
 	direction: Vector3,
 	speed: number,
@@ -38,6 +48,8 @@ export type ProjectileData = {
 	damage: number,
 	damageType: string,
 	faction: string,
+	boltColor: Color3?,
+	splashRadius: number?,
 	createdAt: number,
 }
 
@@ -56,6 +68,13 @@ export type ProjectileFiredPayload = {
 	direction: Vector3,
 	speed: number,
 	maxRange: number,
+	boltColor: Color3?,
+}
+
+export type ProjectileImpactPayload = {
+	projectileId: string,
+	hitPosition: Vector3,
+	hitNormal: Vector3,
 }
 
 export type DamagePayload = {
@@ -63,6 +82,12 @@ export type DamagePayload = {
 	newHP: number,
 	maxHP: number,
 	hitPosition: Vector3,
+}
+
+export type HitConfirmPayload = {
+	targetEntityId: string,
+	hitPosition: Vector3,
+	isKill: boolean,
 }
 
 export type RespawnedPayload = {
