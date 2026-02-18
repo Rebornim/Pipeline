@@ -1,0 +1,23 @@
+{
+  "name": "CombatFramework",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "CombatFramework": {
+        "$path": "src/Shared"
+      }
+    },
+    "ServerScriptService": {
+      "CombatFramework": {
+        "$path": "src/Server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "CombatFramework": {
+          "$path": "src/Client"
+        }
+      }
+    }
+  }
+}
