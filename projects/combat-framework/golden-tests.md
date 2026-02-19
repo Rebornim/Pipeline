@@ -143,3 +143,38 @@ Re-run Pass 1 Tests 1-4 and Pass 2 Tests 5-6. Blaster damage type has multiplier
 Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9. All existing combat behaviors must be identical — targeting is additive, no lock = existing manual aim behavior unchanged.
 
 ---
+
+## Pass 5: Armed Ground Vehicles
+
+### Test 14: Vehicle Gunner Fire From Moving Platform
+- **Added in:** Pass 5
+- **Setup:** Empire armed_speeder (hullHP=200, weaponId=blaster_turret) with TurretSeat. Rebel target_dummy at (0, 5, 80). Vehicle at (0, 5, 0). MovingTargetController on vehicle: mode=side, speed=3. TestHarnessEnabled = true.
+- **Action:** Player seated in vehicle gunner TurretSeat. Vehicle moves side-to-side. Harness fires 3 shots aimed at target.
+- **Expected:** Projectiles originate from moving vehicle's weapon mount. At least 2 of 3 hit target. Target takes damage.
+- **Pass condition:** 3x `[P1_FIRE]` logs with differing projectile origins. At least 2x `[P1_HIT]` logs. Target HP < 200.
+
+### Test 15: Vehicle Destruction Kills Occupants
+- **Added in:** Pass 5
+- **Setup:** Empire vehicle_test_target (hullHP=300, killOccupantsOnDestruction=true) with DriverSeat (player seated) and TurretSeat (second occupant). Rebel blaster_turret at (0, 5, 60). TestHarnessEnabled = true.
+- **Action:** Rebel turret fires 8 shots to destroy vehicle (300 HP / 40 damage = 7.5, round up).
+- **Expected:** Vehicle destroyed. All seated occupants killed (Humanoid.Health = 0).
+- **Pass condition:** 1x `[P1_DESTROYED]` log. At least 1x `[P5_VEHICLE_KILL]` log per occupant. Occupant Humanoid.Health = 0.
+
+### Test 16: Driver Enclosed Protection
+- **Added in:** Pass 5
+- **Setup:** Empire armed_speeder (turretExposed=false) with player in DriverSeat. Rebel blaster_turret at (0, 5, 50) aimed at player character. TestHarnessEnabled = true.
+- **Action:** Rebel turret fires 3 shots hitting the driver's character.
+- **Expected:** All 3 blocked. Driver takes 0 damage.
+- **Pass condition:** 3x `[P4_ENCLOSED_BLOCK]` logs. Player Humanoid.Health unchanged.
+
+### Test 17: Vehicle Respawn Restores Position
+- **Added in:** Pass 5
+- **Setup:** Empire armed_speeder (respawnTime=5) at (0, 5, 0). MovingTargetController drives it to ~(20, 5, 0). Vehicle destroyed. TestHarnessEnabled = true.
+- **Action:** Destroy vehicle. Wait 6 seconds.
+- **Expected:** Vehicle respawns at original (0, 5, 0), not at destruction position. Full HP restored.
+- **Pass condition:** 1x `[P1_DESTROYED]`. 1x `[P5_SPAWN_RESTORE]`. 1x `[P1_RESPAWNED]`. Vehicle pivot within 1 stud of (0, 5, 0). HullHP = 200.
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13. Static turrets must behave identically. DriverSeat check extends existing TurretSeat check without changing turret behavior.
+
+---

@@ -1,6 +1,6 @@
 # Combat Framework — State
 
-## Current Stage: Pass 4 Build
+## Current Stage: Pass 5 Build
 ## Status: Ready
 
 ## History
@@ -12,6 +12,8 @@
 - **Pass 3 Design:** Complete 2026-02-19. Damage types + ammo — 5 damage types with shield/hull/bypass multipliers, finite ammo system, 4 new weapon/entity configs, HUD ammo counter.
 - **Pass 3 Build:** Complete 2026-02-19. Damage-type combat behaviors and finite ammo shipped with weapon-specific presentation and live tuning updates.
 - **Pass 4 Design:** Complete 2026-02-19. Targeting system — lock-on flow, auto-aim with lead prediction, torpedo requires lock, missile homing, turret arc/exposure config, 4 golden tests.
+- **Pass 4 Build:** Complete 2026-02-19. Full lock-on targeting flow, auto-aim with spread, homing missiles, enclosed turret protection, lock-loss UX cues.
+- **Pass 5 Design:** Complete 2026-02-19. Armed ground vehicles — bolt-on architecture, DriverSeat tag, vehicle destruction kills occupants, spawn position respawn, driver HUD, 4 golden tests.
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `project-protocol.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-3-design.md`, `golden-tests.md`, `state.md`

@@ -265,10 +265,40 @@ local function findEntityIdFromInstance(instance: Instance): string?
 	return nil
 end
 
-local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat: Seat?, operatorHumanoid: Humanoid?)
-	if turretSeat == nil then
-		return
+local function collectOccupiedSeats(model: Model): { Seat }
+	local seats: { Seat } = {}
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("Seat") and descendant.Occupant ~= nil then
+			table.insert(seats, descendant :: Seat)
+		end
 	end
+	return seats
+end
+
+local function handleOccupantsOnDestruction(state: HealthStateInternal, occupiedSeats: { Seat })
+	local shouldKillOccupants = state.config.killOccupantsOnDestruction == true
+	for _, seat in ipairs(occupiedSeats) do
+		local occupant = seat.Occupant
+		if occupant == nil then
+			continue
+		end
+
+		if shouldKillOccupants then
+			if occupant.Health > 0 then
+				occupant.Health = 0
+			end
+
+			local character = occupant.Parent
+			local player = if character ~= nil then Players:GetPlayerFromCharacter(character) else nil
+			local occupantName = if player ~= nil then player.Name else if character ~= nil then character.Name else occupant:GetFullName()
+			print(string.format("[P5_VEHICLE_KILL] player=%s entity=%s", occupantName, state.entityId))
+		else
+			occupant.Sit = false
+		end
+	end
+end
+
+local function applyTurretDeathExplosion(state: HealthStateInternal, center: Vector3)
 
 	local damageRadius = math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
 	local visualRadius = math.max(
@@ -280,18 +310,12 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 		return
 	end
 
-	local center = turretSeat.Position
 	local explosionVisual = Instance.new("Explosion")
 	explosionVisual.Position = center
 	explosionVisual.BlastRadius = visualRadius
 	explosionVisual.BlastPressure = 0
 	explosionVisual.DestroyJointRadiusPercent = 0
 	explosionVisual.Parent = Workspace
-
-	-- The turret operator always dies when their turret is destroyed.
-	if operatorHumanoid ~= nil and operatorHumanoid.Health > 0 then
-		operatorHumanoid:TakeDamage(1_000_000)
-	end
 
 	explosionOverlapParams.FilterType = Enum.RaycastFilterType.Exclude
 	explosionOverlapParams.FilterDescendantsInstances = { state.instance }
@@ -364,13 +388,14 @@ local function destroyEntity(state: HealthStateInternal)
 
 	state.state = CombatEnums.EntityState.Destroyed
 
-	local seat = state.instance:FindFirstChildWhichIsA("Seat", true)
-	local operatorHumanoid: Humanoid? = nil
-	if seat ~= nil and seat.Occupant ~= nil then
-		operatorHumanoid = seat.Occupant
-		seat.Occupant.Sit = false
+	local occupiedSeats = collectOccupiedSeats(state.instance)
+	handleOccupantsOnDestruction(state, occupiedSeats)
+
+	local explosionPosition = state.instance:GetPivot().Position
+	local hasAnySeat = state.instance:FindFirstChildWhichIsA("Seat", true) ~= nil
+	if hasAnySeat or state.config.killOccupantsOnDestruction == true then
+		applyTurretDeathExplosion(state, explosionPosition)
 	end
-	applyTurretDeathExplosion(state, seat, operatorHumanoid)
 
 	state.partStates = collectAndHideParts(state.instance)
 	state.promptStates = collectAndDisablePrompts(state.instance)
@@ -378,7 +403,7 @@ local function destroyEntity(state: HealthStateInternal)
 	local _, destroyedRemote = getRemotes()
 	local destroyPayload: EntityDestroyedPayload = {
 		entityId = state.entityId,
-		explosionPosition = if seat ~= nil then seat.Position else state.instance:GetPivot().Position,
+		explosionPosition = explosionPosition,
 		explosionRadius = readConfigNumber("TurretDeathExplosionRadius", 22),
 	}
 	destroyedRemote:FireAllClients(destroyPayload)
@@ -392,22 +417,27 @@ local function destroyEntity(state: HealthStateInternal)
 				return
 			end
 
+			if state.spawnCFrame ~= nil then
+				state.instance:PivotTo(state.spawnCFrame)
+				print(string.format("[P5_SPAWN_RESTORE] entity=%s", state.entityId))
+			end
+
 			restoreParts(state)
 			restorePrompts(state)
 			state.currentHP = state.maxHP
-				state.currentShieldHP = state.maxShieldHP
-				state.lastShieldDamageTime = tick()
-				state.state = CombatEnums.EntityState.Active
-				state.respawnTimer = nil
-				setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
-				if respawnCallback ~= nil then
-					local ok, callbackErr = pcall(respawnCallback, state.entityId)
-					if not ok then
-						warn(string.format("[P3_RESPAWN_CALLBACK] entity=%s error=%s", state.entityId, tostring(callbackErr)))
-					end
+			state.currentShieldHP = state.maxShieldHP
+			state.lastShieldDamageTime = tick()
+			state.state = CombatEnums.EntityState.Active
+			state.respawnTimer = nil
+			setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
+			if respawnCallback ~= nil then
+				local ok, callbackErr = pcall(respawnCallback, state.entityId)
+				if not ok then
+					warn(string.format("[P3_RESPAWN_CALLBACK] entity=%s error=%s", state.entityId, tostring(callbackErr)))
 				end
+			end
 
-				local _, _, respawnedRemote = getRemotes()
+			local _, _, respawnedRemote = getRemotes()
 			local payload: CombatTypes.RespawnedPayload = {
 				entityId = state.entityId,
 				hullHP = state.maxHP,
@@ -451,6 +481,7 @@ function HealthManager.registerEntity(entityId: string, validated: ValidatedEnti
 		instance = validated.instance,
 		faction = validated.faction,
 		config = entityConfig,
+		spawnCFrame = nil,
 		currentHP = maxHP,
 		maxHP = maxHP,
 		currentShieldHP = maxShieldHP,
@@ -465,6 +496,15 @@ function HealthManager.registerEntity(entityId: string, validated: ValidatedEnti
 	entitiesById[entityId] = state
 	modelToEntityId[validated.instance] = entityId
 	setModelHealthAttributes(validated.instance, maxHP, maxHP, maxShieldHP, maxShieldHP)
+end
+
+function HealthManager.setSpawnCFrame(entityId: string, spawnCFrame: CFrame)
+	local state = entitiesById[entityId]
+	if state == nil then
+		return
+	end
+
+	state.spawnCFrame = spawnCFrame
 end
 
 function HealthManager.applyDamage(

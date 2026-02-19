@@ -133,6 +133,31 @@ local function addTurretPrompt(turretSeat: Seat, entityId: string)
 	end)
 end
 
+local function registerDriverSeats(entityModel: Model, entityId: string)
+	local driverSeats: { VehicleSeat } = {}
+	for _, descendant in ipairs(entityModel:GetDescendants()) do
+		if descendant:IsA("VehicleSeat") then
+			local vehicleSeat = descendant :: VehicleSeat
+			local hasDriverTag = CollectionService:HasTag(vehicleSeat, "DriverSeat")
+			local hasDriverAttribute = vehicleSeat:GetAttribute("DriverSeat") == true
+			if hasDriverTag or hasDriverAttribute then
+				table.insert(driverSeats, vehicleSeat)
+			end
+		end
+	end
+
+	table.sort(driverSeats, function(a: VehicleSeat, b: VehicleSeat)
+		return a:GetFullName() < b:GetFullName()
+	end)
+
+	for _, driverSeat in ipairs(driverSeats) do
+		if not CollectionService:HasTag(driverSeat, "DriverSeat") then
+			CollectionService:AddTag(driverSeat, "DriverSeat")
+		end
+		print(string.format("[P5_DRIVER_SEAT] entity=%s seat=%s", entityId, driverSeat:GetFullName()))
+	end
+end
+
 local remotesFolder = createRemotesFolder()
 
 HealthManager.init(remotesFolder)
@@ -159,7 +184,9 @@ for _, validatedEntity in ipairs(validatedEntities) do
 	end
 	validatedEntity.instance:SetAttribute("TurretExposed", turretExposed)
 	HealthManager.registerEntity(entityId, validatedEntity)
+	HealthManager.setSpawnCFrame(entityId, validatedEntity.instance:GetPivot())
 	WeaponServer.registerEntity(entityId)
+	registerDriverSeats(validatedEntity.instance, entityId)
 
 	if validatedEntity.turretSeat ~= nil then
 		CollectionService:AddTag(validatedEntity.turretSeat, "TurretSeat")

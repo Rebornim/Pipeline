@@ -76,6 +76,17 @@ local function hasCameraPoint(model: Model): boolean
 	return false
 end
 
+local function hasDriverSeat(model: Model): boolean
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("VehicleSeat") then
+			if CollectionService:HasTag(descendant, "DriverSeat") or descendant:GetAttribute("DriverSeat") == true then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function validateConfigContracts(): boolean
 	local hasFailure = false
 
@@ -108,6 +119,14 @@ local function validateConfigContracts(): boolean
 	for entityId, entityConfig in pairs(CombatConfig.Entities) do
 		if entityConfig.turretExposed ~= nil and type(entityConfig.turretExposed) ~= "boolean" then
 			warn(string.format("[VALIDATE] Entity '%s' turretExposed must be boolean", entityId))
+			hasFailure = true
+		end
+
+		if
+			entityConfig.killOccupantsOnDestruction ~= nil
+			and type(entityConfig.killOccupantsOnDestruction) ~= "boolean"
+		then
+			warn(string.format("[VALIDATE] Entity '%s' killOccupantsOnDestruction must be boolean", entityId))
 			hasFailure = true
 		end
 	end
@@ -154,6 +173,13 @@ function StartupValidator.validate(): { ValidatedEntity }
 		if entityConfig == nil then
 			fail(modelName, string.format("unknown ConfigId '%s'", configId))
 			continue
+		end
+
+		if entityConfig.killOccupantsOnDestruction == true and not hasDriverSeat(model) then
+			warn(string.format(
+				"[VALIDATE_WARN] Entity '%s' has killOccupantsOnDestruction but no DriverSeat found - driver won't be protected from fire",
+				modelName
+			))
 		end
 
 		local weaponMount: BasePart? = nil
