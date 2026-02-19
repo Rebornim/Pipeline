@@ -38,3 +38,28 @@ Tests accumulate across passes. Every prove step runs ALL tests, not just the cu
 None (first pass).
 
 ---
+
+## Pass 2: Shield System
+
+### Test 5: Shield Full Lifecycle
+- **Added in:** Pass 2
+- **Setup:** Empire blaster_turret (damage=40) at (0, 5, 0). Rebel shield_test_target (shieldHP=60, hullHP=100, no regen) at (0, 5, 50). Direct line of sight. TestHarnessEnabled = true.
+- **Action:** Harness fires 4 projectiles sequentially at target.
+- **Expected:**
+  - Shot 1: shield 60 -> 20, hull 100 unchanged. impactType = "shield".
+  - Shot 2: shield 20 -> 0 (absorbed 20), overflow 20 to hull. Hull 100 -> 80. impactType = "shield".
+  - Shot 3: shield 0, hull 80 -> 40. impactType = "hull".
+  - Shot 4: hull 40 -> 0. Target destroyed. impactType = "hull".
+- **Pass condition:** 2x `[P2_SHIELD_ABSORB]`, 1x `[P2_SHIELD_BREAK]`, 1x `[P2_SHIELD_OVERFLOW]` (overflow=20), 3x `[P1_DAMAGE]` for hull, 1x `[P1_DESTROYED]`. ShieldHP=0 after shot 2, HullHP=0 after shot 4.
+
+### Test 6: Shield Regeneration
+- **Added in:** Pass 2
+- **Setup:** Empire blaster_turret (damage=40) at (0, 5, 0). Rebel shield_regen_target (shieldHP=100, hullHP=200, regenRate=50/sec, regenDelay=2) at (0, 5, 50). TestHarnessEnabled = true.
+- **Action:** Harness fires 1 projectile (shield 100 -> 60). Wait 6 seconds.
+- **Expected:** After 2s grace, regens at 50/sec. Shield fully restored to 100. Hull untouched at 200.
+- **Pass condition:** 1x `[P2_SHIELD_ABSORB]` (100->60), 1x `[P2_REGEN_FULL]` within 3-5s of hit. ShieldHP attribute = 100. HullHP attribute = 200.
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4. Unshielded entities must behave identically.
+
+---

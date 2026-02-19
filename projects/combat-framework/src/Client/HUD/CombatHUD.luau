@@ -17,6 +17,9 @@ local hitmarkerTween: Tween? = nil
 local cursorDot: Frame? = nil
 local hpFrame: Frame? = nil
 local hpLabel: TextLabel? = nil
+local shieldFrame: Frame? = nil
+local shieldFill: Frame? = nil
+local shieldLabel: TextLabel? = nil
 local heatFrame: Frame? = nil
 local heatFill: Frame? = nil
 local heatLabel: TextLabel? = nil
@@ -36,9 +39,14 @@ local VIGNETTE_EDGE_SIZE_SCALE = 0.24
 local HEAT_WARNING_THRESHOLD = 0.85
 local HEAT_WARNING_SOUND_COOLDOWN = 0.7
 local HEAT_PULSE_SPEED = 12
+local SHIELD_LOW_THRESHOLD = 0.25
+local SHIELD_PULSE_SPEED = 8
+local SHIELD_HEALTHY_COLOR = Color3.fromRGB(80, 140, 255)
+local SHIELD_LOW_COLOR = Color3.fromRGB(90, 240, 255)
 
 local currentEntityId: string? = nil
 local hpCache: { [string]: { currentHP: number, maxHP: number } } = {}
+local shieldCache: { [string]: { currentShield: number, maxShield: number } } = {}
 
 local function getHitmarkerSoundTemplate(): Sound?
 	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
@@ -401,6 +409,45 @@ function CombatHUD.init()
 	label.Text = "Hull: -- / --"
 	label.Parent = frame
 
+	local shieldStatusFrame = Instance.new("Frame")
+	shieldStatusFrame.Name = "ShieldFrame"
+	shieldStatusFrame.AnchorPoint = Vector2.new(0.5, 1)
+	shieldStatusFrame.Position = UDim2.new(0.5, 0, 1, -122)
+	shieldStatusFrame.Size = UDim2.fromOffset(220, 28)
+	shieldStatusFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	shieldStatusFrame.BackgroundTransparency = 0.35
+	shieldStatusFrame.Visible = false
+	shieldStatusFrame.Parent = gui
+
+	local shieldBar = Instance.new("Frame")
+	shieldBar.Name = "ShieldBar"
+	shieldBar.Position = UDim2.fromOffset(8, 7)
+	shieldBar.Size = UDim2.fromOffset(204, 14)
+	shieldBar.BackgroundColor3 = Color3.fromRGB(22, 26, 42)
+	shieldBar.BorderSizePixel = 0
+	shieldBar.Parent = shieldStatusFrame
+
+	local shieldBarFill = Instance.new("Frame")
+	shieldBarFill.Name = "Fill"
+	shieldBarFill.Size = UDim2.fromScale(0, 1)
+	shieldBarFill.BackgroundColor3 = SHIELD_HEALTHY_COLOR
+	shieldBarFill.BorderSizePixel = 0
+	shieldBarFill.Parent = shieldBar
+
+	local shieldText = Instance.new("TextLabel")
+	shieldText.Name = "ShieldLabel"
+	shieldText.AnchorPoint = Vector2.new(1, 0.5)
+	shieldText.Position = UDim2.fromScale(1, 0.5)
+	shieldText.Size = UDim2.fromOffset(140, 24)
+	shieldText.BackgroundTransparency = 1
+	shieldText.TextColor3 = Color3.fromRGB(160, 196, 255)
+	shieldText.TextScaled = false
+	shieldText.TextSize = 14
+	shieldText.Font = Enum.Font.Code
+	shieldText.TextXAlignment = Enum.TextXAlignment.Right
+	shieldText.Text = "Shield: -- / --"
+	shieldText.Parent = shieldStatusFrame
+
 	local weaponHeatFrame = Instance.new("Frame")
 	weaponHeatFrame.Name = "HeatFrame"
 	weaponHeatFrame.AnchorPoint = Vector2.new(0.5, 1)
@@ -463,6 +510,9 @@ function CombatHUD.init()
 	cursorDot = dot
 	hpFrame = frame
 	hpLabel = label
+	shieldFrame = shieldStatusFrame
+	shieldFill = shieldBarFill
+	shieldLabel = shieldText
 	heatFrame = weaponHeatFrame
 	heatFill = fill
 	heatLabel = heatText
@@ -518,6 +568,11 @@ function CombatHUD.showHP(entityId: string)
 		hpFrame.Visible = true
 	end
 	updateHpLabel(entityId)
+
+	local shieldData = shieldCache[entityId]
+	if shieldData ~= nil then
+		CombatHUD.setShield(shieldData.currentShield, shieldData.maxShield)
+	end
 end
 
 function CombatHUD.hideHP()
@@ -525,6 +580,34 @@ function CombatHUD.hideHP()
 	if hpFrame ~= nil then
 		hpFrame.Visible = false
 	end
+end
+
+function CombatHUD.showShield(visible: boolean)
+	if shieldFrame ~= nil then
+		shieldFrame.Visible = visible
+	end
+end
+
+function CombatHUD.setShield(currentShield: number, maxShield: number)
+	local fill = shieldFill
+	local label = shieldLabel
+	if fill == nil or label == nil then
+		return
+	end
+
+	local clampedMax = math.max(1, maxShield)
+	local clampedCurrent = math.clamp(currentShield, 0, clampedMax)
+	local ratio = math.clamp(clampedCurrent / clampedMax, 0, 1)
+	fill.Size = UDim2.fromScale(ratio, 1)
+
+	local fillColor = SHIELD_HEALTHY_COLOR
+	if ratio < SHIELD_LOW_THRESHOLD then
+		local pulse = 0.5 + 0.5 * math.sin(tick() * SHIELD_PULSE_SPEED)
+		fillColor = SHIELD_HEALTHY_COLOR:Lerp(SHIELD_LOW_COLOR, pulse)
+	end
+	fill.BackgroundColor3 = fillColor
+
+	label.Text = string.format("Shield: %d / %d", math.floor(clampedCurrent + 0.5), math.floor(clampedMax + 0.5))
 end
 
 function CombatHUD.showHeat(visible: boolean)
@@ -664,6 +747,18 @@ function CombatHUD.onDamageApplied(payload)
 		maxHP = maxHP,
 	}
 
+	local newShieldHP = payload.newShieldHP
+	local maxShieldHP = payload.maxShieldHP
+	if type(newShieldHP) == "number" and type(maxShieldHP) == "number" and maxShieldHP > 0 then
+		shieldCache[entityId] = {
+			currentShield = newShieldHP,
+			maxShield = maxShieldHP,
+		}
+		if currentEntityId == entityId then
+			CombatHUD.setShield(newShieldHP, maxShieldHP)
+		end
+	end
+
 	if currentEntityId == entityId then
 		updateHpLabel(entityId)
 	end
@@ -672,6 +767,12 @@ end
 function CombatHUD.onEntityDestroyed(entityId: string)
 	if currentEntityId == entityId and hpLabel ~= nil then
 		hpLabel.Text = "Hull: DESTROYED"
+	end
+	if currentEntityId == entityId then
+		local existingShield = shieldCache[entityId]
+		if existingShield ~= nil then
+			CombatHUD.setShield(0, existingShield.maxShield)
+		end
 	end
 end
 
@@ -691,6 +792,17 @@ function CombatHUD.onEntityRespawned(payload)
 		currentHP = hullHP,
 		maxHP = existing and existing.maxHP or hullHP,
 	}
+
+	local shieldHP = payload.shieldHP
+	if type(shieldHP) == "number" and shieldHP > 0 then
+		shieldCache[entityId] = {
+			currentShield = shieldHP,
+			maxShield = shieldHP,
+		}
+		if currentEntityId == entityId then
+			CombatHUD.setShield(shieldHP, shieldHP)
+		end
+	end
 
 	if currentEntityId == entityId then
 		updateHpLabel(entityId)

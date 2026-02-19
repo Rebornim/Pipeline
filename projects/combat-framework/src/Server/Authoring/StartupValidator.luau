@@ -67,6 +67,15 @@ local function isMuzzleAttachment(candidate: Instance): boolean
 	return candidate.Name == "MuzzlePoint" or string.sub(candidate.Name, 1, 11) == "MuzzlePoint"
 end
 
+local function hasCameraPoint(model: Model): boolean
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant.Name == "CameraPoint" and (descendant:IsA("BasePart") or descendant:IsA("Attachment")) then
+			return true
+		end
+	end
+	return false
+end
+
 function StartupValidator.validate(): { ValidatedEntity }
 	local validated: { ValidatedEntity } = {}
 	local entities = CollectionService:GetTagged("CombatEntity")
@@ -152,6 +161,11 @@ function StartupValidator.validate(): { ValidatedEntity }
 			end
 
 			turretSeat = seatCandidate :: Seat
+
+			if not hasCameraPoint(model) then
+				fail(modelName, "has weaponId but no CameraPoint part/attachment")
+				continue
+			end
 		end
 
 		table.insert(validated, {

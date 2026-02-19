@@ -21,6 +21,9 @@ export type WeaponConfig = {
 
 export type EntityConfig = {
 	hullHP: number,
+	shieldHP: number?,
+	shieldRegenRate: number?,
+	shieldRegenDelay: number?,
 	weaponId: string?,
 	respawnTime: number?,
 }
@@ -32,6 +35,8 @@ export type HealthState = {
 	config: EntityConfig,
 	currentHP: number,
 	maxHP: number,
+	currentShieldHP: number,
+	maxShieldHP: number,
 	state: string,
 	respawnTimer: thread?,
 }
@@ -75,6 +80,8 @@ export type ProjectileImpactPayload = {
 	projectileId: string,
 	hitPosition: Vector3,
 	hitNormal: Vector3,
+	impactType: string?,
+	shieldBroken: boolean?,
 }
 
 export type DamagePayload = {
@@ -82,6 +89,8 @@ export type DamagePayload = {
 	newHP: number,
 	maxHP: number,
 	hitPosition: Vector3,
+	newShieldHP: number?,
+	maxShieldHP: number?,
 }
 
 export type HitConfirmPayload = {
@@ -90,9 +99,16 @@ export type HitConfirmPayload = {
 	isKill: boolean,
 }
 
+export type EntityDestroyedPayload = {
+	entityId: string,
+	explosionPosition: Vector3?,
+	explosionRadius: number?,
+}
+
 export type RespawnedPayload = {
 	entityId: string,
 	hullHP: number,
+	shieldHP: number?,
 }
 
 return CombatTypes

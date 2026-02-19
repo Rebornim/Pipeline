@@ -2,6 +2,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
@@ -12,15 +13,24 @@ local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
 type EntityConfig = CombatTypes.EntityConfig
 type HealthState = CombatTypes.HealthState
 type ValidatedEntity = CombatTypes.ValidatedEntity
+type EntityDestroyedPayload = CombatTypes.EntityDestroyedPayload
 
 type PartState = {
 	part: BasePart,
 	transparency: number,
 	canCollide: boolean,
+	canTouch: boolean,
+}
+
+type PromptState = {
+	prompt: ProximityPrompt,
+	enabled: boolean,
 }
 
 type HealthStateInternal = HealthState & {
 	partStates: { PartState }?,
+	promptStates: { PromptState }?,
+	lastShieldDamageTime: number,
 }
 
 local HealthManager = {}
@@ -33,6 +43,7 @@ local damageAppliedRemote: RemoteEvent? = nil
 local entityDestroyedRemote: RemoteEvent? = nil
 local entityRespawnedRemote: RemoteEvent? = nil
 local explosionOverlapParams = OverlapParams.new()
+local heartbeatConnection: RBXScriptConnection? = nil
 
 local function readConfigNumber(name: string, defaultValue: number): number
 	local raw = CombatConfig[name]
@@ -51,6 +62,15 @@ local function distancePointToPartBounds(point: Vector3, part: BasePart): number
 	return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
+local function computeExplosionFalloffScale(distance: number, radius: number): number
+	local safeRadius = math.max(radius, 1e-4)
+	local normalized = math.clamp(distance / safeRadius, 0, 1)
+	local exponent = math.max(0.1, readConfigNumber("TurretDeathExplosionFalloffExponent", 1.6))
+	local minScale = math.clamp(readConfigNumber("TurretDeathExplosionMinDamageScale", 0.12), 0, 1)
+	local curved = math.clamp(1 - math.pow(normalized, exponent), 0, 1)
+	return math.max(minScale, curved)
+end
+
 local function getRemotes(): (RemoteEvent, RemoteEvent, RemoteEvent)
 	local damageRemote = damageAppliedRemote
 	local destroyedRemote = entityDestroyedRemote
@@ -61,9 +81,67 @@ local function getRemotes(): (RemoteEvent, RemoteEvent, RemoteEvent)
 	return damageRemote, destroyedRemote, respawnedRemote
 end
 
-local function setModelHealthAttributes(model: Model, currentHP: number, maxHP: number)
+local function setModelHealthAttributes(
+	model: Model,
+	currentHP: number,
+	maxHP: number,
+	currentShieldHP: number,
+	maxShieldHP: number
+)
 	model:SetAttribute("HullHP", currentHP)
 	model:SetAttribute("MaxHullHP", maxHP)
+	model:SetAttribute("ShieldHP", currentShieldHP)
+	model:SetAttribute("MaxShieldHP", maxShieldHP)
+end
+
+local function getShieldRegenRate(config: EntityConfig): number
+	if type(config.shieldRegenRate) == "number" and config.shieldRegenRate > 0 then
+		return config.shieldRegenRate
+	end
+	return 0
+end
+
+local function getShieldRegenDelay(config: EntityConfig): number
+	if type(config.shieldRegenDelay) == "number" and config.shieldRegenDelay >= 0 then
+		return config.shieldRegenDelay
+	end
+	return math.max(0, readConfigNumber("DefaultShieldRegenDelay", 3))
+end
+
+local function stepShieldRegen(dt: number)
+	if dt <= 0 then
+		return
+	end
+
+	local now = tick()
+	for _, state in pairs(entitiesById) do
+		if state.state ~= CombatEnums.EntityState.Active then
+			continue
+		end
+		if state.maxShieldHP <= 0 or state.currentShieldHP >= state.maxShieldHP then
+			continue
+		end
+
+		local regenRate = getShieldRegenRate(state.config)
+		if regenRate <= 0 then
+			continue
+		end
+
+		local regenDelay = getShieldRegenDelay(state.config)
+		if now - state.lastShieldDamageTime < regenDelay then
+			continue
+		end
+
+		local previousShieldHP = state.currentShieldHP
+		local nextShieldHP = math.min(state.maxShieldHP, previousShieldHP + regenRate * dt)
+		if nextShieldHP == previousShieldHP then
+			continue
+		end
+
+		state.currentShieldHP = nextShieldHP
+		setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
+
+	end
 end
 
 local function collectAndHideParts(model: Model): { PartState }
@@ -75,13 +153,31 @@ local function collectAndHideParts(model: Model): { PartState }
 				part = descendant,
 				transparency = descendant.Transparency,
 				canCollide = descendant.CanCollide,
+				canTouch = descendant.CanTouch,
 			})
 			descendant.Transparency = 1
 			descendant.CanCollide = false
+			descendant.CanTouch = false
 		end
 	end
 
 	return partStates
+end
+
+local function collectAndDisablePrompts(model: Model): { PromptState }
+	local promptStates: { PromptState } = {}
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("ProximityPrompt") then
+			table.insert(promptStates, {
+				prompt = descendant,
+				enabled = descendant.Enabled,
+			})
+			descendant.Enabled = false
+		end
+	end
+
+	return promptStates
 end
 
 local function restoreParts(state: HealthStateInternal)
@@ -91,12 +187,31 @@ local function restoreParts(state: HealthStateInternal)
 
 	for _, saved in ipairs(state.partStates) do
 		if saved.part.Parent ~= nil then
-			saved.part.Transparency = saved.transparency
+			local restoredTransparency = saved.transparency
+			if saved.part:IsA("Seat") and CollectionService:HasTag(saved.part, "TurretSeat") then
+				restoredTransparency = 1
+			end
+			saved.part.Transparency = restoredTransparency
 			saved.part.CanCollide = saved.canCollide
+			saved.part.CanTouch = saved.canTouch
 		end
 	end
 
 	state.partStates = nil
+end
+
+local function restorePrompts(state: HealthStateInternal)
+	if state.promptStates == nil then
+		return
+	end
+
+	for _, saved in ipairs(state.promptStates) do
+		if saved.prompt.Parent ~= nil then
+			saved.prompt.Enabled = saved.enabled
+		end
+	end
+
+	state.promptStates = nil
 end
 
 local function findEntityIdFromInstance(instance: Instance): string?
@@ -124,16 +239,20 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 		return
 	end
 
-	local radius = math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
+	local damageRadius = math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
+	local visualRadius = math.max(
+		damageRadius,
+		readConfigNumber("TurretDeathExplosionVisualRadius", damageRadius > 0 and damageRadius * 1.35 or 30)
+	)
 	local maxDamage = math.max(0, readConfigNumber("TurretDeathExplosionDamage", 220))
-	if radius <= 0 or maxDamage <= 0 then
+	if damageRadius <= 0 or maxDamage <= 0 then
 		return
 	end
 
 	local center = turretSeat.Position
 	local explosionVisual = Instance.new("Explosion")
 	explosionVisual.Position = center
-	explosionVisual.BlastRadius = radius
+	explosionVisual.BlastRadius = visualRadius
 	explosionVisual.BlastPressure = 0
 	explosionVisual.DestroyJointRadiusPercent = 0
 	explosionVisual.Parent = Workspace
@@ -146,13 +265,13 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 	explosionOverlapParams.FilterType = Enum.RaycastFilterType.Exclude
 	explosionOverlapParams.FilterDescendantsInstances = { state.instance }
 	explosionOverlapParams.MaxParts = 256
-	local nearbyParts = Workspace:GetPartBoundsInRadius(center, radius, explosionOverlapParams)
+	local nearbyParts = Workspace:GetPartBoundsInRadius(center, damageRadius, explosionOverlapParams)
 	local closestDistanceByEntityId: { [string]: number } = {}
 	local closestDistanceByModel: { [Model]: number } = {}
 
 	for _, part in ipairs(nearbyParts) do
 		local distance = distancePointToPartBounds(center, part)
-		if distance > radius then
+		if distance > damageRadius then
 			continue
 		end
 
@@ -176,7 +295,7 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 	end
 
 	for targetEntityId, distance in pairs(closestDistanceByEntityId) do
-		local scale = math.clamp(1 - (distance / math.max(radius, 1e-4)), 0, 1)
+		local scale = computeExplosionFalloffScale(distance, damageRadius)
 		local damage = math.max(0, math.floor(maxDamage * scale + 0.5))
 		if damage > 0 then
 			HealthManager.applyDamage(targetEntityId, damage, "explosion", state.faction, center, true)
@@ -187,7 +306,7 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 		if model ~= state.instance then
 			local humanoid = model:FindFirstChildOfClass("Humanoid")
 			if humanoid ~= nil and humanoid.Health > 0 then
-				local scale = math.clamp(1 - (distance / math.max(radius, 1e-4)), 0, 1)
+				local scale = computeExplosionFalloffScale(distance, damageRadius)
 				local damage = math.max(0, math.floor(maxDamage * scale + 0.5))
 				if damage > 0 then
 					humanoid:TakeDamage(damage)
@@ -196,7 +315,15 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 		end
 	end
 
-	print(string.format("[P1_TURRET_EXPLOSION] entity=%s radius=%.1f maxDamage=%.1f", state.entityId, radius, maxDamage))
+	print(
+		string.format(
+			"[P1_TURRET_EXPLOSION] entity=%s damageRadius=%.1f visualRadius=%.1f maxDamage=%.1f",
+			state.entityId,
+			damageRadius,
+			visualRadius,
+			maxDamage
+		)
+	)
 end
 
 local function destroyEntity(state: HealthStateInternal)
@@ -215,9 +342,15 @@ local function destroyEntity(state: HealthStateInternal)
 	applyTurretDeathExplosion(state, seat, operatorHumanoid)
 
 	state.partStates = collectAndHideParts(state.instance)
+	state.promptStates = collectAndDisablePrompts(state.instance)
 
 	local _, destroyedRemote = getRemotes()
-	destroyedRemote:FireAllClients(state.entityId)
+	local destroyPayload: EntityDestroyedPayload = {
+		entityId = state.entityId,
+		explosionPosition = if seat ~= nil then seat.Position else state.instance:GetPivot().Position,
+		explosionRadius = readConfigNumber("TurretDeathExplosionRadius", 22),
+	}
+	destroyedRemote:FireAllClients(destroyPayload)
 	print(string.format("[P1_DESTROYED] entity=%s tick=%.3f", state.entityId, tick()))
 
 	if state.config.respawnTime ~= nil and state.config.respawnTime > 0 then
@@ -229,16 +362,21 @@ local function destroyEntity(state: HealthStateInternal)
 			end
 
 			restoreParts(state)
+			restorePrompts(state)
 			state.currentHP = state.maxHP
+			state.currentShieldHP = state.maxShieldHP
+			state.lastShieldDamageTime = tick()
 			state.state = CombatEnums.EntityState.Active
 			state.respawnTimer = nil
-			setModelHealthAttributes(state.instance, state.currentHP, state.maxHP)
+			setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
 
 			local _, _, respawnedRemote = getRemotes()
-			respawnedRemote:FireAllClients({
+			local payload: CombatTypes.RespawnedPayload = {
 				entityId = state.entityId,
 				hullHP = state.maxHP,
-			})
+				shieldHP = if state.maxShieldHP > 0 then state.maxShieldHP else nil,
+			}
+			respawnedRemote:FireAllClients(payload)
 			print(string.format("[P1_RESPAWNED] entity=%s hullHP=%d tick=%.3f", state.entityId, state.maxHP, tick()))
 		end)
 	end
@@ -253,6 +391,10 @@ function HealthManager.init(remotes: Folder)
 	Players.PlayerRemoving:Connect(function(_player)
 		-- No per-player state in pass 1.
 	end)
+
+	if heartbeatConnection == nil then
+		heartbeatConnection = RunService.Heartbeat:Connect(stepShieldRegen)
+	end
 end
 
 function HealthManager.registerEntity(entityId: string, validated: ValidatedEntity)
@@ -263,6 +405,10 @@ function HealthManager.registerEntity(entityId: string, validated: ValidatedEnti
 	end
 
 	local maxHP = entityConfig.hullHP
+	local maxShieldHP = 0
+	if type(entityConfig.shieldHP) == "number" then
+		maxShieldHP = math.max(0, entityConfig.shieldHP)
+	end
 	local state: HealthStateInternal = {
 		entityId = entityId,
 		instance = validated.instance,
@@ -270,14 +416,18 @@ function HealthManager.registerEntity(entityId: string, validated: ValidatedEnti
 		config = entityConfig,
 		currentHP = maxHP,
 		maxHP = maxHP,
+		currentShieldHP = maxShieldHP,
+		maxShieldHP = maxShieldHP,
 		state = CombatEnums.EntityState.Active,
 		respawnTimer = nil,
 		partStates = nil,
+		promptStates = nil,
+		lastShieldDamageTime = 0,
 	}
 
 	entitiesById[entityId] = state
 	modelToEntityId[validated.instance] = entityId
-	setModelHealthAttributes(validated.instance, maxHP, maxHP)
+	setModelHealthAttributes(validated.instance, maxHP, maxHP, maxShieldHP, maxShieldHP)
 end
 
 function HealthManager.applyDamage(
@@ -287,45 +437,89 @@ function HealthManager.applyDamage(
 	attackerFaction: string,
 	hitPosition: Vector3,
 	ignoreFactionCheck: boolean?
-): boolean
+): (boolean, string?, boolean)
 	local state = entitiesById[entityId]
 	if state == nil then
-		return false
+		return false, nil, false
 	end
 
 	if state.state ~= CombatEnums.EntityState.Active then
-		return false
+		return false, nil, false
 	end
 
 	if not ignoreFactionCheck and not CombatConfig.FriendlyFireEnabled and state.faction == attackerFaction then
 		print(string.format("[P1_FACTION_BLOCK] attackerFaction=%s targetEntityId=%s", attackerFaction, entityId))
-		return false
+		return false, nil, false
 	end
 
+	local appliedDamage = math.max(0, damage)
+	if appliedDamage <= 0 then
+		return false, nil, false
+	end
+
+	local impactType = CombatEnums.ImpactType.Hull
+	local didBreakShield = false
+	local oldShieldHP = state.currentShieldHP
 	local oldHP = state.currentHP
-	local nextHP = math.max(0, oldHP - damage)
-	state.currentHP = nextHP
-	setModelHealthAttributes(state.instance, state.currentHP, state.maxHP)
+	local hullDamage = appliedDamage
+	if oldShieldHP > 0 then
+		impactType = CombatEnums.ImpactType.Shield
+		local shieldDamage = math.min(oldShieldHP, appliedDamage)
+		state.currentShieldHP = math.max(0, oldShieldHP - shieldDamage)
+		hullDamage = math.max(0, appliedDamage - shieldDamage)
+		state.lastShieldDamageTime = tick()
+
+		if state.currentShieldHP <= 0 then
+			didBreakShield = true
+		end
+	end
+
+	local nextHP = oldHP
+	if hullDamage > 0 then
+		nextHP = math.max(0, oldHP - hullDamage)
+		state.currentHP = nextHP
+		print(
+			string.format(
+				"[P1_DAMAGE] entity=%s %d->%d (%s, -%d)",
+				entityId,
+				math.floor(oldHP + 0.5),
+				math.floor(nextHP + 0.5),
+				damageType,
+				math.floor(hullDamage + 0.5)
+			)
+		)
+	end
+
+	setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
 
 	local damageRemote = getRemotes()
-	damageRemote:FireAllClients({
+	local payload: CombatTypes.DamagePayload = {
 		entityId = entityId,
 		newHP = nextHP,
 		maxHP = state.maxHP,
 		hitPosition = hitPosition,
-	})
-
-	print(string.format("[P1_DAMAGE] entity=%s %d->%d (%s, -%d)", entityId, oldHP, nextHP, damageType, damage))
+		newShieldHP = if state.maxShieldHP > 0 then state.currentShieldHP else nil,
+		maxShieldHP = if state.maxShieldHP > 0 then state.maxShieldHP else nil,
+	}
+	damageRemote:FireAllClients(payload)
 
 	if nextHP <= 0 then
 		destroyEntity(state)
 	end
 
-	return true
+	return true, impactType, didBreakShield
 end
 
 function HealthManager.getHealth(entityId: string): HealthState?
 	return entitiesById[entityId]
+end
+
+function HealthManager.getShieldHP(entityId: string): (number?, number?)
+	local state = entitiesById[entityId]
+	if state == nil then
+		return nil, nil
+	end
+	return state.currentShieldHP, state.maxShieldHP
 end
 
 function HealthManager.isAlive(entityId: string): boolean

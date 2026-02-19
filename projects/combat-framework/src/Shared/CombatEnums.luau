@@ -18,4 +18,10 @@ CombatEnums.EntityState = {
 	Respawning = "respawning",
 }
 
+CombatEnums.ImpactType = {
+	Shield = "shield",
+	Hull = "hull",
+	Environment = "environment",
+}
+
 return CombatEnums

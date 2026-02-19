@@ -33,10 +33,6 @@ local MIN_TURN_RATE = math.rad(20)
 local MAX_TURN_RATE = math.rad(100)
 local STOP_SMOOTH_ZONE = math.rad(3)
 local STOP_SMOOTH_RATE = 8
-local CAMERA_POS_FOLLOW_RATE = 14
-local CAMERA_POS_STOP_RATE = 6
-local CAMERA_LOOK_FOLLOW_RATE = 18
-local CAMERA_LOOK_STOP_RATE = 8
 local CAMERA_FALLBACK_LOCAL_OFFSET = Vector3.new(0, 9, 22)
 local CAMERA_LOOK_DISTANCE = 500
 local DEFAULT_PROJECTILE_RANGE = 500
@@ -84,14 +80,11 @@ local activeSeat: BasePart? = nil
 local activeWeaponMount: BasePart? = nil
 local activeNeutralAimFrame: CFrame? = nil
 local activeCameraPoint: Instance? = nil
-local activeCameraLocalOffset = CAMERA_FALLBACK_LOCAL_OFFSET
 
 local desiredAimDirection: Vector3? = nil
 local currentAimDirection: Vector3? = nil
 local cameraYaw = 0
 local cameraPitch = 0
-local smoothedCameraPosition: Vector3? = nil
-local smoothedCameraLookDirection: Vector3? = nil
 local cameraKickOffset = 0
 local cameraKickVelocity = 0
 local cameraShakeAmplitude = 0
@@ -105,7 +98,6 @@ local zoomBlend = 0
 local nextClientFireTime = 0
 local nextAimUpdateTime = 0
 local lastHeatRecoverCueId = 0
-local cameraReanchorFramesRemaining = 0
 local heatVfxMount: BasePart? = nil
 local heatVfxAttachment: Attachment? = nil
 local heatVfxLight: PointLight? = nil
@@ -402,49 +394,37 @@ local function getCameraPointWorldPosition(point: Instance?): Vector3?
 	return nil
 end
 
-local function resolveCameraLocalOffset()
-	if activeWeaponMount == nil then
-		activeCameraLocalOffset = CAMERA_FALLBACK_LOCAL_OFFSET
-		return
+local function getCameraAnchorWorldPosition(cameraPoint: Instance?, seatPart: BasePart?, mount: BasePart?): Vector3?
+	local pointPosition = getCameraPointWorldPosition(cameraPoint)
+	if pointPosition ~= nil then
+		return pointPosition
 	end
 
-	local cameraPointWorldPosition = getCameraPointWorldPosition(activeCameraPoint)
-	if cameraPointWorldPosition ~= nil then
-		activeCameraLocalOffset = activeWeaponMount.CFrame:PointToObjectSpace(cameraPointWorldPosition)
-	else
-		activeCameraLocalOffset = CAMERA_FALLBACK_LOCAL_OFFSET
+	if seatPart ~= nil then
+		return seatPart.CFrame:PointToWorldSpace(CAMERA_FALLBACK_LOCAL_OFFSET)
 	end
+
+	if mount ~= nil then
+		return mount.CFrame:PointToWorldSpace(CAMERA_FALLBACK_LOCAL_OFFSET)
+	end
+
+	return nil
 end
 
-local function reanchorCameraFromCurrentRig()
+local function initializeAimFromCurrentRig()
 	if activeWeaponMount == nil then
 		return
 	end
 
 	activeNeutralAimFrame = WeaponRig.getNeutralAimFrame(activeWeaponMount)
 	local initialDirection = clampDirectionPitch(WeaponRig.getCurrentAimDirection(activeWeaponMount))
-	local initialCameraDirection = initialDirection
 	if activeNeutralAimFrame ~= nil then
 		initialDirection = WeaponRig.clampDirectionToMountLimits(activeWeaponMount, activeNeutralAimFrame, initialDirection)
 	end
 
 	desiredAimDirection = initialDirection
 	currentAimDirection = initialDirection
-	cameraYaw, cameraPitch = directionToYawPitch(initialCameraDirection)
-
-	local mountFrame = WeaponRig.getAimFrame(activeWeaponMount, initialDirection)
-	local cameraPointWorldPosition = getCameraPointWorldPosition(activeCameraPoint)
-	if cameraPointWorldPosition ~= nil then
-		activeCameraLocalOffset = mountFrame:PointToObjectSpace(cameraPointWorldPosition)
-	else
-		activeCameraLocalOffset = CAMERA_FALLBACK_LOCAL_OFFSET
-	end
-	activeWeaponMount.CFrame = mountFrame
-	if updateDrivenParts ~= nil then
-		updateDrivenParts(initialDirection)
-	end
-	smoothedCameraPosition = mountFrame:PointToWorldSpace(activeCameraLocalOffset)
-	smoothedCameraLookDirection = initialCameraDirection
+	cameraYaw, cameraPitch = directionToYawPitch(initialDirection)
 end
 
 local rebuildDrivenParts: (() -> ())? = nil
@@ -464,9 +444,11 @@ ensureWeaponMount = function()
 	if mount ~= nil then
 		activeWeaponMount = mount :: BasePart
 		activeNeutralAimFrame = WeaponRig.getNeutralAimFrame(activeWeaponMount)
-		resolveCameraLocalOffset()
 		if rebuildDrivenParts ~= nil then
 			rebuildDrivenParts()
+		end
+		if currentAimDirection == nil or desiredAimDirection == nil then
+			initializeAimFromCurrentRig()
 		end
 	end
 end
@@ -802,21 +784,34 @@ local function updateWeaponHeatHud(): (number, boolean)
 	return heatRatio, overheated
 end
 
+local function updateShieldHud()
+	local turretModel = activeTurretModel
+	if turretModel == nil then
+		CombatHUD.showShield(false)
+		return
+	end
+
+	local maxShieldRaw = turretModel:GetAttribute("MaxShieldHP")
+	if type(maxShieldRaw) ~= "number" or maxShieldRaw <= 0 then
+		CombatHUD.showShield(false)
+		return
+	end
+
+	local currentShieldRaw = turretModel:GetAttribute("ShieldHP")
+	local currentShield = if type(currentShieldRaw) == "number" then currentShieldRaw else maxShieldRaw
+	CombatHUD.showShield(true)
+	CombatHUD.setShield(currentShield, maxShieldRaw)
+end
+
 local function updateTurretAndCamera(dt: number)
 	if activeTurretModel == nil then
 		return
 	end
 
 	ensureWeaponMount()
-	if activeWeaponMount == nil then
+	local weaponMount = activeWeaponMount
+	if weaponMount == nil then
 		return
-	end
-	local rawMouseDelta = UserInputService:GetMouseDelta()
-	local reanchoringThisFrame = false
-	if cameraReanchorFramesRemaining > 0 then
-		reanchoringThisFrame = true
-		reanchorCameraFromCurrentRig()
-		cameraReanchorFramesRemaining -= 1
 	end
 
 	local camera = workspace.CurrentCamera
@@ -824,19 +819,23 @@ local function updateTurretAndCamera(dt: number)
 		return
 	end
 
-	local mouseDelta = if reanchoringThisFrame then Vector2.zero else rawMouseDelta
+	local mouseDelta = UserInputService:GetMouseDelta()
 	cameraYaw += -mouseDelta.X * CAMERA_MOUSE_SENSITIVITY
 	cameraPitch = math.clamp(cameraPitch - mouseDelta.Y * CAMERA_MOUSE_SENSITIVITY, MIN_VERTICAL_ANGLE, MAX_VERTICAL_ANGLE)
 	local cameraLookDirection = yawPitchToDirection(cameraYaw, cameraPitch)
 
-	local aimDirection = clampDirectionPitch(currentAimDirection or WeaponRig.getCurrentAimDirection(activeWeaponMount))
+	if activeNeutralAimFrame == nil then
+		activeNeutralAimFrame = WeaponRig.getNeutralAimFrame(weaponMount)
+	end
+
+	local aimDirection = clampDirectionPitch(currentAimDirection or WeaponRig.getCurrentAimDirection(weaponMount))
 	local targetDirection = aimDirection
 	local cameraToAimError = math.acos(math.clamp(aimDirection:Dot(cameraLookDirection), -1, 1))
 	if cameraToAimError > AIM_DEADZONE_ANGLE then
 		targetDirection = cameraLookDirection
 	end
 	if activeNeutralAimFrame ~= nil then
-		targetDirection = WeaponRig.clampDirectionToMountLimits(activeWeaponMount, activeNeutralAimFrame, targetDirection)
+		targetDirection = WeaponRig.clampDirectionToMountLimits(weaponMount, activeNeutralAimFrame, targetDirection)
 	end
 	desiredAimDirection = targetDirection
 
@@ -859,38 +858,19 @@ local function updateTurretAndCamera(dt: number)
 	currentAimDirection = aimDirection
 	sendAimUpdate(aimDirection)
 
-	local mountFrame = WeaponRig.getAimFrame(activeWeaponMount, aimDirection)
-	activeWeaponMount.CFrame = mountFrame
+	local mountFrame = WeaponRig.getAimFrame(weaponMount, aimDirection)
+	weaponMount.CFrame = mountFrame
 	if updateDrivenParts ~= nil then
 		updateDrivenParts(aimDirection)
 	end
-	local desiredCameraPosition = mountFrame:PointToWorldSpace(activeCameraLocalOffset)
-	local desiredCameraLookDirection = cameraLookDirection
-	local settling = angularError <= STOP_SMOOTH_ZONE
 
-	if smoothedCameraPosition == nil then
-		smoothedCameraPosition = desiredCameraPosition
-	else
-		local posRate = if settling then CAMERA_POS_STOP_RATE else CAMERA_POS_FOLLOW_RATE
-		local posAlpha = math.min(1, dt * posRate)
-		smoothedCameraPosition = smoothedCameraPosition:Lerp(desiredCameraPosition, posAlpha)
+	local baseCameraPosition = getCameraAnchorWorldPosition(activeCameraPoint, activeSeat, weaponMount)
+	if baseCameraPosition == nil then
+		baseCameraPosition = camera.CFrame.Position
 	end
 
-	if smoothedCameraLookDirection == nil then
-		smoothedCameraLookDirection = desiredCameraLookDirection
-	else
-		local lookRate = if settling then CAMERA_LOOK_STOP_RATE else CAMERA_LOOK_FOLLOW_RATE
-		local lookAlpha = math.min(1, dt * lookRate)
-		local blendedLook = smoothedCameraLookDirection:Lerp(desiredCameraLookDirection, lookAlpha)
-		if blendedLook.Magnitude > 1e-4 then
-			smoothedCameraLookDirection = blendedLook.Unit
-		else
-			smoothedCameraLookDirection = desiredCameraLookDirection
-		end
-	end
-
-	local finalCameraPosition = smoothedCameraPosition :: Vector3
-	local finalCameraLook = smoothedCameraLookDirection :: Vector3
+	local finalCameraPosition = baseCameraPosition :: Vector3
+	local finalCameraLook = cameraLookDirection
 
 	local kickAcceleration = -cameraKickOffset * SHOT_KICK_SPRING - cameraKickVelocity * SHOT_KICK_DAMPING
 	cameraKickVelocity += kickAcceleration * dt
@@ -937,6 +917,7 @@ local function updateTurretAndCamera(dt: number)
 	CombatHUD.setCursorDotPosition(Vector2.new(center.X, center.Y))
 	updateAimReticle(camera, aimDirection)
 	local heatRatio, overheated = updateWeaponHeatHud()
+	updateShieldHud()
 	updateWeaponHeatVfx(dt, heatRatio, overheated)
 	if fireHeld and isHoldToFireEnabled() then
 		tryFireCurrentWeapon()
@@ -988,6 +969,7 @@ local function deactivateTurretMode()
 
 	CombatHUD.showCrosshair(false)
 	CombatHUD.hideHP()
+	CombatHUD.showShield(false)
 	CombatHUD.showHeat(false)
 	CombatHUD.setZoomVignette(0)
 	clearHeatVfx()
@@ -998,13 +980,10 @@ local function deactivateTurretMode()
 	activeNeutralAimFrame = nil
 	clearDrivenParts()
 	activeCameraPoint = nil
-	activeCameraLocalOffset = CAMERA_FALLBACK_LOCAL_OFFSET
 	desiredAimDirection = nil
 	currentAimDirection = nil
 	cameraYaw = 0
 	cameraPitch = 0
-	smoothedCameraPosition = nil
-	smoothedCameraLookDirection = nil
 	cameraKickOffset = 0
 	cameraKickVelocity = 0
 	cameraShakeAmplitude = 0
@@ -1017,7 +996,6 @@ local function deactivateTurretMode()
 	nextClientFireTime = 0
 	nextAimUpdateTime = 0
 	lastHeatRecoverCueId = 0
-	cameraReanchorFramesRemaining = 0
 end
 
 local function onFireAction(_actionName: string, inputState: Enum.UserInputState, _inputObject: InputObject): Enum.ContextActionResult
@@ -1088,9 +1066,9 @@ local function activateTurretMode(turretSeat: BasePart)
 	if rebuildDrivenParts ~= nil then
 		rebuildDrivenParts()
 	end
+	initializeAimFromCurrentRig()
 	clearHeatVfx()
 	activateTurretCameraAndMouse()
-	cameraReanchorFramesRemaining = 1
 	zoomHeld = false
 	fireHeld = false
 	zoomBlend = 0
@@ -1117,6 +1095,7 @@ local function activateTurretMode(turretSeat: BasePart)
 	else
 		CombatHUD.hideHP()
 	end
+	updateShieldHud()
 end
 
 local function onHumanoidSeated(isSeated: boolean, seatPart: BasePart?)

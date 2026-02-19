@@ -32,8 +32,11 @@ local boltFolder: Folder? = nil
 local impactFolder: Folder? = nil
 local warnedMissingTemplate = false
 local warnedMissingImpactTemplate = false
+local warnedMissingShieldImpactTemplate = false
 local warnedMissingFireSoundTemplate = false
 local warnedMissingImpactSoundTemplate = false
+local warnedMissingShieldImpactSoundTemplate = false
+local warnedMissingShieldBreakSoundTemplate = false
 
 local IMPACT_BURST_COUNTS: { [string]: number } = {
 	Smoke = 18,
@@ -110,7 +113,7 @@ local function getProjectileTemplateFolder(): Folder?
 	return projectileTemplate
 end
 
-local function getImpactTemplateFolder(): Folder?
+local function getImpactTemplateFolder(impactType: string?): Folder?
 	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
 	if combatAssets == nil or not combatAssets:IsA("Folder") then
 		return nil
@@ -121,12 +124,13 @@ local function getImpactTemplateFolder(): Folder?
 		return nil
 	end
 
-	local bulletHitTemplate = impactParticles:FindFirstChild("bulletHit")
-	if bulletHitTemplate == nil or not bulletHitTemplate:IsA("Folder") then
+	local templateName = if impactType == "shield" then "shieldHit" else "bulletHit"
+	local template = impactParticles:FindFirstChild(templateName)
+	if template == nil or not template:IsA("Folder") then
 		return nil
 	end
 
-	return bulletHitTemplate
+	return template
 end
 
 local function getFireSoundTemplate(): Sound?
@@ -154,7 +158,7 @@ local function getFireSoundTemplate(): Sound?
 	return nil
 end
 
-local function getImpactSoundTemplates(): { Sound }
+local function getImpactSoundTemplates(impactType: string?): { Sound }
 	local templates: { Sound } = {}
 
 	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
@@ -167,12 +171,40 @@ local function getImpactSoundTemplates(): { Sound }
 		return templates
 	end
 
-	local impactFolderAudio = audioFolder:FindFirstChild("Impact")
+	local folderName = if impactType == "shield" then "ShieldImpact" else "Impact"
+	local impactFolderAudio = audioFolder:FindFirstChild(folderName)
 	if impactFolderAudio == nil or not impactFolderAudio:IsA("Folder") then
 		return templates
 	end
 
 	for _, child in ipairs(impactFolderAudio:GetChildren()) do
+		if child:IsA("Sound") then
+			table.insert(templates, child)
+		end
+	end
+
+	return templates
+end
+
+local function getShieldBreakSoundTemplates(): { Sound }
+	local templates: { Sound } = {}
+
+	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
+	if combatAssets == nil or not combatAssets:IsA("Folder") then
+		return templates
+	end
+
+	local audioFolder = combatAssets:FindFirstChild("Audio")
+	if audioFolder == nil or not audioFolder:IsA("Folder") then
+		return templates
+	end
+
+	local breakFolder = audioFolder:FindFirstChild("ShieldBreak")
+	if breakFolder == nil or not breakFolder:IsA("Folder") then
+		return templates
+	end
+
+	for _, child in ipairs(breakFolder:GetChildren()) do
 		if child:IsA("Sound") then
 			table.insert(templates, child)
 		end
@@ -219,10 +251,15 @@ local function playFireSoundAt(position: Vector3)
 	Debris:AddItem(soundPart, cleanupDelay)
 end
 
-local function playImpactSoundAt(position: Vector3)
-	local soundTemplates = getImpactSoundTemplates()
+local function playImpactSoundAt(position: Vector3, impactType: string?)
+	local soundTemplates = getImpactSoundTemplates(impactType)
 	if #soundTemplates == 0 then
-		if not warnedMissingImpactSoundTemplate then
+		if impactType == "shield" then
+			if not warnedMissingShieldImpactSoundTemplate then
+				warn("[P2_AUDIO] Missing shield impact sound template in ReplicatedStorage.CombatAssets.Audio.ShieldImpact")
+				warnedMissingShieldImpactSoundTemplate = true
+			end
+		elseif not warnedMissingImpactSoundTemplate then
 			warn("[P1_AUDIO] Missing impact sound template in ReplicatedStorage.CombatAssets.Audio.Impact")
 			warnedMissingImpactSoundTemplate = true
 		end
@@ -252,6 +289,42 @@ local function playImpactSoundAt(position: Vector3)
 	Debris:AddItem(soundPart, cleanupDelay)
 end
 
+local function playShieldBreakSoundAt(position: Vector3)
+	local soundTemplates = getShieldBreakSoundTemplates()
+	if #soundTemplates == 0 then
+		soundTemplates = getImpactSoundTemplates("shield")
+		if #soundTemplates == 0 then
+			if not warnedMissingShieldBreakSoundTemplate then
+				warn("[P2_AUDIO] Missing shield break sound template in ReplicatedStorage.CombatAssets.Audio.ShieldBreak")
+				warnedMissingShieldBreakSoundTemplate = true
+			end
+			return
+		end
+	end
+
+	local soundPart = Instance.new("Part")
+	soundPart.Name = "ShieldBreakSound"
+	soundPart.Size = Vector3.new(0.25, 0.25, 0.25)
+	soundPart.Transparency = 1
+	soundPart.Anchored = true
+	soundPart.CanCollide = false
+	soundPart.CanQuery = false
+	soundPart.CanTouch = false
+	soundPart.CFrame = CFrame.new(position)
+	soundPart.Parent = ensureImpactFolder()
+
+	local cleanupDelay = 1
+	for _, soundTemplate in ipairs(soundTemplates) do
+		local breakSound = soundTemplate:Clone()
+		breakSound.Looped = false
+		breakSound.Parent = soundPart
+		breakSound:Play()
+		cleanupDelay = math.max(cleanupDelay, breakSound.TimeLength + 0.15)
+	end
+
+	Debris:AddItem(soundPart, cleanupDelay)
+end
+
 local function getBurstCount(emitter: ParticleEmitter): number
 	local attributeBurstCount = emitter:GetAttribute("EmitCount")
 	if type(attributeBurstCount) == "number" then
@@ -266,10 +339,15 @@ local function getBurstCount(emitter: ParticleEmitter): number
 	return 12
 end
 
-local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3)
-	local impactTemplate = getImpactTemplateFolder()
+local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impactType: string?)
+	local impactTemplate = getImpactTemplateFolder(impactType)
 	if impactTemplate == nil then
-		if not warnedMissingImpactTemplate then
+		if impactType == "shield" then
+			if not warnedMissingShieldImpactTemplate then
+				warn("[P2_IMPACT] Missing ReplicatedStorage.CombatAssets.ImpactParticles.shieldHit template folder.")
+				warnedMissingShieldImpactTemplate = true
+			end
+		elseif not warnedMissingImpactTemplate then
 			warn("[P1_IMPACT] Missing ReplicatedStorage.CombatAssets.ImpactParticles.bulletHit template folder.")
 			warnedMissingImpactTemplate = true
 		end
@@ -284,7 +362,7 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3)
 	end
 
 	local effectPart = Instance.new("Part")
-	effectPart.Name = "BulletImpact"
+	effectPart.Name = if impactType == "shield" then "ShieldImpact" else "BulletImpact"
 	effectPart.Transparency = 1
 	effectPart.Size = Vector3.new(2, 2, 2)
 	effectPart.Anchored = true
@@ -480,6 +558,8 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 	end
 
 	local bolt = activeBolts[payload.projectileId]
+	local impactType = if type(payload.impactType) == "string" then payload.impactType else nil
+	local shieldBroken = payload.shieldBroken == true
 	local impactDelay = 0
 	if bolt ~= nil then
 		local speed = math.max(1e-4, bolt.speed)
@@ -491,15 +571,21 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 	if impactDelay > 0 then
 		task.delay(impactDelay, function()
 			destroyBolt(payload.projectileId)
-			playImpactSoundAt(payload.hitPosition)
-			spawnImpactEffect(payload.hitPosition, payload.hitNormal)
+			playImpactSoundAt(payload.hitPosition, impactType)
+			if impactType == "shield" and shieldBroken then
+				playShieldBreakSoundAt(payload.hitPosition)
+			end
+			spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType)
 		end)
 		return
 	end
 
 	destroyBolt(payload.projectileId)
-	playImpactSoundAt(payload.hitPosition)
-	spawnImpactEffect(payload.hitPosition, payload.hitNormal)
+	playImpactSoundAt(payload.hitPosition, impactType)
+	if impactType == "shield" and shieldBroken then
+		playShieldBreakSoundAt(payload.hitPosition)
+	end
+	spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType)
 end
 
 function ProjectileVisuals.init(remotes: Folder)

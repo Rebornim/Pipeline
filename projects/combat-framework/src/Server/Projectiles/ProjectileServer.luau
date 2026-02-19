@@ -7,6 +7,7 @@ local Players = game:GetService("Players")
 
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
+local CombatEnums = require(sharedRoot:WaitForChild("CombatEnums"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
 
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -56,15 +57,15 @@ local function applyDamageToHumanoidTarget(
 	targetModel: Model,
 	hitPosition: Vector3,
 	damageAmount: number?
-): (boolean, boolean, string?)
+): (boolean, boolean, string?, string?, boolean)
 	local humanoid = targetModel:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil or humanoid.Health <= 0 then
-		return false, false, nil
+		return false, false, nil, nil, false
 	end
 
 	local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 	if projectile.sourceCharacter ~= nil and targetModel == projectile.sourceCharacter then
-		return false, false, nil
+		return false, false, nil, nil, false
 	end
 
 	if not CombatConfig.FriendlyFireEnabled and targetPlayer ~= nil then
@@ -72,13 +73,13 @@ local function applyDamageToHumanoidTarget(
 		local targetFaction = normalizeTeamOrFaction(if targetPlayer.Team ~= nil then targetPlayer.Team.Name else nil)
 		if attackerFaction ~= nil and targetFaction ~= nil and attackerFaction == targetFaction then
 			print(string.format("[P1_FACTION_BLOCK] attackerFaction=%s targetPlayer=%s", attackerFaction, targetPlayer.Name))
-			return false, false, nil
+			return false, false, nil, nil, false
 		end
 	end
 
 	local appliedDamage = math.max(0, damageAmount or projectile.damage)
 	if appliedDamage <= 0 then
-		return false, false, nil
+		return false, false, nil, nil, false
 	end
 
 	local previousHealth = humanoid.Health
@@ -94,7 +95,7 @@ local function applyDamageToHumanoidTarget(
 			humanoid.Health
 		)
 	)
-	return true, killed, targetId
+	return true, killed, targetId, CombatEnums.ImpactType.Hull, false
 end
 
 local function applyDamageToCombatEntity(
@@ -102,24 +103,26 @@ local function applyDamageToCombatEntity(
 	targetEntityId: string,
 	hitPosition: Vector3,
 	damageAmount: number?
-): (boolean, boolean, string)
+): (boolean, boolean, string, string?, boolean)
 	local previousState = HealthManager.getHealth(targetEntityId)
 	local previousHP = if previousState ~= nil then previousState.currentHP else 0
 	local appliedDamage = math.max(0, damageAmount or projectile.damage)
 	if appliedDamage <= 0 then
-		return false, false, targetEntityId
+		return false, false, targetEntityId, nil, false
 	end
 
 	print(string.format("[P1_HIT] projectile=%s target=%s hitPos=%s", projectile.projectileId, targetEntityId, tostring(hitPosition)))
-	local didApplyDamage = HealthManager.applyDamage(
+	local didApplyDamage, impactType, didBreakShield = HealthManager.applyDamage(
 		targetEntityId,
 		appliedDamage,
 		projectile.damageType,
 		projectile.faction,
 		hitPosition
 	)
-	local didKill = previousHP > 0 and previousHP - appliedDamage <= 0
-	return didApplyDamage, didKill, targetEntityId
+	local nextState = HealthManager.getHealth(targetEntityId)
+	local nextHP = if nextState ~= nil then nextState.currentHP else 0
+	local didKill = didApplyDamage and previousHP > 0 and nextHP <= 0
+	return didApplyDamage, didKill, targetEntityId, impactType, didBreakShield
 end
 
 local function applyDamageForHitInstance(
@@ -127,11 +130,12 @@ local function applyDamageForHitInstance(
 	hitInstance: Instance,
 	hitPosition: Vector3,
 	damageAmount: number?
-): (boolean, boolean, string?)
+): (boolean, boolean, string?, string?, boolean)
 	local targetEntityId = HealthManager.findEntityFromInstance(hitInstance)
 	if targetEntityId ~= nil and HealthManager.isAlive(targetEntityId) then
-		local didApplyDamage, didKill, targetId = applyDamageToCombatEntity(projectile, targetEntityId, hitPosition, damageAmount)
-		return didApplyDamage, didKill, targetId
+		local didApplyDamage, didKill, targetId, impactType, didBreakShield =
+			applyDamageToCombatEntity(projectile, targetEntityId, hitPosition, damageAmount)
+		return didApplyDamage, didKill, targetId, impactType, didBreakShield
 	end
 
 	local targetModel = hitInstance:FindFirstAncestorOfClass("Model")
@@ -139,7 +143,7 @@ local function applyDamageForHitInstance(
 		return applyDamageToHumanoidTarget(projectile, targetModel, hitPosition, damageAmount)
 	end
 
-	return false, false, nil
+	return false, false, nil, nil, false
 end
 
 local function applySplashDamage(
@@ -294,14 +298,7 @@ local function stepProjectiles(dt: number)
 				continue
 			end
 
-			local impactPayload: ProjectileImpactPayload = {
-				projectileId = projectileId,
-				hitPosition = hitResult.Position,
-				hitNormal = hitResult.Normal,
-			}
-			getProjectileImpactRemote():FireAllClients(impactPayload)
-
-			local didApplyDamage, didKill, hitTargetId =
+			local didApplyDamage, didKill, hitTargetId, impactType, shieldBroken =
 				applyDamageForHitInstance(projectile, hitInstance, hitResult.Position, projectile.damage)
 
 			local directTargetModel = hitInstance:FindFirstAncestorOfClass("Model")
@@ -314,6 +311,15 @@ local function stepProjectiles(dt: number)
 					hitTargetId = splashTargetId
 				end
 			end
+
+			local impactPayload: ProjectileImpactPayload = {
+				projectileId = projectileId,
+				hitPosition = hitResult.Position,
+				hitNormal = hitResult.Normal,
+				impactType = impactType or CombatEnums.ImpactType.Environment,
+				shieldBroken = if shieldBroken then true else nil,
+			}
+			getProjectileImpactRemote():FireAllClients(impactPayload)
 
 			if didApplyDamage and projectile.sourceCharacter ~= nil then
 				local shooterPlayer = Players:GetPlayerFromCharacter(projectile.sourceCharacter)
