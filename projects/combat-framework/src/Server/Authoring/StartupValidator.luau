@@ -76,8 +76,51 @@ local function hasCameraPoint(model: Model): boolean
 	return false
 end
 
+local function validateConfigContracts(): boolean
+	local hasFailure = false
+
+	for weaponId, weaponConfig in pairs(CombatConfig.Weapons) do
+		if type(weaponConfig.lockRange) == "number" then
+			if type(weaponConfig.maxRange) ~= "number" or weaponConfig.lockRange >= weaponConfig.maxRange then
+				warn(
+					string.format(
+						"[VALIDATE] Weapon '%s' lockRange (%d) must be less than maxRange (%d)",
+						weaponId,
+						math.floor(weaponConfig.lockRange + 0.5),
+						math.floor((weaponConfig.maxRange or 0) + 0.5)
+					)
+				)
+				hasFailure = true
+			end
+		end
+
+		if type(weaponConfig.unlockedSpread) == "number" and weaponConfig.unlockedSpread < 0 then
+			warn(string.format("[VALIDATE] Weapon '%s' unlockedSpread must be >= 0", weaponId))
+			hasFailure = true
+		end
+
+		if type(weaponConfig.autoAimSpread) == "number" and weaponConfig.autoAimSpread < 0 then
+			warn(string.format("[VALIDATE] Weapon '%s' autoAimSpread must be >= 0", weaponId))
+			hasFailure = true
+		end
+	end
+
+	for entityId, entityConfig in pairs(CombatConfig.Entities) do
+		if entityConfig.turretExposed ~= nil and type(entityConfig.turretExposed) ~= "boolean" then
+			warn(string.format("[VALIDATE] Entity '%s' turretExposed must be boolean", entityId))
+			hasFailure = true
+		end
+	end
+
+	return not hasFailure
+end
+
 function StartupValidator.validate(): { ValidatedEntity }
 	local validated: { ValidatedEntity } = {}
+	if not validateConfigContracts() then
+		return validated
+	end
+
 	local entities = CollectionService:GetTagged("CombatEntity")
 
 	for _, instance in ipairs(entities) do

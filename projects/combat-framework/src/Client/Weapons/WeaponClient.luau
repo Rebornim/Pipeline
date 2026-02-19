@@ -13,6 +13,7 @@ local playerScripts = localPlayer:WaitForChild("PlayerScripts")
 local clientRoot = playerScripts:WaitForChild("CombatFramework")
 
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
+local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChild("TargetingClient"))
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
@@ -22,6 +23,7 @@ local WeaponClient = {}
 local FIRE_ACTION_NAME = "CombatFireWeapon"
 local EXIT_ACTION_NAME = "CombatExitTurret"
 local ZOOM_ACTION_NAME = "CombatZoomWeapon"
+local LOCK_ACTION_NAME = "CombatLockToggle"
 local CAMERA_POINT_NAME = "CameraPoint"
 
 local MIN_VERTICAL_ANGLE = math.rad(-25)
@@ -33,6 +35,10 @@ local MIN_TURN_RATE = math.rad(20)
 local MAX_TURN_RATE = math.rad(100)
 local STOP_SMOOTH_ZONE = math.rad(3)
 local STOP_SMOOTH_RATE = 8
+local LOCK_CAMERA_DEADZONE_ANGLE = math.rad(1.0)
+local LOCK_CAMERA_TURN_GAIN = 2.6
+local LOCK_CAMERA_MIN_TURN_RATE = math.rad(10)
+local LOCK_CAMERA_MAX_TURN_RATE = math.rad(55)
 local CAMERA_FALLBACK_LOCAL_OFFSET = Vector3.new(0, 9, 22)
 local CAMERA_LOOK_DISTANCE = 500
 local DEFAULT_PROJECTILE_RANGE = 500
@@ -84,6 +90,7 @@ local activeCameraPoint: Instance? = nil
 
 local desiredAimDirection: Vector3? = nil
 local currentAimDirection: Vector3? = nil
+local lockedCameraLookDirection: Vector3? = nil
 local cameraYaw = 0
 local cameraPitch = 0
 local cameraKickOffset = 0
@@ -157,6 +164,29 @@ local function applyPercentModifier(baseValue: number, modifier: number?, minVal
 	return adjusted
 end
 
+local function smoothDirectionToward(
+	currentDirection: Vector3,
+	targetDirection: Vector3,
+	dt: number,
+	deadzoneAngle: number,
+	rateGain: number,
+	minTurnRate: number,
+	maxTurnRate: number
+): Vector3
+	local currentUnit = if currentDirection.Magnitude > 1e-4 then currentDirection.Unit else targetDirection.Unit
+	local targetUnit = if targetDirection.Magnitude > 1e-4 then targetDirection.Unit else currentUnit
+	local dot = math.clamp(currentUnit:Dot(targetUnit), -1, 1)
+	local angularError = math.acos(dot)
+
+	if angularError <= deadzoneAngle then
+		return currentUnit
+	end
+
+	local turnRate = math.clamp(angularError * rateGain, minTurnRate, maxTurnRate)
+	local alpha = math.min(1, (turnRate * dt) / math.max(angularError, 1e-4))
+	return (currentUnit:Lerp(targetUnit, alpha)).Unit
+end
+
 local function getActiveWeaponCooldown(): number
 	if activeTurretModel == nil then
 		return 0
@@ -191,6 +221,30 @@ local function isHoldToFireEnabled(): boolean
 	return activeTurretModel ~= nil and activeTurretModel:GetAttribute("WeaponHoldToFire") == true
 end
 
+local function isLockRequiredForActiveWeapon(): boolean
+	if activeTurretModel == nil then
+		return false
+	end
+
+	local requiresLockAttr = activeTurretModel:GetAttribute("WeaponRequiresLock")
+	if type(requiresLockAttr) == "boolean" then
+		return requiresLockAttr
+	end
+
+	local configId = activeTurretModel:GetAttribute("ConfigId")
+	if type(configId) ~= "string" then
+		return false
+	end
+
+	local entityConfig = CombatConfig.Entities[configId]
+	if entityConfig == nil or type(entityConfig.weaponId) ~= "string" then
+		return false
+	end
+
+	local weaponConfig = CombatConfig.Weapons[entityConfig.weaponId]
+	return weaponConfig ~= nil and weaponConfig.requiresLock == true
+end
+
 local function tryFireCurrentWeapon(): boolean
 	if activeTurretModel == nil or fireWeaponRemote == nil then
 		return false
@@ -210,6 +264,9 @@ local function tryFireCurrentWeapon(): boolean
 	end
 
 	if activeTurretModel:GetAttribute("WeaponOverheated") == true then
+		return false
+	end
+	if isLockRequiredForActiveWeapon() and not TargetingClient.isLocked() then
 		return false
 	end
 
@@ -875,29 +932,89 @@ local function updateTurretAndCamera(dt: number)
 
 	local aimDirection = clampDirectionPitch(currentAimDirection or WeaponRig.getCurrentAimDirection(weaponMount))
 	local targetDirection = aimDirection
-	local cameraToAimError = math.acos(math.clamp(aimDirection:Dot(cameraLookDirection), -1, 1))
-	if cameraToAimError > AIM_DEADZONE_ANGLE then
-		targetDirection = cameraLookDirection
+	local lockedTargetModel = TargetingClient.getLockedModel()
+	local hasLockedAim = false
+	local cameraLockTargetDirection: Vector3? = nil
+	if lockedTargetModel ~= nil and lockedTargetModel.Parent ~= nil then
+		local aimWorldPoint = lockedTargetModel:GetPivot().Position
+		local cameraWorldPoint = aimWorldPoint
+		if activeTurretModel ~= nil then
+			local rawLeadPoint = TargetingClient.getLockedLeadPoint(weaponMount.Position, activeTurretModel)
+			if rawLeadPoint ~= nil then
+				aimWorldPoint = rawLeadPoint
+				cameraWorldPoint = rawLeadPoint
+			end
+
+			local visualLeadPoint = TargetingClient.getLockedVisualLeadPoint(weaponMount.Position, activeTurretModel, dt)
+			if visualLeadPoint ~= nil then
+				cameraWorldPoint = visualLeadPoint
+			end
+		end
+
+		local toLockedAimPoint = aimWorldPoint - weaponMount.Position
+		if toLockedAimPoint.Magnitude > 1e-4 then
+			targetDirection = toLockedAimPoint.Unit
+			hasLockedAim = true
+		end
+
+		local toLockedCameraPoint = cameraWorldPoint - weaponMount.Position
+		if toLockedCameraPoint.Magnitude > 1e-4 then
+			cameraLockTargetDirection = toLockedCameraPoint.Unit
+		end
+	end
+
+	if hasLockedAim then
+		local cameraFollowDirection = lockedCameraLookDirection
+		if cameraFollowDirection == nil then
+			cameraFollowDirection = cameraLookDirection
+		end
+
+		local desiredCameraDirection = cameraLockTargetDirection or targetDirection
+		cameraLookDirection = smoothDirectionToward(
+			cameraFollowDirection,
+			desiredCameraDirection,
+			dt,
+			LOCK_CAMERA_DEADZONE_ANGLE,
+			LOCK_CAMERA_TURN_GAIN,
+			LOCK_CAMERA_MIN_TURN_RATE,
+			LOCK_CAMERA_MAX_TURN_RATE
+		)
+		lockedCameraLookDirection = cameraLookDirection
+		cameraYaw, cameraPitch = directionToYawPitch(cameraLookDirection)
+	else
+		lockedCameraLookDirection = nil
+	end
+
+	if not hasLockedAim then
+		local cameraToAimError = math.acos(math.clamp(aimDirection:Dot(cameraLookDirection), -1, 1))
+		if cameraToAimError > AIM_DEADZONE_ANGLE then
+			targetDirection = cameraLookDirection
+		end
 	end
 	if activeNeutralAimFrame ~= nil then
 		targetDirection = WeaponRig.clampDirectionToMountLimits(weaponMount, activeNeutralAimFrame, targetDirection)
 	end
 	desiredAimDirection = targetDirection
 
-	local dot = math.clamp(aimDirection:Dot(targetDirection), -1, 1)
-	local angularError = math.acos(dot)
-
-	if angularError > 1e-4 then
-		local alpha: number
-		if angularError <= STOP_SMOOTH_ZONE then
-			alpha = math.min(1, dt * STOP_SMOOTH_RATE)
-		else
-			local turnRate = math.clamp(angularError * TURN_RATE_GAIN, MIN_TURN_RATE, MAX_TURN_RATE)
-			alpha = math.min(1, (turnRate * dt) / angularError)
-		end
-		aimDirection = (aimDirection:Lerp(targetDirection, alpha)).Unit
-	else
+	if hasLockedAim then
+		-- Locked aim should track prediction directly; smoothing here makes the reticle lag behind moving targets.
 		aimDirection = targetDirection
+	else
+		local dot = math.clamp(aimDirection:Dot(targetDirection), -1, 1)
+		local angularError = math.acos(dot)
+
+		if angularError > 1e-4 then
+			local alpha: number
+			if angularError <= STOP_SMOOTH_ZONE then
+				alpha = math.min(1, dt * STOP_SMOOTH_RATE)
+			else
+				local turnRate = math.clamp(angularError * TURN_RATE_GAIN, MIN_TURN_RATE, MAX_TURN_RATE)
+				alpha = math.min(1, (turnRate * dt) / angularError)
+			end
+			aimDirection = (aimDirection:Lerp(targetDirection, alpha)).Unit
+		else
+			aimDirection = targetDirection
+		end
 	end
 
 	currentAimDirection = aimDirection
@@ -1013,6 +1130,7 @@ local function deactivateTurretMode()
 	ContextActionService:UnbindAction(FIRE_ACTION_NAME)
 	ContextActionService:UnbindAction(EXIT_ACTION_NAME)
 	ContextActionService:UnbindAction(ZOOM_ACTION_NAME)
+	ContextActionService:UnbindAction(LOCK_ACTION_NAME)
 
 	if turretStepConnection ~= nil then
 		turretStepConnection:Disconnect()
@@ -1028,6 +1146,7 @@ local function deactivateTurretMode()
 	CombatHUD.showHeat(false)
 	CombatHUD.setZoomVignette(0)
 	clearHeatVfx()
+	TargetingClient.onSeatExit()
 
 	activeTurretModel = nil
 	activeSeat = nil
@@ -1037,6 +1156,7 @@ local function deactivateTurretMode()
 	activeCameraPoint = nil
 	desiredAimDirection = nil
 	currentAimDirection = nil
+	lockedCameraLookDirection = nil
 	cameraYaw = 0
 	cameraPitch = 0
 	cameraKickOffset = 0
@@ -1108,6 +1228,27 @@ local function onZoomAction(_actionName: string, inputState: Enum.UserInputState
 	return Enum.ContextActionResult.Sink
 end
 
+local function onLockToggleAction(
+	_actionName: string,
+	inputState: Enum.UserInputState,
+	_inputObject: InputObject
+): Enum.ContextActionResult
+	if activeTurretModel == nil then
+		return Enum.ContextActionResult.Pass
+	end
+	if inputState ~= Enum.UserInputState.Begin then
+		return Enum.ContextActionResult.Pass
+	end
+
+	if TargetingClient.isLocked() then
+		TargetingClient.requestClearLock()
+	else
+		TargetingClient.requestLock()
+	end
+
+	return Enum.ContextActionResult.Sink
+end
+
 local function activateTurretMode(turretSeat: BasePart)
 	local turretModel = turretSeat:FindFirstAncestorWhichIsA("Model")
 	if turretModel == nil then
@@ -1136,6 +1277,7 @@ local function activateTurretMode(turretSeat: BasePart)
 	ContextActionService:BindAction(FIRE_ACTION_NAME, onFireAction, false, Enum.UserInputType.MouseButton1)
 	ContextActionService:BindAction(EXIT_ACTION_NAME, onExitAction, false, Enum.KeyCode.F)
 	ContextActionService:BindAction(ZOOM_ACTION_NAME, onZoomAction, false, Enum.UserInputType.MouseButton2)
+	ContextActionService:BindAction(LOCK_ACTION_NAME, onLockToggleAction, false, Enum.KeyCode.T)
 
 	if turretStepConnection == nil then
 		turretStepConnection = RunService.RenderStepped:Connect(updateTurretAndCamera)

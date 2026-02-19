@@ -12,6 +12,7 @@ local serverRoot = ServerScriptService:WaitForChild("CombatFramework")
 local StartupValidator = require(serverRoot:WaitForChild("Authoring"):WaitForChild("StartupValidator"))
 local HealthManager = require(serverRoot:WaitForChild("Health"):WaitForChild("HealthManager"))
 local ProjectileServer = require(serverRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileServer"))
+local TargetingServer = require(serverRoot:WaitForChild("Targeting"):WaitForChild("TargetingServer"))
 local WeaponServer = require(serverRoot:WaitForChild("Weapons"):WaitForChild("WeaponServer"))
 
 type ValidatedEntity = CombatTypes.ValidatedEntity
@@ -66,6 +67,9 @@ local function createRemotesFolder(): Folder
 	createRemoteEvent(folder, "HitConfirm")
 	createRemoteEvent(folder, "EntityDestroyed")
 	createRemoteEvent(folder, "EntityRespawned")
+	createRemoteEvent(folder, "RequestLockOn")
+	createRemoteEvent(folder, "ClearLockOn")
+	createRemoteEvent(folder, "LockOnState")
 
 	return folder
 end
@@ -133,8 +137,10 @@ local remotesFolder = createRemotesFolder()
 
 HealthManager.init(remotesFolder)
 ProjectileServer.init(remotesFolder)
+TargetingServer.init(remotesFolder)
 WeaponServer.init(remotesFolder)
 HealthManager.setRespawnCallback(function(entityId: string)
+	TargetingServer.clearLock(entityId)
 	WeaponServer.resetEntity(entityId)
 end)
 
@@ -146,6 +152,12 @@ for _, validatedEntity in ipairs(validatedEntities) do
 	local entityId = "entity_" .. tostring(nextEntityIndex)
 
 	validatedEntity.instance:SetAttribute("EntityId", entityId)
+	local entityConfig = CombatConfig.Entities[validatedEntity.configId]
+	local turretExposed = false
+	if entityConfig ~= nil and entityConfig.turretExposed == true then
+		turretExposed = true
+	end
+	validatedEntity.instance:SetAttribute("TurretExposed", turretExposed)
 	HealthManager.registerEntity(entityId, validatedEntity)
 	WeaponServer.registerEntity(entityId)
 

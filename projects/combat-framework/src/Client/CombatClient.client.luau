@@ -14,6 +14,7 @@ local clientRoot = playerScripts:WaitForChild("CombatFramework")
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
+local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChild("TargetingClient"))
 local WeaponClient = require(clientRoot:WaitForChild("Weapons"):WaitForChild("WeaponClient"))
 local ProjectileVisuals = require(clientRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileVisuals"))
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
@@ -668,6 +669,7 @@ local function onEntityRespawned(payload)
 end
 
 CombatHUD.init()
+TargetingClient.init(remotesFolder)
 WeaponClient.init(remotesFolder)
 ProjectileVisuals.init(remotesFolder)
 

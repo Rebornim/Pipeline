@@ -26,6 +26,9 @@ local heatFrame: Frame? = nil
 local heatFill: Frame? = nil
 local heatLabel: TextLabel? = nil
 local readyLabel: TextLabel? = nil
+local lockReadyLabel: TextLabel? = nil
+local lockReticleFrame: Frame? = nil
+local leadingIndicatorDot: Frame? = nil
 local vignetteEdges: { Frame } = {}
 local hitmarkerToken = 0
 local readyCueToken = 0
@@ -345,6 +348,53 @@ function CombatHUD.init()
 	crosshair.ZIndex = 5
 	crosshair.Parent = gui
 
+	local lockReadyText = Instance.new("TextLabel")
+	lockReadyText.Name = "LockReadyLabel"
+	lockReadyText.AnchorPoint = Vector2.new(0.5, 1)
+	lockReadyText.Position = UDim2.fromScale(0.5, 0.42)
+	lockReadyText.Size = UDim2.fromOffset(320, 28)
+	lockReadyText.BackgroundTransparency = 1
+	lockReadyText.Text = "TARGET LOCK READY (T TO LOCK ON)"
+	lockReadyText.TextColor3 = Color3.fromRGB(255, 225, 110)
+	lockReadyText.TextStrokeColor3 = Color3.new(0, 0, 0)
+	lockReadyText.TextStrokeTransparency = 0.35
+	lockReadyText.Font = Enum.Font.GothamBold
+	lockReadyText.TextSize = 20
+	lockReadyText.Visible = false
+	lockReadyText.ZIndex = 9
+	lockReadyText.Parent = gui
+
+	local lockReticle = Instance.new("Frame")
+	lockReticle.Name = "LockReticle"
+	lockReticle.AnchorPoint = Vector2.new(0.5, 0.5)
+	lockReticle.Position = UDim2.fromScale(0.5, 0.5)
+	lockReticle.Size = UDim2.fromOffset(42, 42)
+	lockReticle.BackgroundTransparency = 1
+	lockReticle.Rotation = 45
+	lockReticle.Visible = false
+	lockReticle.ZIndex = 9
+	lockReticle.Parent = gui
+
+	local lockStroke = Instance.new("UIStroke")
+	lockStroke.Thickness = 2
+	lockStroke.Color = Color3.fromRGB(255, 110, 110)
+	lockStroke.Parent = lockReticle
+
+	local leadDot = Instance.new("Frame")
+	leadDot.Name = "LeadDot"
+	leadDot.AnchorPoint = Vector2.new(0.5, 0.5)
+	leadDot.Position = UDim2.fromScale(0.5, 0.5)
+	leadDot.Size = UDim2.fromOffset(8, 8)
+	leadDot.BackgroundColor3 = Color3.fromRGB(255, 190, 72)
+	leadDot.BorderSizePixel = 0
+	leadDot.Visible = false
+	leadDot.ZIndex = 9
+	leadDot.Parent = gui
+
+	local leadDotCorner = Instance.new("UICorner")
+	leadDotCorner.CornerRadius = UDim.new(1, 0)
+	leadDotCorner.Parent = leadDot
+
 	local hitmarker = Instance.new("Frame")
 	hitmarker.Name = "HitMarker"
 	hitmarker.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -543,6 +593,9 @@ function CombatHUD.init()
 	heatFill = fill
 	heatLabel = heatText
 	readyLabel = weaponsReadyLabel
+	lockReadyLabel = lockReadyText
+	lockReticleFrame = lockReticle
+	leadingIndicatorDot = leadDot
 end
 
 function CombatHUD.setZoomVignette(intensity: number)
@@ -570,6 +623,43 @@ function CombatHUD.showCrosshair(visible: boolean)
 			cursorDot.BackgroundColor3 = Color3.new(1, 1, 1)
 		end
 	end
+	if not visible then
+		CombatHUD.showLockReady(false)
+		CombatHUD.showLockReticle(false)
+		CombatHUD.showLeadingIndicator(false)
+	end
+end
+
+function CombatHUD.showLockReady(visible: boolean)
+	if lockReadyLabel ~= nil then
+		lockReadyLabel.Visible = visible
+	end
+end
+
+function CombatHUD.showLockReticle(visible: boolean)
+	if lockReticleFrame ~= nil then
+		lockReticleFrame.Visible = visible
+	end
+end
+
+function CombatHUD.setLockReticleScreenPosition(position: Vector2)
+	if lockReticleFrame == nil then
+		return
+	end
+	lockReticleFrame.Position = UDim2.fromOffset(position.X, position.Y)
+end
+
+function CombatHUD.showLeadingIndicator(visible: boolean)
+	if leadingIndicatorDot ~= nil then
+		leadingIndicatorDot.Visible = visible
+	end
+end
+
+function CombatHUD.setLeadingIndicatorScreenPosition(position: Vector2)
+	if leadingIndicatorDot == nil then
+		return
+	end
+	leadingIndicatorDot.Position = UDim2.fromOffset(position.X, position.Y)
 end
 
 function CombatHUD.setCrosshairPosition(screenPosition: Vector2)
@@ -742,23 +832,23 @@ function CombatHUD.setWeaponHeat(currentHeat: number, maxHeat: number, overheate
 	wasOverheatedLastUpdate = overheated
 end
 
-function CombatHUD.onWeaponRecoveredCue()
+local function showTransientStatusCue(message: string, textColor: Color3, textStrokeTransparency: number)
 	local label = readyLabel
 	if label == nil then
 		return
 	end
 
-	playOverheatWarningSound()
-
 	readyCueToken += 1
 	local token = readyCueToken
 	label.Visible = true
+	label.Text = message
+	label.TextColor3 = textColor
 	label.TextTransparency = 1
 	label.TextStrokeTransparency = 1
 
 	local fadeIn = TweenService:Create(label, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		TextTransparency = 0.05,
-		TextStrokeTransparency = 0.35,
+		TextStrokeTransparency = textStrokeTransparency,
 	})
 	fadeIn:Play()
 
@@ -777,6 +867,24 @@ function CombatHUD.onWeaponRecoveredCue()
 			end
 		end)
 	end)
+end
+
+function CombatHUD.onWeaponRecoveredCue()
+	playOverheatWarningSound()
+	showTransientStatusCue("WEAPONS READY", Color3.fromRGB(134, 255, 155), 0.35)
+end
+
+function CombatHUD.onLockLostCue(reason: string?)
+	local message = "TARGET LOCK LOST"
+	if reason == "range" then
+		message = "TARGET LOCK LOST: OUT OF RANGE"
+	elseif reason == "arc" then
+		message = "TARGET LOCK LOST: ARC LOST"
+	elseif reason == "dead" or reason == "missing" or reason == "missing_target" then
+		message = "TARGET LOCK LOST: TARGET LOST"
+	end
+
+	showTransientStatusCue(message, Color3.fromRGB(255, 176, 124), 0.32)
 end
 
 function CombatHUD.onDamageApplied(payload)

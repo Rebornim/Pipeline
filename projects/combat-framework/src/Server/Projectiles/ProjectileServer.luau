@@ -4,6 +4,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
 
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
@@ -31,6 +32,8 @@ local raycastParams = RaycastParams.new()
 local raycastExcludeList: { Instance } = {}
 local overlapParams = OverlapParams.new()
 local projectileIdsToRemove: { string } = {}
+local homingLogTimeByProjectileId: { [string]: number } = {}
+local homingLostLoggedByProjectileId: { [string]: boolean } = {}
 
 local function distancePointToPartBounds(point: Vector3, part: BasePart): number
 	local localPoint = part.CFrame:PointToObjectSpace(point)
@@ -73,6 +76,22 @@ local function applyDamageToHumanoidTarget(
 		local targetFaction = normalizeTeamOrFaction(if targetPlayer.Team ~= nil then targetPlayer.Team.Name else nil)
 		if attackerFaction ~= nil and targetFaction ~= nil and attackerFaction == targetFaction then
 			print(string.format("[P1_FACTION_BLOCK] attackerFaction=%s targetPlayer=%s", attackerFaction, targetPlayer.Name))
+			return false, false, nil, nil, false
+		end
+	end
+
+	local seatPart = humanoid.SeatPart
+	if seatPart ~= nil and CollectionService:HasTag(seatPart, "TurretSeat") then
+		local seatedTurret = seatPart:FindFirstAncestorWhichIsA("Model")
+		if seatedTurret ~= nil and seatedTurret:GetAttribute("TurretExposed") ~= true then
+			local turretEntityId = seatedTurret:GetAttribute("EntityId")
+			local playerName = if targetPlayer ~= nil then targetPlayer.Name else targetModel.Name
+			print(string.format(
+				"[P4_ENCLOSED_BLOCK] projectile=%s player=%s turret=%s",
+				projectile.projectileId,
+				playerName,
+				tostring(turretEntityId)
+			))
 			return false, false, nil, nil, false
 		end
 	end
@@ -254,15 +273,95 @@ local function getHitConfirmRemote(): RemoteEvent
 	return hitConfirmRemote
 end
 
+local function rotateDirectionToward(currentDirection: Vector3, targetDirection: Vector3, maxTurnRadians: number): Vector3
+	if currentDirection.Magnitude < 1e-4 then
+		return targetDirection.Unit
+	end
+	if targetDirection.Magnitude < 1e-4 then
+		return currentDirection.Unit
+	end
+	if maxTurnRadians <= 0 then
+		return currentDirection.Unit
+	end
+
+	local currentUnit = currentDirection.Unit
+	local targetUnit = targetDirection.Unit
+	local dot = math.clamp(currentUnit:Dot(targetUnit), -1, 1)
+	local angle = math.acos(dot)
+	if angle <= maxTurnRadians then
+		return targetUnit
+	end
+
+	local alpha = maxTurnRadians / math.max(angle, 1e-4)
+	return (currentUnit:Lerp(targetUnit, alpha)).Unit
+end
+
+local function getTargetPositionForHoming(targetEntityId: string): Vector3?
+	if not HealthManager.isAlive(targetEntityId) then
+		return nil
+	end
+
+	local targetState = HealthManager.getHealth(targetEntityId)
+	if targetState == nil or targetState.instance.Parent == nil then
+		return nil
+	end
+
+	return targetState.instance:GetPivot().Position
+end
+
 local function stepProjectiles(dt: number)
 	table.clear(projectileIdsToRemove)
 	local now = tick()
 
 	for projectileId, projectile in pairs(activeProjectiles) do
-		local elapsed = now - projectile.createdAt
-		local previousElapsed = math.max(0, elapsed - dt)
-		local currentPosition = projectile.origin + projectile.direction * projectile.speed * elapsed
-		local previousPosition = projectile.origin + projectile.direction * projectile.speed * previousElapsed
+		local previousPosition: Vector3
+		local currentPosition: Vector3
+		local homingActive = type(projectile.targetEntityId) == "string"
+			and type(projectile.homingTurnRate) == "number"
+			and (projectile.homingTurnRate :: number) > 0
+
+		if homingActive then
+			previousPosition = projectile.currentPosition or projectile.origin
+			local targetPosition = getTargetPositionForHoming(projectile.targetEntityId :: string)
+			if targetPosition ~= nil then
+				local toTarget = targetPosition - previousPosition
+				if toTarget.Magnitude > 1e-4 then
+					local currentDirection = projectile.direction.Unit
+					local maxTurnRadians = math.rad(projectile.homingTurnRate :: number) * dt
+					local rotatedDirection = rotateDirectionToward(currentDirection, toTarget.Unit, maxTurnRadians)
+					projectile.direction = rotatedDirection
+
+					local logGate = homingLogTimeByProjectileId[projectileId]
+					if logGate == nil or now - logGate >= 0.2 then
+						local turnDot = math.clamp(currentDirection:Dot(rotatedDirection), -1, 1)
+						local turnAngleDegrees = math.deg(math.acos(turnDot))
+						print(string.format(
+							"[P4_HOMING] projectile=%s target=%s turn=%.2f",
+							projectileId,
+							projectile.targetEntityId :: string,
+							turnAngleDegrees
+						))
+						homingLogTimeByProjectileId[projectileId] = now
+					end
+				end
+			elseif not homingLostLoggedByProjectileId[projectileId] then
+				print(string.format(
+					"[P4_HOMING_LOST] projectile=%s target=%s",
+					projectileId,
+					tostring(projectile.targetEntityId)
+				))
+				homingLostLoggedByProjectileId[projectileId] = true
+			end
+
+			currentPosition = previousPosition + projectile.direction.Unit * projectile.speed * dt
+			projectile.currentPosition = currentPosition
+		else
+			local elapsed = now - projectile.createdAt
+			local previousElapsed = math.max(0, elapsed - dt)
+			currentPosition = projectile.origin + projectile.direction * projectile.speed * elapsed
+			previousPosition = projectile.origin + projectile.direction * projectile.speed * previousElapsed
+		end
+
 		local traveledDistance = (currentPosition - projectile.origin).Magnitude
 
 		if traveledDistance >= projectile.maxRange then
@@ -339,6 +438,8 @@ local function stepProjectiles(dt: number)
 
 	for _, projectileId in ipairs(projectileIdsToRemove) do
 		activeProjectiles[projectileId] = nil
+		homingLogTimeByProjectileId[projectileId] = nil
+		homingLostLoggedByProjectileId[projectileId] = nil
 	end
 end
 
@@ -369,6 +470,8 @@ function ProjectileServer.fireProjectile(data: ProjectileData)
 		speed = data.speed,
 		maxRange = data.maxRange,
 		damageType = data.damageType,
+		targetEntityId = data.targetEntityId,
+		homingTurnRate = data.homingTurnRate,
 		boltColor = data.boltColor,
 	})
 

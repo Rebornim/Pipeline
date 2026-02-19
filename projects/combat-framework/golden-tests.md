@@ -108,3 +108,38 @@ Re-run Pass 1 Tests 1-4. Unshielded entities must behave identically.
 Re-run Pass 1 Tests 1-4 and Pass 2 Tests 5-6. Blaster damage type has multipliers {1, 1, 0} — behavior must be identical to pre-multiplier math. Unshielded entities unaffected. Shield regen unaffected.
 
 ---
+
+## Pass 4: Targeting System
+
+### Test 10: Lock-On Flow
+- **Added in:** Pass 4
+- **Setup:** Empire blaster_turret (lockRange=600, autoAimSpread=1.5) at (0, 5, 0). Rebel target_dummy (hullHP=200) at (0, 5, 50). Player seated in turret. TestHarnessEnabled = true.
+- **Action:** Player aims at target. Harness calls RequestLockOn with target entity ID. Then fires 3 shots.
+- **Expected:** Lock accepted. Auto-aim activates — all 3 shots hit despite minor aim offset. Target HP drops by 120 (3 x 40 damage).
+- **Pass condition:** 1x `[P4_LOCK_ACQUIRED]` log. 3x `[P4_AUTO_AIM]` logs. 3x `[P1_HIT]` logs. Target HP = 80.
+
+### Test 11: Torpedo Requires Lock
+- **Added in:** Pass 4
+- **Setup:** Empire torpedo_turret (requiresLock=true) at (0, 5, 0). Rebel target_dummy at (0, 5, 50). TestHarnessEnabled = true.
+- **Action:** Step 1: Harness attempts fire without lock. Step 2: Harness acquires lock on target. Step 3: Harness fires.
+- **Expected:** Step 1: fire refused. Step 2: lock acquired. Step 3: torpedo fires and hits.
+- **Pass condition:** 1x `[P4_LOCK_REQUIRED]` log (step 1, no `[P1_FIRE]`). 1x `[P4_LOCK_ACQUIRED]` log (step 2). 1x `[P1_FIRE]` + 1x `[P1_HIT]` log (step 3).
+
+### Test 12: Homing Missile Hit
+- **Added in:** Pass 4
+- **Setup:** Empire missile_turret (homingTurnRate=45, lockRange=900) at (0, 5, 0). Rebel target_dummy at (30, 5, 80) — offset laterally so a straight shot would miss. TestHarnessEnabled = true.
+- **Action:** Harness acquires lock on target. Fires 1 missile aimed straight ahead (not toward target).
+- **Expected:** Missile curves toward target and hits.
+- **Pass condition:** 1x `[P4_LOCK_ACQUIRED]`. Multiple `[P4_HOMING]` logs. 1x `[P1_HIT]`. Target takes 80 damage (concussion_missile, 1.0 hull mult).
+
+### Test 13: Enclosed Turret Protection
+- **Added in:** Pass 4
+- **Setup:** Empire turbolaser_turret entity (turretExposed=false) with player seated. Rebel blaster_turret at (0, 5, 60) aimed at the seated player's character. TestHarnessEnabled = true.
+- **Action:** Rebel turret fires 3 shots that hit the player character.
+- **Expected:** All 3 shots blocked — player takes 0 damage. Turret entity itself can still take damage normally.
+- **Pass condition:** 3x `[P4_ENCLOSED_BLOCK]` logs. Player Humanoid.Health unchanged. 0x `[P1_HIT_PLAYER]` logs for the enclosed player.
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9. All existing combat behaviors must be identical — targeting is additive, no lock = existing manual aim behavior unchanged.
+
+---

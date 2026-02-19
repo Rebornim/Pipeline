@@ -1,6 +1,6 @@
 # Combat Framework — State
 
-## Current Stage: Pass 4 Design
+## Current Stage: Pass 4 Build
 ## Status: Ready
 
 ## History
@@ -11,6 +11,7 @@
 - **Pass 2 Design:** Complete 2026-02-18. Shield system — shield HP layer, damage absorption with overflow, regen, distinct shield/hull impact VFX+audio, HUD shield bar.
 - **Pass 3 Design:** Complete 2026-02-19. Damage types + ammo — 5 damage types with shield/hull/bypass multipliers, finite ammo system, 4 new weapon/entity configs, HUD ammo counter.
 - **Pass 3 Build:** Complete 2026-02-19. Damage-type combat behaviors and finite ammo shipped with weapon-specific presentation and live tuning updates.
+- **Pass 4 Design:** Complete 2026-02-19. Targeting system — lock-on flow, auto-aim with lead prediction, torpedo requires lock, missile homing, turret arc/exposure config, 4 golden tests.
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `project-protocol.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-3-design.md`, `golden-tests.md`, `state.md`
@@ -92,3 +93,27 @@
 - Validate large-map TTK/travel-time feel with multi-client playtests and tune per-weapon range/speed further if needed.
 - Replace temporary pass-tagged diagnostics (`[P1_*]`, `[P2_*]`, `[P3_*]`) with final gated diagnostics policy once feature stabilization is complete.
 - Pass 4 should formalize lock ranges as a strict subset of weapon ranges after this long-range retune.
+
+### Pass 4 Build Delta
+**Built as designed:**
+- Lock-on targeting flow is implemented end-to-end (candidate scan, `T` lock toggle, server validation, lock replication, lock reticle/lead indicator HUD).
+- Locked fire uses server-side lead prediction with auto-aim spread, torpedoes enforce `requiresLock`, and missiles use homing guidance.
+- Turret lock validation enforces faction, arc, alive-state, and effective lock range checks with server-authoritative lock clear.
+- Enclosed turret protection behavior is wired through turret exposure and validated in pass harness runs.
+
+**Deviations from design:**
+- Added player-facing lock UX polish based on playtests: lock camera/lead indicator smoothing and lock-loss HUD cues (`OUT OF RANGE`, `ARC LOST`, `TARGET LOST`).
+- Tuned weapon spread values upward for both unlocked and locked fire so turrets are intentionally less accurate overall.
+- Changed lock break behavior from hysteresis-based break range to strict effective range delock (immediate clear once out of range).
+- Added/iterated a studio moving-target controller utility for local lock/lead feel testing (mode/speed/interval driven via attributes).
+
+**New runtime contracts:**
+- `LockOnState` payload now carries optional `reason` on unlock/break events.
+- Client HUD now surfaces transient lock-loss status cues through `CombatHUD.onLockLostCue(reason)`.
+- Studio-only helper `WeaponServer.fireTestShot(entityId, direction, applyAimSpreadForTest?)` now supports optional spread/auto-aim application for harness realism.
+- Updated spread baselines are now part of weapon config behavior for all playable turret weapon types.
+
+**Non-blocking follow-ups:**
+- Re-run multiplayer feel tests and fine-tune spread/auto-aim spread by weapon role (point defense vs heavy artillery) before pass 5 balancing.
+- Decide whether moving-target controller should stay as a permanent authoring utility or move to a separate dev/test package.
+- Replace remaining always-on pass-tagged runtime prints (`[P4_*]`) with a diagnostics-gated logging policy during stabilization.

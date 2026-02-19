@@ -1,6 +1,7 @@
 --!strict
 
 local Debris = game:GetService("Debris")
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -32,7 +33,11 @@ type ActiveBolt = {
 	speed: number,
 	maxRange: number,
 	createdAt: number,
+	lastUpdatedAt: number,
 	damageType: string?,
+	targetEntityId: string?,
+	homingTurnRate: number?,
+	currentPosition: Vector3?,
 }
 
 local ProjectileVisuals = {}
@@ -659,15 +664,74 @@ local function createVisualPartsFromTemplate(
 	return boltPart, bulletPart
 end
 
+local function findEntityModelById(entityId: string): Model?
+	for _, tagged in ipairs(CollectionService:GetTagged("CombatEntity")) do
+		if tagged:IsA("Model") and tagged:GetAttribute("EntityId") == entityId then
+			return tagged
+		end
+	end
+	return nil
+end
+
+local function rotateDirectionToward(currentDirection: Vector3, targetDirection: Vector3, maxTurnRadians: number): Vector3
+	if currentDirection.Magnitude < 1e-4 then
+		return targetDirection.Unit
+	end
+	if targetDirection.Magnitude < 1e-4 then
+		return currentDirection.Unit
+	end
+	if maxTurnRadians <= 0 then
+		return currentDirection.Unit
+	end
+
+	local currentUnit = currentDirection.Unit
+	local targetUnit = targetDirection.Unit
+	local dot = math.clamp(currentUnit:Dot(targetUnit), -1, 1)
+	local angle = math.acos(dot)
+	if angle <= maxTurnRadians then
+		return targetUnit
+	end
+
+	local alpha = maxTurnRadians / math.max(angle, 1e-4)
+	return (currentUnit:Lerp(targetUnit, alpha)).Unit
+end
+
 local function onRenderStepped()
 	local now = tick()
 	for projectileId, bolt in pairs(activeBolts) do
-		local elapsed = now - bolt.createdAt
-		local distance = bolt.speed * elapsed
-		if distance >= bolt.maxRange then
+		local dt = math.max(0, now - bolt.lastUpdatedAt)
+		bolt.lastUpdatedAt = now
+		local position: Vector3
+
+		local homingActive = type(bolt.targetEntityId) == "string"
+			and type(bolt.homingTurnRate) == "number"
+			and (bolt.homingTurnRate :: number) > 0
+		if homingActive then
+			local previousPosition = bolt.currentPosition or bolt.origin
+			local targetModel = findEntityModelById(bolt.targetEntityId :: string)
+			if targetModel ~= nil then
+				local toTarget = targetModel:GetPivot().Position - previousPosition
+				if toTarget.Magnitude > 1e-4 then
+					bolt.direction = rotateDirectionToward(
+						bolt.direction.Unit,
+						toTarget.Unit,
+						math.rad(bolt.homingTurnRate :: number) * dt
+					)
+				end
+			end
+
+			position = previousPosition + bolt.direction.Unit * bolt.speed * dt
+			bolt.currentPosition = position
+		else
+			local elapsed = now - bolt.createdAt
+			local distance = bolt.speed * elapsed
+			position = bolt.origin + bolt.direction * distance
+		end
+
+		local traveledDistance = (position - bolt.origin).Magnitude
+		if traveledDistance >= bolt.maxRange then
 			destroyBolt(projectileId)
 		else
-			local position = bolt.origin + bolt.direction * distance
 			local projectileCFrame = CFrame.lookAt(position, position + bolt.direction)
 			bolt.boltPart.CFrame = projectileCFrame
 			if bolt.bulletPart ~= nil then
@@ -706,7 +770,11 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 		speed = payload.speed,
 		maxRange = payload.maxRange,
 		createdAt = tick(),
+		lastUpdatedAt = tick(),
 		damageType = damageType,
+		targetEntityId = if type(payload.targetEntityId) == "string" then payload.targetEntityId else nil,
+		homingTurnRate = if type(payload.homingTurnRate) == "number" then payload.homingTurnRate else nil,
+		currentPosition = payload.origin,
 	}
 end
 

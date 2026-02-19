@@ -15,8 +15,10 @@ local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
 local serverRoot = ServerScriptService:WaitForChild("CombatFramework")
 local HealthManager = require(serverRoot:WaitForChild("Health"):WaitForChild("HealthManager"))
 local ProjectileServer = require(serverRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileServer"))
+local TargetingServer = require(serverRoot:WaitForChild("Targeting"):WaitForChild("TargetingServer"))
 
 type HealthState = CombatTypes.HealthState
+type LockState = CombatTypes.LockState
 type ProjectileData = CombatTypes.ProjectileData
 type WeaponConfig = CombatTypes.WeaponConfig
 
@@ -119,6 +121,11 @@ local EFFECTIVE_DAMAGE = "EffectiveWeaponDamage"
 local EFFECTIVE_FIRE_RATE = "EffectiveWeaponFireRate"
 local EFFECTIVE_PROJECTILE_SPEED = "EffectiveWeaponProjectileSpeed"
 local EFFECTIVE_MAX_RANGE = "EffectiveWeaponMaxRange"
+local EFFECTIVE_LOCK_RANGE = "EffectiveWeaponLockRange"
+local EFFECTIVE_UNLOCKED_SPREAD = "EffectiveWeaponUnlockedSpread"
+local EFFECTIVE_AUTO_AIM_SPREAD = "EffectiveWeaponAutoAimSpread"
+local EFFECTIVE_REQUIRES_LOCK = "WeaponRequiresLock"
+local EFFECTIVE_HOMING_TURN_RATE = "EffectiveWeaponHomingTurnRate"
 local EFFECTIVE_BOLT_COLOR = "EffectiveWeaponBoltColor"
 local EFFECTIVE_SPLASH_ENABLED = "EffectiveWeaponSplashEnabled"
 local EFFECTIVE_SPLASH_RADIUS = "EffectiveWeaponSplashRadius"
@@ -678,6 +685,21 @@ local function applyPercentModifier(baseValue: number, modifier: number?, minVal
 	return adjusted
 end
 
+local function applyDirectionalSpread(direction: Vector3, spreadDegrees: number): Vector3
+	if direction.Magnitude < 1e-4 then
+		return Vector3.new(0, 0, -1)
+	end
+	if spreadDegrees <= 0 then
+		return direction.Unit
+	end
+
+	local spreadRadians = math.rad(spreadDegrees)
+	local yaw = (math.random() * 2 - 1) * spreadRadians
+	local pitch = (math.random() * 2 - 1) * spreadRadians
+	local lookFrame = CFrame.lookAt(Vector3.zero, direction.Unit)
+	return (lookFrame * CFrame.Angles(pitch, yaw, 0)).LookVector.Unit
+end
+
 local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponConfig): WeaponConfig
 	local resolved: WeaponConfig = {
 		weaponClass = baseWeaponConfig.weaponClass,
@@ -686,6 +708,11 @@ local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponC
 		fireRate = baseWeaponConfig.fireRate,
 		projectileSpeed = baseWeaponConfig.projectileSpeed,
 		maxRange = baseWeaponConfig.maxRange,
+		lockRange = baseWeaponConfig.lockRange,
+		unlockedSpread = baseWeaponConfig.unlockedSpread,
+		autoAimSpread = baseWeaponConfig.autoAimSpread,
+		requiresLock = baseWeaponConfig.requiresLock,
+		homingTurnRate = baseWeaponConfig.homingTurnRate,
 		boltColor = baseWeaponConfig.boltColor,
 		splashRadius = baseWeaponConfig.splashRadius,
 		burstCount = baseWeaponConfig.burstCount,
@@ -721,6 +748,12 @@ local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponC
 
 	local maxRangeModifier = readNumberAttribute(entityModel, ATTR_MAX_RANGE_MODIFIER)
 	resolved.maxRange = applyPercentModifier(resolved.maxRange, maxRangeModifier, 1)
+	if type(resolved.lockRange) == "number" then
+		resolved.lockRange = applyPercentModifier(resolved.lockRange, maxRangeModifier, 1)
+		if resolved.lockRange >= resolved.maxRange then
+			resolved.lockRange = math.max(0, resolved.maxRange - 1)
+		end
+	end
 
 	local splashRadiusOverride = readNumberAttribute(entityModel, ATTR_SPLASH_RADIUS)
 	if splashRadiusOverride ~= nil then
@@ -781,6 +814,11 @@ local function publishResolvedWeaponAttributes(entityModel: Model, weaponConfig:
 	entityModel:SetAttribute(EFFECTIVE_FIRE_RATE, weaponConfig.fireRate)
 	entityModel:SetAttribute(EFFECTIVE_PROJECTILE_SPEED, weaponConfig.projectileSpeed)
 	entityModel:SetAttribute(EFFECTIVE_MAX_RANGE, weaponConfig.maxRange)
+	entityModel:SetAttribute(EFFECTIVE_LOCK_RANGE, weaponConfig.lockRange)
+	entityModel:SetAttribute(EFFECTIVE_UNLOCKED_SPREAD, weaponConfig.unlockedSpread)
+	entityModel:SetAttribute(EFFECTIVE_AUTO_AIM_SPREAD, weaponConfig.autoAimSpread)
+	entityModel:SetAttribute(EFFECTIVE_REQUIRES_LOCK, weaponConfig.requiresLock == true)
+	entityModel:SetAttribute(EFFECTIVE_HOMING_TURN_RATE, weaponConfig.homingTurnRate)
 	entityModel:SetAttribute(EFFECTIVE_SPLASH_ENABLED, (weaponConfig.splashRadius or 0) > 0)
 	entityModel:SetAttribute(EFFECTIVE_SPLASH_RADIUS, weaponConfig.splashRadius)
 	entityModel:SetAttribute(EFFECTIVE_BURST_COUNT, weaponConfig.burstCount)
@@ -884,7 +922,9 @@ local function fireSingleProjectile(
 	weaponConfig: WeaponConfig,
 	character: Model,
 	normalizedDirection: Vector3,
-	cooldown: number
+	cooldown: number,
+	lockState: LockState?,
+	applyAimSpread: boolean
 ): boolean
 	if normalizedDirection.Magnitude < 1e-4 then
 		return false
@@ -934,6 +974,42 @@ local function fireSingleProjectile(
 
 	local originFrame = WeaponRig.getAimFrame(fireNode.mount, clampedDirection)
 	local fireOrigin = originFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
+	local resolvedDirection = clampedDirection
+
+	if applyAimSpread then
+		if lockState ~= nil and type(weaponConfig.autoAimSpread) == "number" then
+			local autoAimDirection = TargetingServer.computeLeadDirection(
+				fireOrigin,
+				lockState.targetEntityId,
+				weaponConfig.projectileSpeed,
+				weaponConfig.autoAimSpread
+			)
+			if autoAimDirection ~= nil then
+				local autoClampedDirection =
+					WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, autoAimDirection.Unit)
+				if autoClampedDirection.Magnitude >= 1e-4 then
+					resolvedDirection = autoClampedDirection
+					local autoOriginFrame = WeaponRig.getAimFrame(fireNode.mount, resolvedDirection)
+					fireOrigin = autoOriginFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
+					print(string.format(
+						"[P4_AUTO_AIM] entity=%s target=%s spread=%.2f",
+						entityId,
+						lockState.targetEntityId,
+						weaponConfig.autoAimSpread
+					))
+				end
+			end
+		elseif lockState == nil and type(weaponConfig.unlockedSpread) == "number" and weaponConfig.unlockedSpread > 0 then
+			local spreadDirection = applyDirectionalSpread(resolvedDirection, weaponConfig.unlockedSpread)
+			local spreadClampedDirection =
+				WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, spreadDirection)
+			if spreadClampedDirection.Magnitude >= 1e-4 then
+				resolvedDirection = spreadClampedDirection
+				local spreadOriginFrame = WeaponRig.getAimFrame(fireNode.mount, resolvedDirection)
+				fireOrigin = spreadOriginFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
+			end
+		end
+	end
 
 	local faction = HealthManager.getFaction(entityId)
 	if faction == nil then
@@ -944,20 +1020,27 @@ local function fireSingleProjectile(
 	local projectileId = "proj_" .. tostring(projectileCounter)
 	local projectileData: ProjectileData = {
 		projectileId = projectileId,
-		sourceEntityId = entityId,
-		sourceInstance = healthState.instance,
-		sourceCharacter = character,
-		origin = fireOrigin,
-		direction = clampedDirection,
-		speed = weaponConfig.projectileSpeed,
-		maxRange = weaponConfig.maxRange,
-		damage = weaponConfig.damage,
-		damageType = weaponConfig.damageType,
-		faction = faction,
-		boltColor = weaponConfig.boltColor,
-		splashRadius = weaponConfig.splashRadius,
-		createdAt = tick(),
-	}
+			sourceEntityId = entityId,
+			sourceInstance = healthState.instance,
+			sourceCharacter = character,
+			origin = fireOrigin,
+			direction = resolvedDirection,
+			speed = weaponConfig.projectileSpeed,
+			maxRange = weaponConfig.maxRange,
+			damage = weaponConfig.damage,
+			damageType = weaponConfig.damageType,
+			faction = faction,
+			boltColor = weaponConfig.boltColor,
+			splashRadius = weaponConfig.splashRadius,
+			targetEntityId = nil,
+			homingTurnRate = nil,
+			currentPosition = nil,
+			createdAt = tick(),
+		}
+	if lockState ~= nil and type(weaponConfig.homingTurnRate) == "number" and weaponConfig.homingTurnRate > 0 then
+		projectileData.targetEntityId = lockState.targetEntityId
+		projectileData.homingTurnRate = weaponConfig.homingTurnRate
+	end
 
 	if ammoState ~= nil then
 		ammoState.current = math.max(0, ammoState.current - 1)
@@ -1085,12 +1168,37 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 	applyAimToRig(entityId, entityModel, normalizedDirection)
 	local firedAny = false
 	local weaponClass = getWeaponClass(weaponConfig)
+	local lockState = TargetingServer.getLockState(entityId)
+	if weaponConfig.requiresLock == true and lockState == nil then
+		print(string.format("[P4_LOCK_REQUIRED] entity=%s", entityId))
+		return
+	end
 
 	if weaponClass == "projectile" then
-		firedAny = fireSingleProjectile(entityModel, entityId, healthState, weaponConfig, character, normalizedDirection, cooldown)
+		firedAny = fireSingleProjectile(
+			entityModel,
+			entityId,
+			healthState,
+			weaponConfig,
+			character,
+			normalizedDirection,
+			cooldown,
+			lockState,
+			true
+		)
 	elseif weaponClass == "burst_projectile" then
 		local burstCount, burstInterval = getBurstParams(weaponConfig)
-		firedAny = fireSingleProjectile(entityModel, entityId, healthState, weaponConfig, character, normalizedDirection, cooldown)
+		firedAny = fireSingleProjectile(
+			entityModel,
+			entityId,
+			healthState,
+			weaponConfig,
+			character,
+			normalizedDirection,
+			cooldown,
+			lockState,
+			true
+		)
 		if firedAny and burstCount > 1 then
 			for shotIndex = 2, burstCount do
 				local delayTime = (shotIndex - 1) * burstInterval
@@ -1110,6 +1218,11 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 					end
 
 					local liveWeaponConfig = resolveWeaponConfig(entityModel, liveBaseWeaponConfig)
+					local liveLockState = TargetingServer.getLockState(entityId)
+					if liveWeaponConfig.requiresLock == true and liveLockState == nil then
+						print(string.format("[P4_LOCK_REQUIRED] entity=%s", entityId))
+						return
+					end
 					publishResolvedWeaponAttributes(entityModel, liveWeaponConfig)
 					fireSingleProjectile(
 						entityModel,
@@ -1118,7 +1231,9 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 						liveWeaponConfig,
 						character,
 						normalizedDirection,
-						cooldown
+						cooldown,
+						liveLockState,
+						true
 					)
 				end)
 			end
@@ -1128,7 +1243,17 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 			warn(string.format("[P1_WEAPON] Unknown weaponClass '%s'; falling back to projectile", weaponClass))
 			warnedUnknownWeaponClass[weaponClass] = true
 		end
-		firedAny = fireSingleProjectile(entityModel, entityId, healthState, weaponConfig, character, normalizedDirection, cooldown)
+		firedAny = fireSingleProjectile(
+			entityModel,
+			entityId,
+			healthState,
+			weaponConfig,
+			character,
+			normalizedDirection,
+			cooldown,
+			lockState,
+			true
+		)
 	end
 
 	if firedAny then
@@ -1207,7 +1332,7 @@ function WeaponServer.resetEntity(entityId: string)
 	resetEntityInternal(entityId)
 end
 
-function WeaponServer.fireTestShot(entityId: string, direction: Vector3): boolean
+function WeaponServer.fireTestShot(entityId: string, direction: Vector3, applyAimSpreadForTest: boolean?): boolean
 	if not RunService:IsStudio() then
 		return false
 	end
@@ -1230,8 +1355,14 @@ function WeaponServer.fireTestShot(entityId: string, direction: Vector3): boolea
 	if weaponConfig.fireRate <= 0 then
 		return false
 	end
+	local lockState = TargetingServer.getLockState(entityId)
+	if weaponConfig.requiresLock == true and lockState == nil then
+		print(string.format("[P4_LOCK_REQUIRED] entity=%s", entityId))
+		return false
+	end
 
 	local cooldown = 1 / weaponConfig.fireRate
+	local shouldApplyAimSpread = applyAimSpreadForTest == true
 	return fireSingleProjectile(
 		healthState.instance,
 		entityId,
@@ -1239,7 +1370,9 @@ function WeaponServer.fireTestShot(entityId: string, direction: Vector3): boolea
 		weaponConfig,
 		healthState.instance,
 		direction.Unit,
-		cooldown
+		cooldown,
+		lockState,
+		shouldApplyAimSpread
 	)
 end
 

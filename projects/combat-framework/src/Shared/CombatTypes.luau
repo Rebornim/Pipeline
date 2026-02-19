@@ -15,6 +15,11 @@ export type WeaponConfig = {
 	fireRate: number,
 	projectileSpeed: number,
 	maxRange: number,
+	lockRange: number?,
+	unlockedSpread: number?,
+	autoAimSpread: number?,
+	requiresLock: boolean?,
+	homingTurnRate: number?,
 	boltColor: Color3?,
 	splashRadius: number?,
 	burstCount: number?,
@@ -32,7 +37,14 @@ export type EntityConfig = {
 	shieldRegenRate: number?,
 	shieldRegenDelay: number?,
 	weaponId: string?,
+	turretExposed: boolean?,
 	respawnTime: number?,
+}
+
+export type LockState = {
+	attackerEntityId: string,
+	targetEntityId: string,
+	lockedAt: number,
 }
 
 export type HealthState = {
@@ -62,6 +74,9 @@ export type ProjectileData = {
 	faction: string,
 	boltColor: Color3?,
 	splashRadius: number?,
+	targetEntityId: string?,
+	homingTurnRate: number?,
+	currentPosition: Vector3?,
 	createdAt: number,
 }
 
@@ -81,6 +96,8 @@ export type ProjectileFiredPayload = {
 	speed: number,
 	maxRange: number,
 	damageType: string?,
+	targetEntityId: string?,
+	homingTurnRate: number?,
 	boltColor: Color3?,
 }
 
