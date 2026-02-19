@@ -368,6 +368,7 @@ function ProjectileServer.fireProjectile(data: ProjectileData)
 		direction = data.direction,
 		speed = data.speed,
 		maxRange = data.maxRange,
+		damageType = data.damageType,
 		boltColor = data.boltColor,
 	})
 

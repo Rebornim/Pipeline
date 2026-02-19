@@ -80,6 +80,7 @@ export type ProjectileFiredPayload = {
 	direction: Vector3,
 	speed: number,
 	maxRange: number,
+	damageType: string?,
 	boltColor: Color3?,
 }
 

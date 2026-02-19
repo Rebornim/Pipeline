@@ -12,6 +12,18 @@ local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
 type ProjectileFiredPayload = CombatTypes.ProjectileFiredPayload
 type ProjectileImpactPayload = CombatTypes.ProjectileImpactPayload
 
+type ProjectileVisualProfile = {
+	boltLengthScale: number,
+	boltWidthScale: number,
+	bulletScale: number,
+	trailWidthScale: number,
+	lightBrightnessScale: number,
+	lightRangeScale: number,
+	whizPitchScale: number,
+	impactScale: number,
+	impactEmitScale: number,
+}
+
 type ActiveBolt = {
 	boltPart: BasePart,
 	bulletPart: BasePart?,
@@ -20,6 +32,7 @@ type ActiveBolt = {
 	speed: number,
 	maxRange: number,
 	createdAt: number,
+	damageType: string?,
 }
 
 local ProjectileVisuals = {}
@@ -34,6 +47,7 @@ local warnedMissingTemplate = false
 local warnedMissingImpactTemplate = false
 local warnedMissingShieldImpactTemplate = false
 local warnedMissingFireSoundTemplate = false
+local warnedMissingFireSoundTemplateByDamageType: { [string]: boolean } = {}
 local warnedMissingImpactSoundTemplate = false
 local warnedMissingShieldImpactSoundTemplate = false
 local warnedMissingShieldBreakSoundTemplate = false
@@ -47,6 +61,109 @@ local IMPACT_BURST_COUNTS: { [string]: number } = {
 
 local IMPACT_AUTO_DISABLE_TIME = 0.15
 local IMPACT_CLEANUP_TIME = 5
+local DEFAULT_VISUAL_PROFILE: ProjectileVisualProfile = {
+	boltLengthScale = 1.0,
+	boltWidthScale = 1.0,
+	bulletScale = 1.0,
+	trailWidthScale = 1.0,
+	lightBrightnessScale = 1.0,
+	lightRangeScale = 1.0,
+	whizPitchScale = 1.0,
+	impactScale = 1.0,
+	impactEmitScale = 1.0,
+}
+local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
+	blaster = DEFAULT_VISUAL_PROFILE,
+	turbolaser = {
+		boltLengthScale = 1.55,
+		boltWidthScale = 1.8,
+		bulletScale = 1.25,
+		trailWidthScale = 1.9,
+		lightBrightnessScale = 1.45,
+		lightRangeScale = 1.35,
+		whizPitchScale = 0.82,
+		impactScale = 1.25,
+		impactEmitScale = 1.35,
+	},
+	ion = {
+		boltLengthScale = 1.15,
+		boltWidthScale = 1.1,
+		bulletScale = 1.05,
+		trailWidthScale = 1.2,
+		lightBrightnessScale = 1.25,
+		lightRangeScale = 1.2,
+		whizPitchScale = 1.2,
+		impactScale = 1.1,
+		impactEmitScale = 1.15,
+	},
+	proton_torpedo = {
+		boltLengthScale = 2.2,
+		boltWidthScale = 2.55,
+		bulletScale = 2.0,
+		trailWidthScale = 2.65,
+		lightBrightnessScale = 1.95,
+		lightRangeScale = 1.6,
+		whizPitchScale = 0.7,
+		impactScale = 1.85,
+		impactEmitScale = 1.85,
+	},
+	concussion_missile = {
+		boltLengthScale = 1.75,
+		boltWidthScale = 2.0,
+		bulletScale = 1.55,
+		trailWidthScale = 2.2,
+		lightBrightnessScale = 1.65,
+		lightRangeScale = 1.45,
+		whizPitchScale = 0.85,
+		impactScale = 1.45,
+		impactEmitScale = 1.5,
+	},
+}
+
+local function getVisualProfileForDamageType(damageType: string?): ProjectileVisualProfile
+	if type(damageType) == "string" then
+		local mapped = DAMAGE_TYPE_VISUAL_PROFILES[damageType]
+		if mapped ~= nil then
+			return mapped
+		end
+	end
+	return DEFAULT_VISUAL_PROFILE
+end
+
+local function scaleNumberSequence(sequence: NumberSequence, scale: number): NumberSequence
+	local keypoints = sequence.Keypoints
+	local scaledPoints: { NumberSequenceKeypoint } = table.create(#keypoints)
+	for index, point in ipairs(keypoints) do
+		scaledPoints[index] =
+			NumberSequenceKeypoint.new(point.Time, math.max(0, point.Value * scale), math.max(0, point.Envelope * scale))
+	end
+	return NumberSequence.new(scaledPoints)
+end
+
+local function applyProjectilePartVisualProfile(
+	part: BasePart,
+	profile: ProjectileVisualProfile,
+	isBolt: boolean
+)
+	if isBolt then
+		part.Size = Vector3.new(
+			part.Size.X * profile.boltWidthScale,
+			part.Size.Y * profile.boltWidthScale,
+			part.Size.Z * profile.boltLengthScale
+		)
+	else
+		part.Size *= profile.bulletScale
+	end
+
+	for _, descendant in ipairs(part:GetDescendants()) do
+		if descendant:IsA("Trail") then
+			descendant.WidthScale = scaleNumberSequence(descendant.WidthScale, profile.trailWidthScale)
+		elseif descendant:IsA("PointLight") then
+			descendant.Brightness *= profile.lightBrightnessScale
+			descendant.Range *= profile.lightRangeScale
+		end
+	end
+end
 
 local function ensureBoltFolder(): Folder
 	if boltFolder ~= nil and boltFolder.Parent ~= nil then
@@ -133,7 +250,17 @@ local function getImpactTemplateFolder(impactType: string?): Folder?
 	return template
 end
 
-local function getFireSoundTemplate(): Sound?
+local function getFirstSoundDescendant(folder: Folder): Sound?
+	for _, child in ipairs(folder:GetChildren()) do
+		if child:IsA("Sound") then
+			return child
+		end
+	end
+
+	return nil
+end
+
+local function getFireSoundTemplate(damageType: string?): Sound?
 	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
 	if combatAssets == nil or not combatAssets:IsA("Folder") then
 		return nil
@@ -149,13 +276,22 @@ local function getFireSoundTemplate(): Sound?
 		return nil
 	end
 
-	for _, child in ipairs(fireFolder:GetChildren()) do
-		if child:IsA("Sound") then
-			return child
+	if type(damageType) == "string" and damageType ~= "" then
+		local damageTypeNode = fireFolder:FindFirstChild(damageType)
+		if damageTypeNode ~= nil then
+			if damageTypeNode:IsA("Sound") then
+				return damageTypeNode
+			end
+			if damageTypeNode:IsA("Folder") then
+				local typedSound = getFirstSoundDescendant(damageTypeNode)
+				if typedSound ~= nil then
+					return typedSound
+				end
+			end
 		end
 	end
 
-	return nil
+	return getFirstSoundDescendant(fireFolder)
 end
 
 local function getImpactSoundTemplates(impactType: string?): { Sound }
@@ -221,10 +357,20 @@ local function prepareVisualPart(part: BasePart)
 	part.CastShadow = false
 end
 
-local function playFireSoundAt(position: Vector3)
-	local soundTemplate = getFireSoundTemplate()
+local function playFireSoundAt(position: Vector3, damageType: string?)
+	local soundTemplate = getFireSoundTemplate(damageType)
 	if soundTemplate == nil then
-		if not warnedMissingFireSoundTemplate then
+		local damageTypeKey = if type(damageType) == "string" and damageType ~= "" then damageType else "default"
+		if damageTypeKey ~= "default" then
+			if not warnedMissingFireSoundTemplateByDamageType[damageTypeKey] then
+				warn(string.format(
+					"[P3_AUDIO] Missing fire sound for damageType '%s' in ReplicatedStorage.CombatAssets.Audio.Fire.%s (or shared Audio.Fire fallback)",
+					damageTypeKey,
+					damageTypeKey
+				))
+				warnedMissingFireSoundTemplateByDamageType[damageTypeKey] = true
+			end
+		elseif not warnedMissingFireSoundTemplate then
 			warn("[P1_AUDIO] Missing fire sound template in ReplicatedStorage.CombatAssets.Audio.Fire")
 			warnedMissingFireSoundTemplate = true
 		end
@@ -339,7 +485,8 @@ local function getBurstCount(emitter: ParticleEmitter): number
 	return 12
 end
 
-local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impactType: string?)
+local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impactType: string?, damageType: string?)
+	local visualProfile = getVisualProfileForDamageType(damageType)
 	local impactTemplate = getImpactTemplateFolder(impactType)
 	if impactTemplate == nil then
 		if impactType == "shield" then
@@ -364,7 +511,7 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 	local effectPart = Instance.new("Part")
 	effectPart.Name = if impactType == "shield" then "ShieldImpact" else "BulletImpact"
 	effectPart.Transparency = 1
-	effectPart.Size = Vector3.new(2, 2, 2)
+	effectPart.Size = Vector3.new(2, 2, 2) * visualProfile.impactScale
 	effectPart.Anchored = true
 	effectPart.CanCollide = false
 	effectPart.CanTouch = false
@@ -402,10 +549,13 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 
 	for _, effect in ipairs(spawnedEffects) do
 		if effect:IsA("ParticleEmitter") then
-			effect:Emit(getBurstCount(effect))
+			effect.Size = scaleNumberSequence(effect.Size, visualProfile.impactScale)
+			effect:Emit(math.max(0, math.floor(getBurstCount(effect) * visualProfile.impactEmitScale + 0.5)))
 		elseif effect:IsA("Sound") then
 			effect:Play()
 		elseif effect:IsA("PointLight") then
+			effect.Range *= visualProfile.impactScale
+			effect.Brightness *= visualProfile.lightBrightnessScale
 			effect.Enabled = true
 		end
 	end
@@ -425,9 +575,10 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 	Debris:AddItem(effectPart, IMPACT_CLEANUP_TIME)
 end
 
-local function playWhizSound(part: BasePart)
+local function playWhizSound(part: BasePart, profile: ProjectileVisualProfile)
 	local whiz = part:FindFirstChild("Whiz", true)
 	if whiz ~= nil and whiz:IsA("Sound") then
+		whiz.PlaybackSpeed *= profile.whizPitchScale
 		whiz:Play()
 	end
 end
@@ -447,25 +598,35 @@ local function applyBoltVisualColor(boltPart: BasePart, boltColor: Color3?)
 	end
 end
 
-local function createFallbackBoltPart(projectileId: string, boltColor: Color3?): BasePart
+local function createFallbackBoltPart(
+	projectileId: string,
+	boltColor: Color3?,
+	visualProfile: ProjectileVisualProfile
+): BasePart
 	local boltPart = Instance.new("Part")
 	boltPart.Name = "Bolt_" .. projectileId
 	boltPart.Size = Vector3.new(CombatConfig.BoltWidth, CombatConfig.BoltWidth, CombatConfig.BoltLength)
 	boltPart.Color = if boltColor ~= nil then boltColor else CombatConfig.BoltColor
 	boltPart.Material = CombatConfig.BoltMaterial
 	prepareVisualPart(boltPart)
+	applyProjectilePartVisualProfile(boltPart, visualProfile, true)
 	boltPart.Parent = ensureBoltFolder()
 	return boltPart
 end
 
-local function createVisualPartsFromTemplate(projectileId: string, boltColor: Color3?): (BasePart, BasePart?)
+local function createVisualPartsFromTemplate(
+	projectileId: string,
+	boltColor: Color3?,
+	damageType: string?
+): (BasePart, BasePart?)
+	local visualProfile = getVisualProfileForDamageType(damageType)
 	local templateFolder = getProjectileTemplateFolder()
 	if templateFolder == nil then
 		if not warnedMissingTemplate then
 			warn("[P1_VISUAL] Missing ReplicatedStorage.CombatAssets.ProjectileTemplate. Using fallback bolt.")
 			warnedMissingTemplate = true
 		end
-		return createFallbackBoltPart(projectileId, boltColor), nil
+		return createFallbackBoltPart(projectileId, boltColor, visualProfile), nil
 	end
 
 	local boltTemplate = templateFolder:FindFirstChild("Bolt")
@@ -474,15 +635,16 @@ local function createVisualPartsFromTemplate(projectileId: string, boltColor: Co
 			warn("[P1_VISUAL] Missing template part 'Bolt'. Using fallback bolt.")
 			warnedMissingTemplate = true
 		end
-		return createFallbackBoltPart(projectileId, boltColor), nil
+		return createFallbackBoltPart(projectileId, boltColor, visualProfile), nil
 	end
 
 	local boltPart = boltTemplate:Clone()
 	boltPart.Name = "Bolt_" .. projectileId
 	prepareVisualPart(boltPart)
+	applyProjectilePartVisualProfile(boltPart, visualProfile, true)
 	boltPart.Parent = ensureBoltFolder()
 	applyBoltVisualColor(boltPart, boltColor)
-	playWhizSound(boltPart)
+	playWhizSound(boltPart, visualProfile)
 
 	local bulletPart: BasePart? = nil
 	local bulletTemplate = templateFolder:FindFirstChild("Bullet")
@@ -490,6 +652,7 @@ local function createVisualPartsFromTemplate(projectileId: string, boltColor: Co
 		bulletPart = bulletTemplate:Clone()
 		bulletPart.Name = "Bullet_" .. projectileId
 		prepareVisualPart(bulletPart)
+		applyProjectilePartVisualProfile(bulletPart, visualProfile, false)
 		bulletPart.Parent = ensureBoltFolder()
 	end
 
@@ -529,10 +692,11 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 	end
 
 	destroyBolt(payload.projectileId)
-	playFireSoundAt(payload.origin)
+	local damageType = if type(payload.damageType) == "string" then payload.damageType else nil
+	playFireSoundAt(payload.origin, damageType)
 	local boltColor = if typeof(payload.boltColor) == "Color3" then (payload.boltColor :: Color3) else nil
 
-	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor)
+	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor, damageType)
 
 	activeBolts[payload.projectileId] = {
 		boltPart = boltPart,
@@ -542,6 +706,7 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 		speed = payload.speed,
 		maxRange = payload.maxRange,
 		createdAt = tick(),
+		damageType = damageType,
 	}
 end
 
@@ -559,6 +724,7 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 
 	local bolt = activeBolts[payload.projectileId]
 	local impactType = if type(payload.impactType) == "string" then payload.impactType else nil
+	local damageType = if bolt ~= nil then bolt.damageType else nil
 	local shieldBroken = payload.shieldBroken == true
 	local impactDelay = 0
 	if bolt ~= nil then
@@ -575,7 +741,7 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 			if impactType == "shield" and shieldBroken then
 				playShieldBreakSoundAt(payload.hitPosition)
 			end
-			spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType)
+			spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType, damageType)
 		end)
 		return
 	end
@@ -585,7 +751,7 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 	if impactType == "shield" and shieldBroken then
 		playShieldBreakSoundAt(payload.hitPosition)
 	end
-	spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType)
+	spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType, damageType)
 end
 
 function ProjectileVisuals.init(remotes: Folder)

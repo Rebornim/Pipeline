@@ -36,6 +36,7 @@ local STOP_SMOOTH_RATE = 8
 local CAMERA_FALLBACK_LOCAL_OFFSET = Vector3.new(0, 9, 22)
 local CAMERA_LOOK_DISTANCE = 500
 local DEFAULT_PROJECTILE_RANGE = 500
+local MAX_PHYSICS_CAST_DISTANCE = 1024
 local SHOT_KICK_IMPULSE = 7.2
 local SHOT_KICK_SPRING = 44
 local SHOT_KICK_DAMPING = 12
@@ -327,6 +328,25 @@ local function getPrimaryMuzzleLocalOffset(weaponMount: BasePart): Vector3
 	return Vector3.new(0, 0, -weaponMount.Size.Z * 0.5)
 end
 
+local function performAimCast(origin: Vector3, directionUnit: Vector3, totalDistance: number): RaycastResult?
+	local remainingDistance = totalDistance
+	local castOrigin = origin
+
+	while remainingDistance > 0 do
+		local segmentDistance = math.min(remainingDistance, MAX_PHYSICS_CAST_DISTANCE)
+		local segmentDirection = directionUnit * segmentDistance
+		local castResult = Workspace:Raycast(castOrigin, segmentDirection, aimRaycastParams)
+		if castResult ~= nil then
+			return castResult
+		end
+
+		castOrigin += segmentDirection
+		remainingDistance -= segmentDistance
+	end
+
+	return nil
+end
+
 local function updateAimReticle(camera: Camera, aimDirection: Vector3)
 	local weaponMount = activeWeaponMount
 	if weaponMount == nil then
@@ -365,15 +385,15 @@ local function updateAimReticle(camera: Camera, aimDirection: Vector3)
 	end
 	aimRaycastParams.FilterDescendantsInstances = aimRaycastExcludeList
 
-	local castDirection = aimDirection * maxRange
-	local castResult: RaycastResult?
-	if CombatConfig.ProjectileRayRadius > 0 then
-		castResult = Workspace:Spherecast(muzzleOrigin, CombatConfig.ProjectileRayRadius, castDirection, aimRaycastParams)
-	else
-		castResult = Workspace:Raycast(muzzleOrigin, castDirection, aimRaycastParams)
+	local aimDirectionMagnitude = aimDirection.Magnitude
+	if aimDirectionMagnitude <= 0 then
+		return
 	end
+	local castDirectionUnit = aimDirection / aimDirectionMagnitude
+	local fullRangeDirection = castDirectionUnit * maxRange
+	local castResult = performAimCast(muzzleOrigin, castDirectionUnit, maxRange)
 
-	local aimPoint = if castResult ~= nil then castResult.Position else (muzzleOrigin + castDirection)
+	local aimPoint = if castResult ~= nil then castResult.Position else (muzzleOrigin + fullRangeDirection)
 	local viewportPoint, onScreen = camera:WorldToViewportPoint(aimPoint)
 	local viewportSize = camera.ViewportSize
 

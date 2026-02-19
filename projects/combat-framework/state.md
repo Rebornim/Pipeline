@@ -1,6 +1,6 @@
 # Combat Framework — State
 
-## Current Stage: Pass 3 Build
+## Current Stage: Pass 4 Design
 ## Status: Ready
 
 ## History
@@ -10,6 +10,7 @@
 - **Pass 1 Build:** Complete 2026-02-18. Includes turret aiming/camera iteration, hit/kill feedback, overheat, splash damage, and turret death explosion.
 - **Pass 2 Design:** Complete 2026-02-18. Shield system — shield HP layer, damage absorption with overflow, regen, distinct shield/hull impact VFX+audio, HUD shield bar.
 - **Pass 3 Design:** Complete 2026-02-19. Damage types + ammo — 5 damage types with shield/hull/bypass multipliers, finite ammo system, 4 new weapon/entity configs, HUD ammo counter.
+- **Pass 3 Build:** Complete 2026-02-19. Damage-type combat behaviors and finite ammo shipped with weapon-specific presentation and live tuning updates.
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `project-protocol.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-3-design.md`, `golden-tests.md`, `state.md`
@@ -69,3 +70,25 @@
 - Replace fallback/placeholder shield and explosion assets with final authored audio/particle content.
 - Decide whether `FriendlyFireEnabled` should remain globally enabled or move to a dedicated test-only toggle path before wider playtests.
 - Pass 3 should formalize damage-type behavior against shields/hull now that the shield baseline is stable.
+
+### Pass 3 Build Delta
+**Built as designed:**
+- Damage-type multipliers are implemented server-side for shield/hull/bypass behavior (`blaster`, `turbolaser`, `ion`, `proton_torpedo`, `concussion_missile`) and applied during hit resolution.
+- Finite ammo is implemented for configured weapons with server-authoritative decrement, empty-fire denial, HUD ammo display updates, and ammo reset on lifecycle restore.
+- New combat loadouts are live via config (`turbolaser_turret`, `ion_turret`, `torpedo_turret`, `missile_turret`) and wired into existing turret flow.
+
+**Deviations from design:**
+- Added `blaster_turret_burst` as an actively playable config variant and tuned its overheat behavior to sustain burst-fire longer (`heatPerShot=4`, `heatDecayPerSecond=10`, `heatRecoverThreshold=45`).
+- Added per-damageType projectile presentation tuning (distinct fire SFX routing and visual profiles for bolt/trail/light/impact scaling) so weapon families feel materially different during playtests.
+- Retuned long-range combat values based on battlefield feel feedback (notably higher `maxRange` and projectile speeds across weapon classes) beyond initial pass-3 baseline.
+- Client reticle probing was changed to segmented `Raycast` logic (1024-stud chunks) to avoid Roblox shapecast distance-limit spam when using long-range weapons.
+
+**New runtime contracts:**
+- `ProjectileFired` payload now carries optional `damageType` for client-side weapon-family presentation routing.
+- Optional typed fire audio contract: `ReplicatedStorage.CombatAssets.Audio.Fire.<damageType>` (Sound or Folder containing a Sound) with fallback to shared `Audio.Fire`.
+- Current long-range weapon baselines are now: blaster/burst `900`, ion `900`, turbolaser `1800`, torpedo `1600`, missile `1400` studs.
+
+**Non-blocking follow-ups:**
+- Validate large-map TTK/travel-time feel with multi-client playtests and tune per-weapon range/speed further if needed.
+- Replace temporary pass-tagged diagnostics (`[P1_*]`, `[P2_*]`, `[P3_*]`) with final gated diagnostics policy once feature stabilization is complete.
+- Pass 4 should formalize lock ranges as a strict subset of weapon ranges after this long-range retune.
