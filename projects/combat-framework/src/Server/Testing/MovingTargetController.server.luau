@@ -4,11 +4,7 @@ local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
-if not RunService:IsStudio() then
-	return
-end
-
--- Enabled by default in Studio.
+-- Enabled by default.
 -- Optional global kill switch:
 --   workspace:SetAttribute("MovingTargetControllerEnabled", false)
 local didWarnControllerDisabled = false
