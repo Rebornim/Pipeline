@@ -16,7 +16,6 @@ local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
 local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChild("TargetingClient"))
 local WeaponClient = require(clientRoot:WaitForChild("Weapons"):WaitForChild("WeaponClient"))
-local DriverClient = require(clientRoot:WaitForChild("Vehicle"):WaitForChild("DriverClient"))
 local ProjectileVisuals = require(clientRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileVisuals"))
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
 
@@ -671,7 +670,6 @@ end
 
 CombatHUD.init()
 TargetingClient.init(remotesFolder)
-DriverClient.init()
 WeaponClient.init(remotesFolder)
 ProjectileVisuals.init(remotesFolder)
 

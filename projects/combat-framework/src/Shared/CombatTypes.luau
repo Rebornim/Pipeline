@@ -38,8 +38,6 @@ export type EntityConfig = {
 	shieldRegenDelay: number?,
 	weaponId: string?,
 	turretExposed: boolean?,
-	killOccupantsOnDestruction: boolean?,
-	spawnCFrame: CFrame?,
 	respawnTime: number?,
 }
 
@@ -54,7 +52,6 @@ export type HealthState = {
 	instance: Model,
 	faction: string,
 	config: EntityConfig,
-	spawnCFrame: CFrame?,
 	currentHP: number,
 	maxHP: number,
 	currentShieldHP: number,

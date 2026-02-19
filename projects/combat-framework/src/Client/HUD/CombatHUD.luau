@@ -691,63 +691,11 @@ function CombatHUD.showHP(entityId: string)
 	end
 end
 
-function CombatHUD.setHP(currentHP: number, maxHP: number)
-	local clampedMax = math.max(0, math.floor(maxHP + 0.5))
-	local clampedCurrent = math.clamp(math.floor(currentHP + 0.5), 0, math.max(clampedMax, 0))
-	if currentEntityId ~= nil then
-		hpCache[currentEntityId] = {
-			currentHP = clampedCurrent,
-			maxHP = clampedMax,
-		}
-	end
-
-	if hpLabel ~= nil then
-		hpLabel.Text = string.format("Hull: %d / %d", clampedCurrent, clampedMax)
-	end
-end
-
 function CombatHUD.hideHP()
 	currentEntityId = nil
 	if hpFrame ~= nil then
 		hpFrame.Visible = false
 	end
-end
-
-function CombatHUD.showDriverHUD(entityId: string)
-	CombatHUD.showCrosshair(false)
-	CombatHUD.showAmmo(false)
-	CombatHUD.showHeat(false)
-	CombatHUD.setZoomVignette(0)
-	CombatHUD.showHP(entityId)
-
-	local model = findEntityById(entityId)
-	if model ~= nil then
-		local currentShield = model:GetAttribute("ShieldHP")
-		local maxShield = model:GetAttribute("MaxShieldHP")
-		if type(currentShield) == "number" and type(maxShield) == "number" and maxShield > 0 then
-			shieldCache[entityId] = {
-				currentShield = currentShield,
-				maxShield = maxShield,
-			}
-			CombatHUD.showShield(true)
-			CombatHUD.setShield(currentShield, maxShield)
-		else
-			CombatHUD.showShield(false)
-		end
-	else
-		local shieldData = shieldCache[entityId]
-		if shieldData ~= nil and shieldData.maxShield > 0 then
-			CombatHUD.showShield(true)
-			CombatHUD.setShield(shieldData.currentShield, shieldData.maxShield)
-		else
-			CombatHUD.showShield(false)
-		end
-	end
-end
-
-function CombatHUD.hideDriverHUD()
-	CombatHUD.hideHP()
-	CombatHUD.showShield(false)
 end
 
 function CombatHUD.showShield(visible: boolean)

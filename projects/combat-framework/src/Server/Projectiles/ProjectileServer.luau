@@ -81,7 +81,7 @@ local function applyDamageToHumanoidTarget(
 	end
 
 	local seatPart = humanoid.SeatPart
-	if seatPart ~= nil and (CollectionService:HasTag(seatPart, "TurretSeat") or CollectionService:HasTag(seatPart, "DriverSeat")) then
+	if seatPart ~= nil and CollectionService:HasTag(seatPart, "TurretSeat") then
 		local seatedTurret = seatPart:FindFirstAncestorWhichIsA("Model")
 		if seatedTurret ~= nil and seatedTurret:GetAttribute("TurretExposed") ~= true then
 			local turretEntityId = seatedTurret:GetAttribute("EntityId")

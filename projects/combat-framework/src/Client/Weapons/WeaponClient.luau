@@ -14,7 +14,6 @@ local clientRoot = playerScripts:WaitForChild("CombatFramework")
 
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
 local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChild("TargetingClient"))
-local DriverClient = require(clientRoot:WaitForChild("Vehicle"):WaitForChild("DriverClient"))
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
@@ -1301,11 +1300,6 @@ local function activateTurretMode(turretSeat: BasePart)
 end
 
 local function onHumanoidSeated(isSeated: boolean, seatPart: BasePart?)
-	if isSeated and DriverClient.isDriverSeated() then
-		deactivateTurretMode()
-		return
-	end
-
 	if isSeated and seatPart ~= nil and CollectionService:HasTag(seatPart, "TurretSeat") then
 		activateTurretMode(seatPart)
 		return
@@ -1325,11 +1319,7 @@ local function bindCharacter(character: Model)
 	local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 	seatedConnection = humanoid.Seated:Connect(onHumanoidSeated)
 
-	if
-		humanoid.SeatPart ~= nil
-		and CollectionService:HasTag(humanoid.SeatPart, "TurretSeat")
-		and not DriverClient.isDriverSeated()
-	then
+	if humanoid.SeatPart ~= nil and CollectionService:HasTag(humanoid.SeatPart, "TurretSeat") then
 		activateTurretMode(humanoid.SeatPart)
 	end
 end
