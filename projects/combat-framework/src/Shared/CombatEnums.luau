@@ -4,6 +4,11 @@ local CombatEnums = {}
 
 CombatEnums.DamageType = {
 	Blaster = "blaster",
+	Turbolaser = "turbolaser",
+	Ion = "ion",
+	ProtonTorpedo = "proton_torpedo",
+	ConcussionMissile = "concussion_missile",
+	Explosion = "explosion",
 }
 
 CombatEnums.Faction = {

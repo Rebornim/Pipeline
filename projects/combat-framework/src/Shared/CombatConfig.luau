@@ -29,6 +29,52 @@ CombatConfig.Weapons = {
 		heatDecayPerSecond = 8,
 		heatRecoverThreshold = 50,
 	},
+	turbolaser_turret = {
+		weaponClass = "projectile",
+		damageType = "turbolaser",
+		damage = 120,
+		fireRate = 0.5,
+		projectileSpeed = 450,
+		maxRange = 700,
+		heatMax = 100,
+		heatPerShot = 25,
+		heatDecayPerSecond = 6,
+		heatRecoverThreshold = 40,
+		boltColor = Color3.fromRGB(0, 255, 0),
+	},
+	ion_turret = {
+		weaponClass = "projectile",
+		damageType = "ion",
+		damage = 60,
+		fireRate = 1.5,
+		projectileSpeed = 500,
+		maxRange = 450,
+		heatMax = 100,
+		heatPerShot = 18,
+		heatDecayPerSecond = 7,
+		heatRecoverThreshold = 45,
+		boltColor = Color3.fromRGB(100, 140, 255),
+	},
+	torpedo_launcher = {
+		weaponClass = "projectile",
+		damageType = "proton_torpedo",
+		damage = 200,
+		fireRate = 0.33,
+		projectileSpeed = 200,
+		maxRange = 600,
+		ammoCapacity = 6,
+		boltColor = Color3.fromRGB(255, 200, 60),
+	},
+	missile_battery = {
+		weaponClass = "projectile",
+		damageType = "concussion_missile",
+		damage = 80,
+		fireRate = 1.0,
+		projectileSpeed = 300,
+		maxRange = 500,
+		ammoCapacity = 12,
+		boltColor = Color3.fromRGB(255, 120, 40),
+	},
 }
 
 CombatConfig.Entities = {
@@ -49,6 +95,29 @@ CombatConfig.Entities = {
 		shieldRegenDelay = 5,
 		weaponId = "blaster_turret",
 		respawnTime = 15,
+	},
+	turbolaser_turret = {
+		hullHP = 150,
+		shieldHP = 100,
+		shieldRegenRate = 10,
+		shieldRegenDelay = 4,
+		weaponId = "turbolaser_turret",
+		respawnTime = 20,
+	},
+	ion_turret = {
+		hullHP = 80,
+		weaponId = "ion_turret",
+		respawnTime = 15,
+	},
+	torpedo_turret = {
+		hullHP = 120,
+		weaponId = "torpedo_launcher",
+		respawnTime = 25,
+	},
+	missile_turret = {
+		hullHP = 100,
+		weaponId = "missile_battery",
+		respawnTime = 20,
 	},
 	target_dummy = {
 		hullHP = 200,
@@ -79,6 +148,36 @@ CombatConfig.Entities = {
 		weaponId = nil,
 		respawnTime = 10,
 	},
+	ion_test_target = {
+		hullHP = 200,
+		shieldHP = 200,
+		shieldRegenRate = 0,
+		shieldRegenDelay = 999,
+		weaponId = nil,
+		respawnTime = 10,
+	},
+	torpedo_test_target = {
+		hullHP = 500,
+		shieldHP = 150,
+		shieldRegenRate = 0,
+		shieldRegenDelay = 999,
+		weaponId = nil,
+		respawnTime = 10,
+	},
+	ammo_test_target = {
+		hullHP = 10000,
+		weaponId = nil,
+		respawnTime = 999,
+	},
+}
+
+CombatConfig.DamageTypeMultipliers = {
+	blaster = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
+	turbolaser = { shieldMult = 1.5, hullMult = 1.5, bypass = 0 },
+	ion = { shieldMult = 3.0, hullMult = 0.15, bypass = 0 },
+	proton_torpedo = { shieldMult = 0.3, hullMult = 2.5, bypass = 0.7 },
+	concussion_missile = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
+	explosion = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
 }
 
 CombatConfig.ProjectileRayRadius = 0.5

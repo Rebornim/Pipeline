@@ -212,6 +212,14 @@ local function tryFireCurrentWeapon(): boolean
 		return false
 	end
 
+	local ammoMaxRaw = activeTurretModel:GetAttribute("WeaponAmmoMax")
+	if type(ammoMaxRaw) == "number" and ammoMaxRaw > 0 then
+		local ammoRaw = activeTurretModel:GetAttribute("WeaponAmmo")
+		if type(ammoRaw) == "number" and ammoRaw <= 0 then
+			return false
+		end
+	end
+
 	local now = tick()
 	local cooldown = getActiveWeaponCooldown()
 	if cooldown > 0 and now < nextClientFireTime then
@@ -784,6 +792,23 @@ local function updateWeaponHeatHud(): (number, boolean)
 	return heatRatio, overheated
 end
 
+local function updateWeaponAmmoHud(): boolean
+	local turretModel = activeTurretModel
+	if turretModel == nil then
+		return false
+	end
+
+	local ammoMaxRaw = turretModel:GetAttribute("WeaponAmmoMax")
+	if type(ammoMaxRaw) ~= "number" or ammoMaxRaw <= 0 then
+		return false
+	end
+
+	local ammoRaw = turretModel:GetAttribute("WeaponAmmo")
+	local ammoCurrent = if type(ammoRaw) == "number" then ammoRaw else ammoMaxRaw
+	CombatHUD.setAmmo(ammoCurrent, ammoMaxRaw)
+	return true
+end
+
 local function updateShieldHud()
 	local turretModel = activeTurretModel
 	if turretModel == nil then
@@ -916,9 +941,18 @@ local function updateTurretAndCamera(dt: number)
 	local center = camera.ViewportSize * 0.5
 	CombatHUD.setCursorDotPosition(Vector2.new(center.X, center.Y))
 	updateAimReticle(camera, aimDirection)
-	local heatRatio, overheated = updateWeaponHeatHud()
+	local usesAmmoHud = updateWeaponAmmoHud()
+	if usesAmmoHud then
+		CombatHUD.showAmmo(true)
+		CombatHUD.showHeat(false)
+		clearHeatVfx()
+	else
+		CombatHUD.showAmmo(false)
+		CombatHUD.showHeat(true)
+		local heatRatio, overheated = updateWeaponHeatHud()
+		updateWeaponHeatVfx(dt, heatRatio, overheated)
+	end
 	updateShieldHud()
-	updateWeaponHeatVfx(dt, heatRatio, overheated)
 	if fireHeld and isHoldToFireEnabled() then
 		tryFireCurrentWeapon()
 	end
@@ -970,6 +1004,7 @@ local function deactivateTurretMode()
 	CombatHUD.showCrosshair(false)
 	CombatHUD.hideHP()
 	CombatHUD.showShield(false)
+	CombatHUD.showAmmo(false)
 	CombatHUD.showHeat(false)
 	CombatHUD.setZoomVignette(0)
 	clearHeatVfx()
@@ -1087,8 +1122,12 @@ local function activateTurretMode(turretSeat: BasePart)
 	end
 
 	CombatHUD.showCrosshair(true)
-	CombatHUD.showHeat(true)
-	updateWeaponHeatHud()
+	local usingAmmoHud = updateWeaponAmmoHud()
+	CombatHUD.showAmmo(usingAmmoHud)
+	CombatHUD.showHeat(not usingAmmoHud)
+	if not usingAmmoHud then
+		updateWeaponHeatHud()
+	end
 	local entityId = turretModel:GetAttribute("EntityId")
 	if type(entityId) == "string" then
 		CombatHUD.showHP(entityId)

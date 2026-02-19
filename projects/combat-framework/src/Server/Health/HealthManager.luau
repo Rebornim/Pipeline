@@ -1,6 +1,7 @@
 --!strict
 
 local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -14,6 +15,7 @@ type EntityConfig = CombatTypes.EntityConfig
 type HealthState = CombatTypes.HealthState
 type ValidatedEntity = CombatTypes.ValidatedEntity
 type EntityDestroyedPayload = CombatTypes.EntityDestroyedPayload
+type DamageTypeMultiplier = CombatTypes.DamageTypeMultiplier
 
 type PartState = {
 	part: BasePart,
@@ -44,6 +46,7 @@ local entityDestroyedRemote: RemoteEvent? = nil
 local entityRespawnedRemote: RemoteEvent? = nil
 local explosionOverlapParams = OverlapParams.new()
 local heartbeatConnection: RBXScriptConnection? = nil
+local respawnCallback: ((string) -> ())? = nil
 
 local function readConfigNumber(name: string, defaultValue: number): number
 	local raw = CombatConfig[name]
@@ -106,6 +109,34 @@ local function getShieldRegenDelay(config: EntityConfig): number
 		return config.shieldRegenDelay
 	end
 	return math.max(0, readConfigNumber("DefaultShieldRegenDelay", 3))
+end
+
+local function getDamageTypeMultiplier(damageType: string): DamageTypeMultiplier
+	local defaults: DamageTypeMultiplier = {
+		shieldMult = 1,
+		hullMult = 1,
+		bypass = 0,
+	}
+
+	local allMultipliers = CombatConfig.DamageTypeMultipliers
+	if type(allMultipliers) ~= "table" then
+		return defaults
+	end
+
+	local raw = allMultipliers[damageType]
+	if type(raw) ~= "table" then
+		return defaults
+	end
+
+	local shieldMult = if type(raw.shieldMult) == "number" then math.max(0, raw.shieldMult) else defaults.shieldMult
+	local hullMult = if type(raw.hullMult) == "number" then math.max(0, raw.hullMult) else defaults.hullMult
+	local bypass = if type(raw.bypass) == "number" then math.clamp(raw.bypass, 0, 1) else defaults.bypass
+
+	return {
+		shieldMult = shieldMult,
+		hullMult = hullMult,
+		bypass = bypass,
+	}
 end
 
 local function stepShieldRegen(dt: number)
@@ -364,13 +395,19 @@ local function destroyEntity(state: HealthStateInternal)
 			restoreParts(state)
 			restorePrompts(state)
 			state.currentHP = state.maxHP
-			state.currentShieldHP = state.maxShieldHP
-			state.lastShieldDamageTime = tick()
-			state.state = CombatEnums.EntityState.Active
-			state.respawnTimer = nil
-			setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
+				state.currentShieldHP = state.maxShieldHP
+				state.lastShieldDamageTime = tick()
+				state.state = CombatEnums.EntityState.Active
+				state.respawnTimer = nil
+				setModelHealthAttributes(state.instance, state.currentHP, state.maxHP, state.currentShieldHP, state.maxShieldHP)
+				if respawnCallback ~= nil then
+					local ok, callbackErr = pcall(respawnCallback, state.entityId)
+					if not ok then
+						warn(string.format("[P3_RESPAWN_CALLBACK] entity=%s error=%s", state.entityId, tostring(callbackErr)))
+					end
+				end
 
-			local _, _, respawnedRemote = getRemotes()
+				local _, _, respawnedRemote = getRemotes()
 			local payload: CombatTypes.RespawnedPayload = {
 				entityId = state.entityId,
 				hullHP = state.maxHP,
@@ -457,21 +494,54 @@ function HealthManager.applyDamage(
 		return false, nil, false
 	end
 
+	local multiplier = getDamageTypeMultiplier(damageType)
+	local shieldMult = multiplier.shieldMult
+	local hullMult = multiplier.hullMult
+	local bypassFraction = if type(multiplier.bypass) == "number" then multiplier.bypass else 0
+	if math.abs(shieldMult - 1) > 1e-4 or math.abs(hullMult - 1) > 1e-4 or bypassFraction > 1e-4 then
+		print(
+			string.format(
+				"[P3_MULT] entity=%s type=%s shieldM=%.2f hullM=%.2f bypass=%.0f%%",
+				entityId,
+				damageType,
+				shieldMult,
+				hullMult,
+				bypassFraction * 100
+			)
+		)
+	end
+
 	local impactType = CombatEnums.ImpactType.Hull
 	local didBreakShield = false
 	local oldShieldHP = state.currentShieldHP
 	local oldHP = state.currentHP
-	local hullDamage = appliedDamage
+	local hullDamage = 0
 	if oldShieldHP > 0 then
 		impactType = CombatEnums.ImpactType.Shield
-		local shieldDamage = math.min(oldShieldHP, appliedDamage)
-		state.currentShieldHP = math.max(0, oldShieldHP - shieldDamage)
-		hullDamage = math.max(0, appliedDamage - shieldDamage)
-		state.lastShieldDamageTime = tick()
+		local bypassBase = appliedDamage * bypassFraction
+		local shieldFacingBase = appliedDamage * (1 - bypassFraction)
+		local shieldDamage = shieldFacingBase * shieldMult
+		local absorbedShieldDamage = math.min(oldShieldHP, shieldDamage)
+		state.currentShieldHP = math.max(0, oldShieldHP - absorbedShieldDamage)
+
+		local overflowShieldDamage = math.max(0, shieldDamage - absorbedShieldDamage)
+		local overflowBase = overflowShieldDamage / math.max(shieldMult, 0.001)
+		local bypassHullDamage = bypassBase * hullMult
+		local overflowHullDamage = overflowBase * hullMult
+		hullDamage = math.max(0, bypassHullDamage + overflowHullDamage)
+
+		if absorbedShieldDamage > 0 then
+			state.lastShieldDamageTime = tick()
+		end
+		if bypassHullDamage > 0 then
+			print(string.format("[P3_BYPASS] entity=%s bypassDmg=%.1f", entityId, bypassHullDamage))
+		end
 
 		if state.currentShieldHP <= 0 then
 			didBreakShield = true
 		end
+	else
+		hullDamage = math.max(0, appliedDamage * hullMult)
 	end
 
 	local nextHP = oldHP
@@ -508,6 +578,10 @@ function HealthManager.applyDamage(
 	end
 
 	return true, impactType, didBreakShield
+end
+
+function HealthManager.setRespawnCallback(callback: (string) -> ())
+	respawnCallback = callback
 end
 
 function HealthManager.getHealth(entityId: string): HealthState?

@@ -3,6 +3,7 @@
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
@@ -26,6 +27,11 @@ type WeaponHeatState = {
 	overheated: boolean,
 	recoverCueId: number,
 	recoverToken: number,
+}
+
+type AmmoState = {
+	current: number,
+	max: number,
 }
 
 type FireNode = {
@@ -72,6 +78,7 @@ local playerRemovingConnection: RBXScriptConnection? = nil
 local lastFireTimeByPlayer: { [Player]: number } = {}
 local lastAimUpdateByPlayer: { [Player]: number } = {}
 local heatStateByEntityId: { [string]: WeaponHeatState } = {}
+local ammoStateByEntityId: { [string]: AmmoState } = {}
 local fireNodeStateByEntityId: { [string]: FireNodeState } = {}
 local drivenRigStateByEntityId: { [string]: DrivenRigState } = {}
 local warnedUnknownWeaponClass: { [string]: boolean } = {}
@@ -274,10 +281,11 @@ local function setFireNodeAttributes(entityModel: Model, entityId: string)
 end
 
 local function getHeatParams(weaponConfig: WeaponConfig): (number, number, number, number)
-	local heatMax = DEFAULT_HEAT_MAX
-	if type(weaponConfig.heatMax) == "number" and weaponConfig.heatMax > 0 then
-		heatMax = weaponConfig.heatMax
+	if type(weaponConfig.heatMax) ~= "number" or weaponConfig.heatMax <= 0 then
+		return 0, 0, 0, 0
 	end
+
+	local heatMax = weaponConfig.heatMax
 
 	local heatPerShot = DEFAULT_HEAT_PER_SHOT
 	if type(weaponConfig.heatPerShot) == "number" and weaponConfig.heatPerShot >= 0 then
@@ -298,6 +306,13 @@ local function getHeatParams(weaponConfig: WeaponConfig): (number, number, numbe
 	return heatMax, heatPerShot, heatDecayPerSecond, heatRecoverThreshold
 end
 
+local function getAmmoCapacity(weaponConfig: WeaponConfig): number
+	if type(weaponConfig.ammoCapacity) ~= "number" then
+		return 0
+	end
+	return math.max(0, math.floor(weaponConfig.ammoCapacity + 0.5))
+end
+
 local function getOrCreateHeatState(entityId: string, nowServer: number): WeaponHeatState
 	local existing = heatStateByEntityId[entityId]
 	if existing ~= nil then
@@ -314,6 +329,17 @@ local function getOrCreateHeatState(entityId: string, nowServer: number): Weapon
 	}
 	heatStateByEntityId[entityId] = state
 	return state
+end
+
+local function setAmmoAttributes(entityModel: Model, ammoState: AmmoState?)
+	if ammoState == nil then
+		entityModel:SetAttribute("WeaponAmmo", nil)
+		entityModel:SetAttribute("WeaponAmmoMax", nil)
+		return
+	end
+
+	entityModel:SetAttribute("WeaponAmmo", ammoState.current)
+	entityModel:SetAttribute("WeaponAmmoMax", ammoState.max)
 end
 
 local function coolHeatState(state: WeaponHeatState, nowServer: number, heatDecayPerSecond: number, heatMax: number)
@@ -668,6 +694,7 @@ local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponC
 		heatPerShot = baseWeaponConfig.heatPerShot,
 		heatDecayPerSecond = baseWeaponConfig.heatDecayPerSecond,
 		heatRecoverThreshold = baseWeaponConfig.heatRecoverThreshold,
+		ammoCapacity = baseWeaponConfig.ammoCapacity,
 	}
 
 	local weaponClassOverride = entityModel:GetAttribute(ATTR_WEAPON_CLASS)
@@ -776,6 +803,17 @@ local function setHeatAttributes(
 	heatDecayPerSecond: number,
 	heatRecoverThreshold: number
 )
+	if heatMax <= 0 then
+		entityModel:SetAttribute("WeaponHeat", nil)
+		entityModel:SetAttribute("WeaponHeatMax", nil)
+		entityModel:SetAttribute("WeaponHeatDecayPerSecond", nil)
+		entityModel:SetAttribute("WeaponHeatRecoverThreshold", nil)
+		entityModel:SetAttribute("WeaponOverheated", false)
+		entityModel:SetAttribute("WeaponHeatUpdatedAt", nil)
+		entityModel:SetAttribute("WeaponHeatRecoverCueId", nil)
+		return
+	end
+
 	entityModel:SetAttribute("WeaponHeat", state.heat)
 	entityModel:SetAttribute("WeaponHeatMax", heatMax)
 	entityModel:SetAttribute("WeaponHeatDecayPerSecond", heatDecayPerSecond)
@@ -853,19 +891,34 @@ local function fireSingleProjectile(
 	end
 
 	local nowServer = Workspace:GetServerTimeNow()
-	local heatMax, heatPerShot, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
-	local heatState = getOrCreateHeatState(entityId, nowServer)
-	coolHeatState(heatState, nowServer, heatDecayPerSecond, heatMax)
-
-	if heatState.overheated and heatState.heat <= heatRecoverThreshold then
-		heatState.overheated = false
-		heatState.recoverCueId += 1
-		heatState.recoverToken += 1
+	local ammoState = ammoStateByEntityId[entityId]
+	if ammoState ~= nil and ammoState.current <= 0 then
+		print(string.format("[P3_AMMO_EMPTY] entity=%s", entityId))
+		setAmmoAttributes(entityModel, ammoState)
+		return false
 	end
 
-	if heatState.overheated then
-		setHeatAttributes(entityModel, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
-		return false
+	local heatMax, heatPerShot, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
+	local heatEnabled = heatMax > 0
+	local heatState = getOrCreateHeatState(entityId, nowServer)
+	if heatEnabled then
+		coolHeatState(heatState, nowServer, heatDecayPerSecond, heatMax)
+
+		if heatState.overheated and heatState.heat <= heatRecoverThreshold then
+			heatState.overheated = false
+			heatState.recoverCueId += 1
+			heatState.recoverToken += 1
+		end
+
+		if heatState.overheated then
+			setHeatAttributes(entityModel, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
+			return false
+		end
+	else
+		heatState.heat = 0
+		heatState.overheated = false
+		heatState.lastUpdatedAt = nowServer
+		heatState.lastShotAt = 0
 	end
 
 	local fireNode = getNextFireNode(entityId, entityModel)
@@ -906,16 +959,28 @@ local function fireSingleProjectile(
 		createdAt = tick(),
 	}
 
+	if ammoState ~= nil then
+		ammoState.current = math.max(0, ammoState.current - 1)
+		setAmmoAttributes(entityModel, ammoState)
+		print(string.format("[P3_AMMO] entity=%s ammo=%d/%d", entityId, ammoState.current, ammoState.max))
+	end
+
 	local wasOverheated = heatState.overheated
-	local shotHeat = computeShotHeat(heatPerShot, cooldown, nowServer, heatState.lastShotAt)
-	heatState.heat = math.min(heatMax, heatState.heat + shotHeat)
-	heatState.lastUpdatedAt = nowServer
-	heatState.lastShotAt = nowServer
-	if heatState.heat >= heatMax then
-		heatState.overheated = true
+	if heatEnabled then
+		local shotHeat = computeShotHeat(heatPerShot, cooldown, nowServer, heatState.lastShotAt)
+		heatState.heat = math.min(heatMax, heatState.heat + shotHeat)
+		heatState.lastUpdatedAt = nowServer
+		heatState.lastShotAt = nowServer
+		if heatState.heat >= heatMax then
+			heatState.overheated = true
+		end
+	else
+		heatState.heat = 0
+		heatState.overheated = false
+		heatState.lastUpdatedAt = nowServer
 	end
 	setHeatAttributes(entityModel, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
-	if not wasOverheated and heatState.overheated then
+	if heatEnabled and not wasOverheated and heatState.overheated then
 		scheduleRecoveryCue(entityId, weaponConfig)
 	end
 
@@ -1071,6 +1136,52 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 	end
 end
 
+local function resetEntityInternal(entityId: string)
+	local healthState = HealthManager.getHealth(entityId)
+	if healthState == nil or healthState.config.weaponId == nil then
+		return
+	end
+
+	local baseWeaponConfig = CombatConfig.Weapons[healthState.config.weaponId]
+	if baseWeaponConfig == nil then
+		return
+	end
+
+	local weaponConfig = resolveWeaponConfig(healthState.instance, baseWeaponConfig)
+	publishResolvedWeaponAttributes(healthState.instance, weaponConfig)
+
+	local nowServer = Workspace:GetServerTimeNow()
+	local heatMax, _, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
+	local heatState = getOrCreateHeatState(entityId, nowServer)
+	heatState.heat = 0
+	heatState.lastUpdatedAt = nowServer
+	heatState.lastShotAt = 0
+	heatState.overheated = false
+	heatState.recoverCueId = 0
+	heatState.recoverToken += 1
+	setHeatAttributes(healthState.instance, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
+
+	local ammoCapacity = getAmmoCapacity(weaponConfig)
+	if ammoCapacity > 0 then
+		local ammoState = ammoStateByEntityId[entityId]
+		if ammoState == nil then
+			ammoState = {
+				current = ammoCapacity,
+				max = ammoCapacity,
+			}
+			ammoStateByEntityId[entityId] = ammoState
+		else
+			ammoState.max = ammoCapacity
+			ammoState.current = ammoCapacity
+		end
+		setAmmoAttributes(healthState.instance, ammoState)
+		print(string.format("[P3_AMMO_RESET] entity=%s ammo=%d", entityId, ammoState.current))
+	else
+		ammoStateByEntityId[entityId] = nil
+		setAmmoAttributes(healthState.instance, nil)
+	end
+end
+
 function WeaponServer.registerEntity(entityId: string)
 	local healthState = HealthManager.getHealth(entityId)
 	if healthState == nil or healthState.config.weaponId == nil then
@@ -1084,22 +1195,52 @@ function WeaponServer.registerEntity(entityId: string)
 	local weaponConfig = resolveWeaponConfig(healthState.instance, baseWeaponConfig)
 	publishResolvedWeaponAttributes(healthState.instance, weaponConfig)
 
-	local nowServer = Workspace:GetServerTimeNow()
-	local heatMax, _, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
-	local heatState = getOrCreateHeatState(entityId, nowServer)
-	heatState.heat = 0
-	heatState.lastUpdatedAt = nowServer
-	heatState.lastShotAt = 0
-	heatState.overheated = false
-	heatState.recoverCueId = 0
-	heatState.recoverToken += 1
-
 	fireNodeStateByEntityId[entityId] = nil
 	drivenRigStateByEntityId[entityId] = nil
 	getOrRefreshFireNodeState(entityId, healthState.instance)
 	setFireNodeAttributes(healthState.instance, entityId)
 	getOrRefreshDrivenRigState(entityId, healthState.instance)
-	setHeatAttributes(healthState.instance, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
+	resetEntityInternal(entityId)
+end
+
+function WeaponServer.resetEntity(entityId: string)
+	resetEntityInternal(entityId)
+end
+
+function WeaponServer.fireTestShot(entityId: string, direction: Vector3): boolean
+	if not RunService:IsStudio() then
+		return false
+	end
+	if typeof(direction) ~= "Vector3" or direction.Magnitude < 1e-4 then
+		return false
+	end
+
+	local healthState = HealthManager.getHealth(entityId)
+	if healthState == nil or healthState.config.weaponId == nil then
+		return false
+	end
+
+	local baseWeaponConfig = CombatConfig.Weapons[healthState.config.weaponId]
+	if baseWeaponConfig == nil then
+		return false
+	end
+
+	local weaponConfig = resolveWeaponConfig(healthState.instance, baseWeaponConfig)
+	publishResolvedWeaponAttributes(healthState.instance, weaponConfig)
+	if weaponConfig.fireRate <= 0 then
+		return false
+	end
+
+	local cooldown = 1 / weaponConfig.fireRate
+	return fireSingleProjectile(
+		healthState.instance,
+		entityId,
+		healthState,
+		weaponConfig,
+		healthState.instance,
+		direction.Unit,
+		cooldown
+	)
 end
 
 function WeaponServer.init(remotes: Folder)

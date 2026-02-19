@@ -63,3 +63,48 @@ None (first pass).
 Re-run Pass 1 Tests 1-4. Unshielded entities must behave identically.
 
 ---
+
+## Pass 3: Damage Types + Ammo
+
+### Test 7: Ion Cannon Shield Devastation
+- **Added in:** Pass 3
+- **Setup:** Empire ion_turret (damage=60, damageType="ion") at (0, 5, 0). Rebel ion_test_target (shieldHP=200, hullHP=200, no regen) at (0, 5, 50). TestHarnessEnabled = true. DamageTypeMultipliers.ion: shieldMult=3.0, hullMult=0.15, bypass=0.
+- **Action:** Harness fires 2 shots.
+- **Expected:**
+  - Shot 1: shieldDamage = 60 * 3.0 = 180. Shield: 200 -> 20. Hull untouched. impactType = "shield".
+  - Shot 2: shieldDamage = 60 * 3.0 = 180. Shield absorbed 20, overflow = 160. overflowBase = 160/3.0 = 53.33. hullDamage = 53.33 * 0.15 = 8.0. Shield: 0. Hull: 200 -> 192. impactType = "shield".
+- **Pass condition:**
+  - Shield depleted in 2 shots (ion devastating to shields)
+  - Hull barely scratched: 200 -> 192 (ion minimal to hull)
+  - `[P3_MULT]` logs showing ion multipliers
+  - `[P1_DAMAGE]` shows hull only dropped by ~8
+
+### Test 8: Proton Torpedo Shield Bypass
+- **Added in:** Pass 3
+- **Setup:** Empire torpedo_turret (damage=200, damageType="proton_torpedo") at (0, 5, 0). Rebel torpedo_test_target (shieldHP=150, hullHP=500, no regen) at (0, 5, 50). TestHarnessEnabled = true. DamageTypeMultipliers.proton_torpedo: shieldMult=0.3, hullMult=2.5, bypass=0.7.
+- **Action:** Harness fires 1 shot.
+- **Expected:**
+  - bypassBase = 200 * 0.7 = 140. shieldFacingBase = 200 * 0.3 = 60.
+  - shieldDamage = 60 * 0.3 = 18. Shield: 150 -> 132 (barely scratched).
+  - hullDamage = 140 * 2.5 = 350. Hull: 500 -> 150.
+- **Pass condition:**
+  - Shield only lost 18 (torpedo barely touches shields)
+  - Hull lost 350 in one hit (bypass + hull multiplier = devastating)
+  - `[P3_BYPASS]` log showing bypass damage
+  - `[P3_MULT]` log showing torpedo multipliers
+
+### Test 9: Ammo Depletion
+- **Added in:** Pass 3
+- **Setup:** Empire torpedo_turret (ammoCapacity=6) at (0, 5, 0). Rebel ammo_test_target (hullHP=10000) at (0, 5, 50). TestHarnessEnabled = true.
+- **Action:** Harness attempts 8 fire commands.
+- **Expected:** 6 shots fire successfully. Shots 7-8 refused (ammo=0).
+- **Pass condition:**
+  - 6x `[P1_FIRE]` logs
+  - 6x `[P3_AMMO]` logs showing ammo 6->5->4->3->2->1->0
+  - 2x `[P3_AMMO_EMPTY]` logs (shots 7-8)
+  - `WeaponAmmo` model attribute = 0 after shot 6
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4 and Pass 2 Tests 5-6. Blaster damage type has multipliers {1, 1, 0} — behavior must be identical to pre-multiplier math. Unshielded entities unaffected. Shield regen unaffected.
+
+---

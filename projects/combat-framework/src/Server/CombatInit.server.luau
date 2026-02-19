@@ -134,6 +134,9 @@ local remotesFolder = createRemotesFolder()
 HealthManager.init(remotesFolder)
 ProjectileServer.init(remotesFolder)
 WeaponServer.init(remotesFolder)
+HealthManager.setRespawnCallback(function(entityId: string)
+	WeaponServer.resetEntity(entityId)
+end)
 
 local validatedEntities: { ValidatedEntity } = StartupValidator.validate()
 local nextEntityIndex = 0

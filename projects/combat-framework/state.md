@@ -1,6 +1,6 @@
 # Combat Framework — State
 
-## Current Stage: Pass 2 Build
+## Current Stage: Pass 3 Build
 ## Status: Ready
 
 ## History
@@ -9,9 +9,10 @@
 - **Pass 1 Design:** Complete 2026-02-18. Core combat loop — turret, blaster projectile, hull HP, hit detection, destruction/respawn, crosshair HUD, faction check.
 - **Pass 1 Build:** Complete 2026-02-18. Includes turret aiming/camera iteration, hit/kill feedback, overheat, splash damage, and turret death explosion.
 - **Pass 2 Design:** Complete 2026-02-18. Shield system — shield HP layer, damage absorption with overflow, regen, distinct shield/hull impact VFX+audio, HUD shield bar.
+- **Pass 3 Design:** Complete 2026-02-19. Damage types + ammo — 5 damage types with shield/hull/bypass multipliers, finite ammo system, 4 new weapon/entity configs, HUD ammo counter.
 
 ## Context Files
-- Read: `feature-passes.md`, `idea-locked.md`, `project-protocol.md`, `pass-1-design.md`, `pass-2-design.md`, `golden-tests.md`, `state.md`
+- Read: `feature-passes.md`, `idea-locked.md`, `project-protocol.md`, `pass-1-design.md`, `pass-2-design.md`, `pass-3-design.md`, `golden-tests.md`, `state.md`
 - Source of truth for current behavior: `src/` code + this file + `golden-tests.md`
 
 ## Pass 1 Design Summary

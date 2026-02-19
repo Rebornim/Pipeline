@@ -2,6 +2,12 @@
 
 local CombatTypes = {}
 
+export type DamageTypeMultiplier = {
+	shieldMult: number,
+	hullMult: number,
+	bypass: number?,
+}
+
 export type WeaponConfig = {
 	weaponClass: string?,
 	damageType: string,
@@ -17,6 +23,7 @@ export type WeaponConfig = {
 	heatPerShot: number?,
 	heatDecayPerSecond: number?,
 	heatRecoverThreshold: number?,
+	ammoCapacity: number?,
 }
 
 export type EntityConfig = {

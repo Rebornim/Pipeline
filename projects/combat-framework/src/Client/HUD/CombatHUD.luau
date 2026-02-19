@@ -20,6 +20,8 @@ local hpLabel: TextLabel? = nil
 local shieldFrame: Frame? = nil
 local shieldFill: Frame? = nil
 local shieldLabel: TextLabel? = nil
+local ammoFrame: Frame? = nil
+local ammoLabel: TextLabel? = nil
 local heatFrame: Frame? = nil
 local heatFill: Frame? = nil
 local heatLabel: TextLabel? = nil
@@ -487,6 +489,28 @@ function CombatHUD.init()
 	heatText.Text = "Heat: 0%"
 	heatText.Parent = weaponHeatFrame
 
+	local weaponAmmoFrame = Instance.new("Frame")
+	weaponAmmoFrame.Name = "AmmoFrame"
+	weaponAmmoFrame.AnchorPoint = Vector2.new(0.5, 1)
+	weaponAmmoFrame.Position = UDim2.new(0.5, 0, 1, -46)
+	weaponAmmoFrame.Size = UDim2.fromOffset(220, 28)
+	weaponAmmoFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	weaponAmmoFrame.BackgroundTransparency = 0.35
+	weaponAmmoFrame.Visible = false
+	weaponAmmoFrame.Parent = gui
+
+	local ammoText = Instance.new("TextLabel")
+	ammoText.Name = "AmmoLabel"
+	ammoText.Size = UDim2.fromScale(1, 1)
+	ammoText.BackgroundTransparency = 1
+	ammoText.TextColor3 = Color3.fromRGB(235, 235, 235)
+	ammoText.TextScaled = false
+	ammoText.TextSize = 14
+	ammoText.Font = Enum.Font.Code
+	ammoText.TextXAlignment = Enum.TextXAlignment.Center
+	ammoText.Text = "Ammo: -- / --"
+	ammoText.Parent = weaponAmmoFrame
+
 	local weaponsReadyLabel = Instance.new("TextLabel")
 	weaponsReadyLabel.Name = "WeaponsReadyLabel"
 	weaponsReadyLabel.AnchorPoint = Vector2.new(0.5, 1)
@@ -513,6 +537,8 @@ function CombatHUD.init()
 	shieldFrame = shieldStatusFrame
 	shieldFill = shieldBarFill
 	shieldLabel = shieldText
+	ammoFrame = weaponAmmoFrame
+	ammoLabel = ammoText
 	heatFrame = weaponHeatFrame
 	heatFill = fill
 	heatLabel = heatText
@@ -585,6 +611,29 @@ end
 function CombatHUD.showShield(visible: boolean)
 	if shieldFrame ~= nil then
 		shieldFrame.Visible = visible
+	end
+end
+
+function CombatHUD.showAmmo(visible: boolean)
+	if ammoFrame ~= nil then
+		ammoFrame.Visible = visible
+	end
+end
+
+function CombatHUD.setAmmo(currentAmmo: number, maxAmmo: number)
+	local label = ammoLabel
+	if label == nil then
+		return
+	end
+
+	local clampedMax = math.max(0, math.floor(maxAmmo + 0.5))
+	local clampedCurrent = math.clamp(math.floor(currentAmmo + 0.5), 0, math.max(clampedMax, 0))
+	if clampedCurrent <= 0 then
+		label.Text = string.format("Ammo: 0 / %d (EMPTY)", clampedMax)
+		label.TextColor3 = Color3.fromRGB(255, 110, 110)
+	else
+		label.Text = string.format("Ammo: %d / %d", clampedCurrent, clampedMax)
+		label.TextColor3 = Color3.fromRGB(235, 235, 235)
 	end
 end
 
