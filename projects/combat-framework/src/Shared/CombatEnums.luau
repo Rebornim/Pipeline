@@ -9,6 +9,7 @@ CombatEnums.DamageType = {
 	ProtonTorpedo = "proton_torpedo",
 	ConcussionMissile = "concussion_missile",
 	Explosion = "explosion",
+	Impact = "impact",
 }
 
 CombatEnums.Faction = {
@@ -27,6 +28,13 @@ CombatEnums.ImpactType = {
 	Shield = "shield",
 	Hull = "hull",
 	Environment = "environment",
+}
+
+CombatEnums.VehicleClass = {
+	LightSpeeder = "light_speeder",
+	HeavySpeeder = "heavy_speeder",
+	BipedWalker = "biped_walker",
+	QuadWalker = "quad_walker",
 }
 
 return CombatEnums

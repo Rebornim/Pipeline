@@ -1127,6 +1127,8 @@ local function activateTurretCameraAndMouse()
 end
 
 local function deactivateTurretMode()
+	local wasTurretModeActive = activeTurretModel ~= nil or activeSeat ~= nil or turretStepConnection ~= nil
+
 	ContextActionService:UnbindAction(FIRE_ACTION_NAME)
 	ContextActionService:UnbindAction(EXIT_ACTION_NAME)
 	ContextActionService:UnbindAction(ZOOM_ACTION_NAME)
@@ -1137,16 +1139,18 @@ local function deactivateTurretMode()
 		turretStepConnection = nil
 	end
 
-	restoreDefaultCameraAndMouse()
+	if wasTurretModeActive then
+		restoreDefaultCameraAndMouse()
 
-	CombatHUD.showCrosshair(false)
-	CombatHUD.hideHP()
-	CombatHUD.showShield(false)
-	CombatHUD.showAmmo(false)
-	CombatHUD.showHeat(false)
-	CombatHUD.setZoomVignette(0)
-	clearHeatVfx()
-	TargetingClient.onSeatExit()
+		CombatHUD.showCrosshair(false)
+		CombatHUD.hideHP()
+		CombatHUD.showShield(false)
+		CombatHUD.showAmmo(false)
+		CombatHUD.showHeat(false)
+		CombatHUD.setZoomVignette(0)
+		clearHeatVfx()
+		TargetingClient.onSeatExit()
+	end
 
 	activeTurretModel = nil
 	activeSeat = nil

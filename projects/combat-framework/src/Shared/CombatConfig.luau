@@ -146,6 +146,11 @@ CombatConfig.Entities = {
 		turretExposed = true,
 		respawnTime = 20,
 	},
+	light_speeder = {
+		hullHP = 100,
+		weaponId = nil,
+		respawnTime = nil,
+	},
 	target_dummy = {
 		hullHP = 200,
 		weaponId = nil,
@@ -205,6 +210,55 @@ CombatConfig.DamageTypeMultipliers = {
 	proton_torpedo = { shieldMult = 0.3, hullMult = 2.5, bypass = 0.7 },
 	concussion_missile = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
 	explosion = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
+	impact = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
+}
+
+CombatConfig.Vehicles = {
+	light_speeder = {
+		vehicleClass = "light_speeder",
+		entityConfigId = "light_speeder",
+		maxSpeed = 120,
+		acceleration = 80,
+		deceleration = 30,
+		brakingDeceleration = 60,
+		reverseMaxSpeed = 30,
+		turnSpeedLow = 120,
+		turnSpeedHigh = 45,
+		leanTurnRate = 50,
+		leanBankAngle = 15,
+		leanSpeedPenalty = 0.01,
+		leanEntryDuration = 0.25,
+		leanEntryYawBoost = 0.35,
+		leanEntrySpeedBoost = 20,
+		leanExitDuration = 0.18,
+		leanExitCounterBankDeg = 3.5,
+		leanCameraOffset = 1.5,
+		leanShakeAmplitude = 0.2,
+		leanShakeDuration = 0.12,
+		leanDustEmitCount = 8,
+		lateralGripLow = 10,
+		lateralGripHigh = 4.5,
+		accelerationTaper = 0.0,
+		accelerationMinFactor = 1.0,
+		tiltStiffness = 100,
+		tiltDamping = 14,
+		landingShakeThreshold = 25,
+		landingShakeIntensity = 0.35,
+		hoverHeight = 1,
+		springStiffness = 250,
+		springDamping = 25,
+		gravity = 150,
+		maxClimbSlope = 45,
+		fallDamageThreshold = 80,
+		fallDamageScale = 0.8,
+		collisionDamageThreshold = 60,
+		collisionDamageScale = 1.2,
+		collisionBounce = 0.2,
+		collisionRadius = 4,
+		cameraDistance = 15,
+		cameraHeight = 6,
+		cameraLerpSpeed = 0.15,
+	},
 }
 
 CombatConfig.ProjectileRayRadius = 0.5
@@ -212,6 +266,27 @@ CombatConfig.DefaultShieldRegenDelay = 3
 CombatConfig.LockOnScanRadius = 8
 CombatConfig.LockValidationInterval = 0.2
 CombatConfig.LockBreakRange = 1.0
+CombatConfig.VehicleInputRate = 20
+CombatConfig.VehicleStopThreshold = 0.5
+CombatConfig.VehicleCollisionRayCount = 3
+CombatConfig.VehicleCollisionLookahead = 2.0
+CombatConfig.VehicleMaxTiltLerp = 8.0
+CombatConfig.VehicleMouseSensitivity = 0.7
+CombatConfig.VehicleMouseRangeX = 0.22
+CombatConfig.VehicleMouseRangeY = 0.06
+CombatConfig.VehicleMouseCenteringRate = 1.5
+CombatConfig.VehicleReplicationRateActive = 20
+CombatConfig.VehicleReplicationRateSettling = 5
+CombatConfig.VehicleReplicationSpeedDeadband = 1.5
+CombatConfig.VehicleReplicationHeadingDeadband = 0.03
+CombatConfig.VehicleSettlingSpeedDeadband = 3.0
+CombatConfig.VehicleSettlingHeadingDeadband = 0.05
+CombatConfig.VehicleReplicationRefreshActive = 0.5
+CombatConfig.VehicleReplicationRefreshSettling = 1.0
+CombatConfig.VehicleDormancyDelay = 2.0
+CombatConfig.VehicleCFrameWriteRateActive = 20
+CombatConfig.VehicleCFrameWriteRateSettling = 5
+CombatConfig.VehicleCFramePositionDeadband = 0.01
 
 CombatConfig.TurretPromptText = "Man Turret"
 CombatConfig.TurretPromptDistance = 10
@@ -235,5 +310,6 @@ CombatConfig.TurretDeathExplosionParticleEmitMultiplier = 2.2
 
 -- Temporary testing toggle.
 CombatConfig.FriendlyFireEnabled = true
+CombatConfig.TestHarnessEnabled = false
 
 return CombatConfig

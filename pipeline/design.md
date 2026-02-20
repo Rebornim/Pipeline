@@ -60,7 +60,7 @@ For every call site where new code calls existing code (or vice versa):
 
 **This is the most important step.** Checking new code against real, tested code is fundamentally more reliable than checking specs against specs.
 
-### Step 4: Design Golden Tests + AI Build Prints for This Pass
+### Step 4: Design Golden Tests + Test Packet
 
 **Golden tests.** Define 1-3 specific test scenarios for the new functionality:
 - **Setup:** What workspace layout, what config overrides
@@ -70,12 +70,14 @@ For every call site where new code calls existing code (or vice versa):
 
 Also note: which previous passes' golden tests should be re-run as regression checks.
 
-**AI build prints.** Specify which temporary print statements Codex should add so the automated test loop can verify behavior without seeing the game:
-- Which events to print (`[SPAWN]`, `[DESPAWN]`, `[STATE]`, `[ERROR]`, etc.)
-- What data each print should include (entity ID, position, reason, etc.)
-- Where to place `START READ HERE` / `END READ HERE` markers
-- What the `[SUMMARY]` line should report at the end of each test window
-- These prints are temporary — they get removed after the pass is proven
+**Test Packet.** For each build step, specify everything Codex needs to build and test without interpretation. Codex executes this exactly — it does not invent probes, harnesses, or debugging strategies beyond what is specified here.
+
+- **AI build prints:** Which events to print (`[SPAWN]`, `[DESPAWN]`, `[STATE]`, `[ERROR]`, etc.), what data each print includes (entity ID, position, reason, etc.), where to place `START READ HERE` / `END READ HERE` markers, what the `[SUMMARY]` line reports. These are temporary — removed after the pass is proven.
+- **Pass/fail conditions:** Exact patterns to match in the summary output per build step. Example: `PASS if [P5_SUMMARY] errors=0 AND spawned>=1`. Codex pattern-matches against these — it does not interpret results.
+- **MCP procedure:** Default is the standard procedure (stop → start → wait for marker → get_output → stop). Only specify deviations from default.
+- **Expected summary format:** The exact `[PN_SUMMARY] key=value key=value` format so Codex knows what to match against.
+
+Keep Test Packets minimal and sufficient. Specify what Codex needs to execute and verify — nothing more.
 
 ### Step 5: Update Diagnostics & Validators (if needed)
 
@@ -84,9 +86,15 @@ Also note: which previous passes' golden tests should be re-run as regression ch
 - New startup validator checks for new workspace contracts
 - These get added to existing modules, not new ones
 
-### Step 6: Lock This Pass's Design + Produce Handoff
+### Step 5b: Critic Review of This Design
 
-**Note on critic reviews:** Full critic reviews happen every 3-5 passes, NOT every pass. If the user requests one, or if this is a periodic review pass, run the critic. Otherwise, the integration pass (Step 3) is the primary design-time validation.
+**Every pass:** Self-critique the design against `pipeline/checklists/critic-checklist.md`. You already have the design in context from the integration pass — scan it against the checklist items for correctness, security, and performance issues. Fix any blocking issues before proceeding.
+
+**New architecture passes only:** When a pass introduces a new architectural pattern (e.g., vehicle movement, IK walkers, flight physics — not just mounting existing systems on a new platform), also spawn the critic-reviewer agent (haiku model) for an independent review. Incremental passes that follow established patterns (e.g., adding weapons to an existing vehicle) get the self-critique only.
+
+This is NOT the same as the periodic full-codebase critic review (every 3-5 passes, run on Codex's built code). That reviews accumulated drift across the whole codebase. This step reviews the design you just wrote before Codex builds from it.
+
+### Step 6: Lock This Pass's Design + Produce Handoff
 
 - Write to `projects/<name>/pass-N-design.md`
 - Add new golden tests to `projects/<name>/golden-tests.md`
@@ -106,7 +114,7 @@ That's it. Nothing more.
 - [ ] All new/modified modules specified with exact APIs
 - [ ] Integration pass complete — every cross-boundary data flow traced against real code
 - [ ] Golden tests defined for new functionality
-- [ ] AI build prints specified (tags, data, markers, summary line)
+- [ ] Test Packet complete — AI build prints, pass/fail conditions, MCP procedure, expected summary format
 - [ ] Regression tests identified from previous passes
 - [ ] Diagnostics/validators updated if new behaviors or workspace contracts added
 - [ ] Config values extracted for any new tunables

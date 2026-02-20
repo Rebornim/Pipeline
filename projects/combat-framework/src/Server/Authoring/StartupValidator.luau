@@ -112,11 +112,40 @@ local function validateConfigContracts(): boolean
 		end
 	end
 
+	if type(CombatConfig.Vehicles) == "table" then
+		for vehicleId, vehicleConfig in pairs(CombatConfig.Vehicles) do
+			if type(vehicleConfig.entityConfigId) ~= "string" then
+				warn(string.format("[VALIDATE] Vehicle '%s' missing entityConfigId", vehicleId))
+				hasFailure = true
+			elseif CombatConfig.Entities[vehicleConfig.entityConfigId] == nil then
+				warn(
+					string.format(
+						"[VALIDATE] Vehicle '%s' entityConfigId '%s' not found",
+						vehicleId,
+						tostring(vehicleConfig.entityConfigId)
+					)
+				)
+				hasFailure = true
+			end
+
+			if type(vehicleConfig.maxSpeed) ~= "number" or vehicleConfig.maxSpeed <= 0 then
+				warn(string.format("[VALIDATE] Vehicle '%s' maxSpeed must be > 0", vehicleId))
+				hasFailure = true
+			end
+
+			if type(vehicleConfig.hoverHeight) ~= "number" or vehicleConfig.hoverHeight <= 0 then
+				warn(string.format("[VALIDATE] Vehicle '%s' hoverHeight must be > 0", vehicleId))
+				hasFailure = true
+			end
+		end
+	end
+
 	return not hasFailure
 end
 
 function StartupValidator.validate(): { ValidatedEntity }
 	local validated: { ValidatedEntity } = {}
+	local invalidVehicleModels: { [Model]: boolean } = {}
 	if not validateConfigContracts() then
 		return validated
 	end
@@ -219,6 +248,79 @@ function StartupValidator.validate(): { ValidatedEntity }
 			muzzlePoint = muzzlePoint,
 			turretSeat = turretSeat,
 		})
+	end
+
+	local vehicleEntities = CollectionService:GetTagged("VehicleEntity")
+	for _, instance in ipairs(vehicleEntities) do
+		if not instance:IsA("Model") then
+			fail(instance:GetFullName(), "VehicleEntity tag must be on a Model")
+			continue
+		end
+
+		local model = instance
+		local modelName = model.Name
+		if not CollectionService:HasTag(model, "CombatEntity") then
+			fail(modelName, "VehicleEntity must also have CombatEntity tag")
+			invalidVehicleModels[model] = true
+			continue
+		end
+
+		local vehicleConfigId = model:GetAttribute("VehicleConfigId")
+		if type(vehicleConfigId) ~= "string" then
+			fail(modelName, "VehicleEntity missing VehicleConfigId attribute")
+			invalidVehicleModels[model] = true
+			continue
+		end
+
+		local vehicleConfig = CombatConfig.Vehicles[vehicleConfigId]
+		if vehicleConfig == nil then
+			fail(modelName, string.format("unknown VehicleConfigId '%s'", vehicleConfigId))
+			invalidVehicleModels[model] = true
+			continue
+		end
+
+		local driverSeat = findTaggedDescendant(model, "DriverSeat", "Seat")
+		if driverSeat == nil then
+			fail(modelName, "VehicleEntity missing DriverSeat tagged Seat")
+			invalidVehicleModels[model] = true
+			continue
+		end
+
+		local hoverPoints = collectTaggedDescendants(model, "HoverPoint", "BasePart")
+		if vehicleConfig.vehicleClass == "light_speeder" or vehicleConfig.vehicleClass == "heavy_speeder" then
+			if #hoverPoints < 4 then
+				fail(modelName, string.format("Speeder needs 4 HoverPoint tagged parts, found %d", #hoverPoints))
+				invalidVehicleModels[model] = true
+				continue
+			end
+		end
+
+		if model.PrimaryPart == nil then
+			fail(modelName, "VehicleEntity must have PrimaryPart set")
+			invalidVehicleModels[model] = true
+			continue
+		end
+
+		if not model.PrimaryPart.Anchored then
+			fail(modelName, "VehicleEntity PrimaryPart must be Anchored")
+			invalidVehicleModels[model] = true
+			continue
+		end
+
+		local forwardRef = model.PrimaryPart:FindFirstChild("ForwardRef")
+		if forwardRef == nil or not forwardRef:IsA("Attachment") then
+			warn(string.format("[VALIDATE] VehicleEntity '%s' missing ForwardRef attachment on PrimaryPart", modelName))
+		end
+	end
+
+	if next(invalidVehicleModels) ~= nil then
+		local filtered: { ValidatedEntity } = {}
+		for _, validatedEntity in ipairs(validated) do
+			if not invalidVehicleModels[validatedEntity.instance] then
+				table.insert(filtered, validatedEntity)
+			end
+		end
+		validated = filtered
 	end
 
 	return validated

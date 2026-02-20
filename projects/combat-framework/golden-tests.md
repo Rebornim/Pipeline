@@ -143,3 +143,42 @@ Re-run Pass 1 Tests 1-4 and Pass 2 Tests 5-6. Blaster damage type has multiplier
 Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9. All existing combat behaviors must be identical — targeting is additive, no lock = existing manual aim behavior unchanged.
 
 ---
+
+## Pass 5: Speeder Movement
+
+### Test 14: Speeder Drives and Hovers
+- **Added in:** Pass 5
+- **Setup:** Placeholder speeder (empire, light_speeder config, hullHP=100) on flat Baseplate terrain at (0, 10, 0). TestHarnessEnabled = true.
+- **Action:** Harness seats a test character in DriverSeat, injects throttle=1 and steerX=0 input for 3 seconds via VehicleServer directly (bypass remote for harness).
+- **Expected:** Speeder accelerates from 0 toward maxSpeed (120). Hover height stabilizes at ~4 studs above terrain. Heading stays constant (steer=0).
+- **Pass condition:**
+  - `[P5_SPEED]` logs at 0.5s intervals showing increasing speed: 0 → ~40 → ~80 → ~110+
+  - `[P5_HOVER]` logs showing hover height within ±1 stud of target (4)
+  - `[P5_SUMMARY]` confirms: final speed > 100, hover height error < 1 stud, grounded count = 4
+
+### Test 15: Wall Collision + Impact Damage
+- **Added in:** Pass 5
+- **Setup:** Speeder at (0, 10, 0). Anchored wall part (size 20x20x2) at (0, 10, -80). Speeder facing wall (heading toward -Z). TestHarnessEnabled = true.
+- **Action:** Harness injects throttle=1, steerX=0. Wait until collision.
+- **Expected:** Speeder accelerates toward wall. On collision: velocity drops to ~0 (slight bounce), HP decreases from impact damage.
+- **Pass condition:**
+  - `[P5_COLLISION]` log with impactSpeed > collisionDamageThreshold (30) and damage > 0
+  - `[P1_DAMAGE]` log showing hull HP decrease (impact damage type)
+  - `[P5_SPEED]` log after collision showing speed < 5
+  - `[P5_SUMMARY]` confirms: collision detected, damage applied, vehicle stopped
+
+### Test 16: Airborne + Fall Damage
+- **Added in:** Pass 5
+- **Setup:** Speeder on an elevated platform (anchored part at Y=50, size 40x2x40). Edge of platform at Z=-20. Open air beyond. TestHarnessEnabled = true.
+- **Action:** Harness injects throttle=1, steerX=0. Speeder drives off edge.
+- **Expected:** Speeder goes airborne when hover raycasts find no ground. Gravity pulls it down. On landing (baseplate at Y=0), fall damage applies based on vertical impact speed.
+- **Pass condition:**
+  - `[P5_AIRBORNE]` log when grounded count drops to 0
+  - `[P5_FALL_DAMAGE]` log with vertical impact speed and damage amount
+  - `[P1_DAMAGE]` log showing hull HP decrease (impact damage type)
+  - `[P5_SUMMARY]` confirms: went airborne, fell ~50 studs, fall damage applied
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13. Vehicle changes must NOT affect turret combat behavior. Key regression risks: HealthManager destroy callback addition, new DamageType "impact", new RemoteEvents.
+
+---

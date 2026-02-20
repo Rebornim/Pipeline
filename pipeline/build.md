@@ -36,28 +36,37 @@ Give Codex:
 Codex commits a checkpoint: `git add -A && git commit -m "checkpoint: pass N step [name] pre-test"`. If the test-fix loop makes things worse, the user can revert to this commit.
 
 #### 2c. Automated test loop (via MCP).
-Codex has access to Roblox Studio via the `robloxstudio-mcp` server. Use it:
+Codex has access to Roblox Studio via the `robloxstudio-mcp` server. **MCP testing is allowed here — this is the only place Codex uses MCP without explicit user permission.** Codex treats MCP as a dumb execution tool — it runs the procedure and matches results against the Test Packet's pass/fail conditions. It does not interpret, strategize, or invent tests.
 
-1. Call `start_playtest` — launches Play Solo in Studio, begins capturing output
-2. Wait for AI build prints to appear (look for `========== START READ HERE ==========` marker)
-3. Call `get_playtest_output` ONE TIME — read captured output. This is cumulative (returns ALL logs), so only call it once.
-4. Call `stop_playtest` — end the session. Do NOT also call `get_playtest_output` before this — `stop_playtest` returns the logs too.
+1. Call `stop_playtest` first to clear any stale session.
+2. Call `start_playtest` — launches Play Solo in Studio, begins capturing output
+3. Wait for AI build prints to appear (look for `========== START READ HERE ==========` marker)
+4. Call `get_playtest_output` ONE TIME — read captured output. This is cumulative (returns ALL logs), so only call it once.
+5. Call `stop_playtest` — end the session. Do NOT also call `get_playtest_output` before this — `stop_playtest` returns the logs too.
+6. **Match output against the Test Packet's pass/fail conditions.** Pattern-match only — do not interpret beyond what the conditions specify.
 
 **Important: `get_playtest_output` is cumulative.** Each call returns the entire log from session start, not just new lines. Do not poll it repeatedly — one retrieval per test. If waiting for a specific marker, poll sparingly.
 
 **Keep global diagnostics OFF.** Set `Config.DiagnosticsEnabled = false` during automated testing. Only pass-specific `[PN_TEST]` prints should be active. Unrelated diagnostics noise burns tokens.
 
-**Read the output.** AI build prints tell you exactly what ran, in what order, and what failed. Check against golden test expectations. Summarize findings — do not dump full raw logs.
-
-**3 test-fix cycles max.** If the code doesn't pass after 3 cycles of (test → read logs → fix → retest), STOP. Hand the code + logs to the user for escalation to Claude.
-
 **No-regression rule.** If a fix breaks something that was previously passing, revert that fix immediately. Do not "fix forward" through a cascade.
 
-#### 2d. If automated tests fail within the 3-cycle cap:
-1. **Read AI build prints.** What do the `[TAG]` lines say?
-2. **Check config.** Is it a tunable value problem? Free fix, no tokens.
-3. **Fix ONE thing.** The smallest change that addresses the specific failure.
-4. **Retest.** Back to 2c.
+**After this step passes, MCP is locked.** Once the user confirms the visual check, do not run further MCP tests unless the user explicitly says to.
+
+#### 2d. If automated tests fail — Mechanical vs Behavioral split:
+
+**Mechanical failures** (syntax error, missing require/import, typo in variable/string, nil access on code Codex just wrote, wrong literal/path):
+1. Codex may attempt **one** self-fix. Smallest change only.
+2. Retest (back to 2c).
+3. If still failing after 1 attempt, escalate as behavioral.
+
+**Behavioral failures** (logic mismatch, contract violation, incorrect data flow, replication issue, failing pass/fail conditions from Test Packet):
+1. **Codex does NOT diagnose.** Do not guess at fixes. Do not invent debugging strategies.
+2. Codex fills out a **Build Failure Report** (template below) and stops.
+3. The user takes the report to Claude for a Fix Plan.
+4. Codex applies the Fix Plan exactly when it comes back.
+
+**File scope rule:** Codex may only modify files listed anywhere in the current pass's Build Packet (design doc) or in a Fix Plan from Claude. Do not touch files outside this scope.
 
 #### 2e. If automated tests pass → user visual check.
 Tell the user: "Step [name] passes automated tests. Ready for your visual check in Studio."
@@ -67,9 +76,11 @@ The user plays the game, checks that it looks/feels right. If they report issues
 
 ### Step 3: All Steps Built
 
-When all modules for this pass are built and individual tests pass:
-- Run ALL golden tests (this pass + all previous passes)
-- Check diagnostics health summary
+When all modules for this pass are built and individual build tests pass:
+- Tell the user all steps are built and passing their initial tests
+- The user runs golden tests themselves in Studio (this pass + previous passes) and reports results
+- **Do NOT run MCP golden tests automatically.** The user decides when and whether to test via MCP.
+- If the user reports issues, fix them (MCP allowed only if user says to test)
 - If everything passes → move to Prove
 
 ## AI Build Prints
@@ -100,17 +111,30 @@ print("[SUMMARY] spawned=12 despawned=4 active=8 errors=0")
 - **One fix at a time.** Fix one bug, test, confirm. Then fix the next.
 - **Never mix bugfixes with feature additions or refactors.** If you see something you want to improve while fixing a bug, note it for later.
 
-## Bug Escalation to Claude
+## Build Failure Report + Escalation
 
-When Codex can't fix a bug after 2 attempts, escalate to Claude:
+When Codex hits a behavioral failure (or a mechanical failure that didn't resolve in 1 attempt), it fills out this template and stops:
 
-1. Tell Claude: **"Bug in pass N for [project-name]. Codex tried [X] and [Y], neither worked."**
-2. Include: diagnostics output, what the code does now, what it should do, what Codex tried
-3. Claude reads the relevant code, diagnoses the issue, and writes a targeted fix plan
-4. Give the fix plan to Codex to implement
-5. Codex follows the fix plan exactly — no improvising on top of it
+```
+## Build Failure Report
+**Pass:** [N]
+**Step:** [step name]
+**Failure Type:** Mechanical | Behavioral
+**Expected:** [from Test Packet pass/fail conditions]
+**Actual:** [what the output actually showed]
+**Relevant Output Lines:**
+[2-5 key lines from the log — not a full dump]
+**Mechanical Fix Attempted:** [what was tried, or "None — behavioral"]
+**Result of Mechanical Fix:** [still failing / N/A]
+```
 
-This ensures Codex always works from a plan, even for bugfixes.
+**Codex must end this message with a Claude handoff prompt:**
+
+```
+Read: projects/<name>/pass-N-design.md. Then read: [specific file(s) involved]. Diagnose and write Fix Plan.
+```
+
+The user copies the Failure Report + handoff prompt to Claude. Claude diagnoses and returns a Fix Plan. The user copies the Fix Plan back to Codex. Codex applies it exactly — no improvising on top of it.
 
 ## Change Discipline
 
@@ -144,5 +168,6 @@ Between these periodic reviews, the Prove step's contract check is sufficient.
 
 Tell the user to go to Claude at these moments:
 - If unsure about a design decision
-- If a fix doesn't work after 2 attempts (bug escalation)
+- On any behavioral failure (immediate escalation with Failure Report)
+- On a mechanical failure that didn't resolve in 1 attempt (escalate as behavioral)
 - When all modules for this pass are built — for Prove step

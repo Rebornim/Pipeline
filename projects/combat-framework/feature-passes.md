@@ -1,7 +1,7 @@
 # Feature Passes: Combat Framework
 
-**Based on:** idea-locked.md
-**Date:** 2026-02-18
+**Based on:** idea-locked.md + vehicle-idea-locked.md
+**Date:** 2026-02-19 (revised — passes 5+ rebuilt for custom vehicle system, walker split, animated parts moved earlier)
 
 ---
 
@@ -88,65 +88,115 @@ The complete combat framework is proven on ground turrets. Lock-on, auto-aim, to
 
 ---
 
-## Pass 5: Armed Ground Vehicles
+## Pass 5: Speeder Movement
 **Depends on:** Passes 1-4
 **What it includes:**
-- Bolt combat framework onto existing vehicle system (decision pending: bolt-on vs rebuild — evaluate current system, decide at design time)
-- Vehicle health: hull HP + optional shields (config-driven)
-- Vehicle-mounted weapons: same framework (projectiles, damage types, overheat, ammo, targeting)
-- Vehicle destruction: 0 HP → explosion → removed → player dies
-- Vehicle weapon aiming (manual aim + lock-on)
-- Multi-crew ground vehicles if applicable (driver + gunner — depends on existing system)
-- Config for vehicle combat stats
+- CFrame-based velocity movement system (the core that all vehicles and ships will build on)
+- Speeder hover physics: 4 raycasts as virtual springs, terrain-following, surface-normal tilt
+- Velocity + momentum + gravity — speeders feel physical, not scripted
+- Mouse steering for heading, W/S for throttle, reverse
+- Airborne capability: off a cliff edge, gravity takes over, momentum preserved
+- Fall damage on hard landing (HP damage based on impact speed, config threshold)
+- Collision detection via forward raycasts — hitting a wall kills velocity (no glitch-pushing), applies impact damage
+- Speeder-to-speeder collision: both take damage, both bounce, velocity vectors modified
+- 3rd person camera following speeder
+- Basic platform tagging (driver seat, hover raycast points) + config (speed, hover height, spring stiffness, HP)
+- Initial startup validator for vehicle tags
+- Placeholder speeder model (box + seat + hover points)
+- NO COMBAT — prove the movement system in isolation
 
 **After this pass, the system:**
-Combat framework works on moving ground platforms. Vehicles have health, shields, weapons, targeting, and can be destroyed. The framework is proven platform-agnostic before we touch ships.
+A player hops on a speeder and drives with mouse + W/S. Speeder hovers over terrain, tilts on slopes, goes airborne off cliffs, lands with impact damage. Hitting a wall stops the speeder and deals damage — no glitching. The CFrame velocity system that everything else builds on is proven.
 
 ---
 
-## Pass 6: Ship Authoring — Core
-**Depends on:** Passes 1-4 (combat framework must exist for config schema to reference)
+## Pass 6: Speeder Combat
+**Depends on:** Pass 5
 **What it includes:**
-- CollectionService tagging convention for ship models:
-  - Weapon mount tags (position, type reference)
-  - Seat tags (pilot, gunner, passenger — what each controls)
-  - Explosion point tags (min 3 per ship)
-- Config schema — core:
-  - Ship stats: speed, hull HP, shield HP, turn radius, min speed, shield regen delay
-  - Weapon definitions: type, fire rate, damage, overheat rate, ammo, projectile speed, range, firing arc
-  - Seat-to-weapon mapping: which seat fires which weapon
-- Startup validator: checks tags exist, config is valid, seats map to real weapons. Fails loud with clear errors.
-- This is the minimum authoring needed to build and test a fighter
+- Weapon mounts on speeder — same turret weapon system from passes 1-4 mounted on a vehicle model
+- Driver-fired weapons (left click to fire, weapon fixed forward or on turret mount depending on config)
+- Full combat framework on a moving speeder: projectiles, damage types, shields, health, targeting, lock-on
+- Vehicle HP + optional shields (config per vehicle)
+- Enclosed vs exposed config (speeder bikes = exposed, heavy tanks = enclosed)
+- Vehicle destruction: explosion points → explosion → vehicle removed → all occupants die
+- Speeder-to-speeder collision damage (extends pass 5 collision with combat damage)
+- Dismount behavior: exit moving speeder → speeder continues, decelerates, stops. Player death = same.
+- Vehicle theft: empty enemy vehicle, anyone can hop on
+- Splash damage affects vehicles as combat entities
+- Driver HUD: HP, shield status, speed, weapon overheat/ammo
+- Extends validator for weapon mount + combat config on vehicles
 
 **After this pass, the system:**
-A dev can tag a fighter model's weapon mounts, seats, and explosion points, write a config with stats and weapon definitions, and the validator confirms it's correct. The authoring pipeline exists — no gameplay yet, just tooling.
+Armed speeders are fully combat-capable. Driver shoots while driving, locks onto targets, takes damage, gets destroyed. Exposed riders can be shot directly. The combat framework is proven on a moving player-built platform — the same integration pattern ships will use.
 
 ---
 
-## Pass 7: Fighter Flight Model
-**Depends on:** Pass 6
+## Pass 7: Walker Movement
+**Depends on:** Pass 5 (CFrame velocity system proven on speeders)
+**What it includes:**
+- Walker body CFrame movement: WASD controls, terrain-height following
+- IK procedural walk cycle: legs plant feet on terrain via raycasts, step in sequence, terrain-adaptive
+- Head independent rotation controlled by mouse aim (limited arc, config-driven)
+- Biped pivot in place, quad slow pivot (config-driven turn speed)
+- Stop and stand idle (legs planted)
+- Walkers cannot reverse — must turn 180
+- Walker off cliff: falls, takes fall damage, IK legs reacquire ground
+- Max slope: config per vehicle
+- 3rd person camera for walkers (config-driven distance based on walker size)
+- Placeholder walker model (body + legs + head + seats)
+- Walker-specific tags: IK leg attachments, joint positions, foot targets, head pivot
+- NO COMBAT — prove IK walking in isolation. This is the hardest vehicle engineering challenge.
+
+**After this pass, the system:**
+A walker moves with IK-animated legs that step on terrain. Head swivels independently with mouse aim within its arc. Legs adapt to slopes and uneven ground. Biped pivots freely, quad pivots slowly. IK walking is proven in isolation before combat complexity is added.
+
+---
+
+## Pass 8: Walker Combat
+**Depends on:** Pass 7
+**What it includes:**
+- Weapons on walkers: head-mounted weapons aimed by mouse (head aim = weapon aim)
+- Body-mounted weapons on separate gunner seats (configurable per walker)
+- Full combat framework integration (same as speeder combat — projectiles, damage types, shields, health, targeting, lock-on)
+- Walker HP + optional shields (config per vehicle)
+- Enclosed walker protection (hull must reach 0 to kill crew)
+- Walker destruction: explosion points → explosion → walker removed → all occupants die
+- Splash damage affects walkers as combat entities
+- Walker theft: empty enemy walker, anyone can board
+- Extends validator for weapon mount + combat config on walkers
+
+**After this pass, the system:**
+Walkers are fully combat-capable. Head weapons aim with mouse, body weapons have independent gunner seats. Both vehicle movement models (hover physics and IK walking) are proven with full combat integration.
+
+---
+
+## Pass 9: Fighter Flight
+**Depends on:** Pass 5 (CFrame velocity system proven on speeders)
 **What it includes:**
 - Fighter flight physics: mouse controls heading + pitch (ship follows mouse with lag), W/S throttle, A/D roll
-- 3rd person camera following the fighter
+- Builds on the CFrame velocity system from pass 5 — adds 3D freedom (pitch, roll, yaw) on top of proven movement core
+- 3rd person camera following fighter
 - Minimum forward velocity in open space (cannot stop/hover)
-- Ship spawning: existing shop system spawns the tagged + configured ship model
-- Ship boarding: player walks onto ship via door/ramp, proximity prompt ("Pilot Seat"), F to exit
+- Ship boarding: player walks on, sits in pilot seat (seat click, F to exit)
 - Basic pilot HUD: speed indicator
-- NO COMBAT in this pass — just flight. Prove the flight model works in isolation.
+- Platform tagging for ships: pilot seat, weapon mounts, explosion points + config (speed, HP, min speed, turn rate)
+- Extends startup validator for ship tags
+- Placeholder fighter model
+- NO COMBAT — prove flight alone. The hardest single engineering challenge.
 
 **After this pass, the system:**
-Fighters fly with Battlefront 2 controls. Mouse aims, W/S controls speed, A/D rolls. Ship always moves forward in open space. Players board by walking on and sitting in the pilot seat. The flight model — the hardest engineering challenge — is proven without combat complexity on top.
+Fighters fly with Battlefront 2 controls. Mouse aims, W/S controls speed, A/D rolls. Ship always moves forward in open space. The flight model is proven in isolation — no combat complexity masking movement bugs.
 
 ---
 
-## Pass 8: Fighter Combat
-**Depends on:** Pass 7
+## Pass 10: Fighter Combat
+**Depends on:** Pass 9
 **What it includes:**
 - Pilot weapons: left click to fire, 1/2/3 to switch weapon types
 - Each weapon type has own overheat/ammo tracking
-- Full combat framework applied to fighters (projectiles, damage types, shields, health, targeting, lock-on, auto-aim — all from passes 1-4)
+- Full combat framework applied to fighters (projectiles, damage types, shields, health, targeting, lock-on, auto-aim)
 - Ship destruction: explosion points fire sequentially → big final explosion → ship removed → all players inside die
-- Fighter collision: collide with solid = fighter destroyed, target takes hull damage scaled to fighter mass
+- Fighter collision: collide with solid = fighter destroyed, target takes hull damage
 - Crew inside protected from external fire (hull HP protects occupants)
 - Pilot HUD: hull HP, shield status, weapon selector, overheat/ammo, lock-on indicators
 - Battlefield targeting UI: markers/icons for distant enemy ships
@@ -156,247 +206,228 @@ Fighters are fully combat-capable. Pilots shoot lasers, switch to torpedoes, loc
 
 ---
 
-## Pass 9: Landing System
-**Depends on:** Pass 7
+## Pass 11: Animated Parts
+**Depends on:** Passes 5-9 (platforms exist to test on)
+**What it includes:**
+- Animated external parts system: tagged parts tween between start/end CFrame positions
+- Interactive triggers: keybinds or physical buttons activate animations
+- Config-driven: which keybind triggers which animation, tween speed, auto-play on events (e.g., landing gear on touchdown)
+- Tested on existing platforms: fighter landing gear, walker entry hatches, speeder components
+- System is generic — applies to any future platform (transports, cruisers, capital ships)
+- Authored via start/end CFrame tags on parts, same tagging convention as all other authoring
+
+**After this pass, the system:**
+Platforms have working animated parts. Pilots press keybinds to deploy landing gear, open doors, fold wings. The generic animation system is proven before landing, transport boarding, and troop deployment need it.
+
+---
+
+## Pass 12: Landing System
+**Depends on:** Passes 9, 11 (fighter flight + animated parts for landing gear)
 **What it includes:**
 - Developer-placed landing zones (invisible volumes):
   - Atmosphere zones (large, near planet surfaces)
   - Landing pad zones (specific locations at bases/stations)
   - Hangar approach zones (prep for future — in front of capital ship hangars)
 - Landing mode: inside landing zone, minimum speed lifts → pilot decelerates → manual touchdown
-- Weapons functional while landed (gunners can fire from grounded ship)
-- Space-to-ground transition: atmosphere zone = server boundary → player enters → confirmation prompt ("Enter atmosphere? Press [key]") → intentional-only teleport
+- Landing gear animation via pass 11 animated parts system
+- Weapons functional while landed
+- Space-to-ground transition: atmosphere zone = server boundary → confirmation prompt → intentional-only teleport
 
 **After this pass, the system:**
-Fighters can land at designated locations. Landing requires a dev-placed zone. Ships can't hover in open space outside zones. Atmosphere boundaries support intentional space-to-ground transitions. Weapons work while grounded.
+Fighters can land at designated locations with animated landing gear. Ships can't hover in open space outside zones. Atmosphere boundaries support intentional space-to-ground transitions.
 
 ---
 
-## Pass 10: Ship Authoring — Extended
-**Depends on:** Pass 6
-**What it includes:**
-- Additional tags:
-  - Animated external part tags (landing gear, doors, ramps, foils — start/end CFrame positions)
-  - Interactive trigger tags (physical buttons, keybind-activated)
-  - Subsystem location tags (shield generator, engines, hangar, weapon batteries, torpedo launchers)
-  - Internal teleporter pair tags
-  - Hangar zone tags (launch points outside, docking trigger, capacity)
-- Config schema — extended:
-  - Weapon grouping: which mounts form one control group
-  - Multi-gun fire pattern per group (volley, sequential, spread)
-  - Animation definitions (start/end CFrames, trigger keybinds)
-  - Subsystem HP values
-  - Upgrade caps per component (max Mk II or Mk III)
-- Validator extensions: checks grouping, animations, subsystems, teleporter pairs
-- The full authoring system needed for multi-crew and capital ships
-
-**After this pass, the system:**
-The complete ship authoring pipeline is done. Devs can configure any ship from fighter to Star Destroyer: weapons, grouping, animations, subsystems, teleporters, hangars, upgrades — all via tags and config. Any dev can set up any ship without specialized knowledge.
-
----
-
-## Pass 11: Transport + Cruiser Flight
-**Depends on:** Pass 7, Pass 10
+## Pass 13: Transport + Cruiser Flight
+**Depends on:** Pass 9
 **What it includes:**
 - Transport flight model: mouse controls yaw only (pitch ignored), E/Q altitude, W/S throttle
 - Transport visual sway: ship leans/sways with movement (cosmetic, not player-controlled)
 - Cruiser flight model: W/S forward/back, A/D turn (boat-style, NOT strafing), E/Q altitude, large turning radius
-- 3rd person camera with pull-back for larger ships (show whole ship)
-- Multi-crew boarding: multiple players board one ship, each takes a different seat via proximity prompt
-- Basic multi-crew: pilot flies, passengers ride. No weapon operation yet — just prove multiple people can be on one moving ship.
+- 3rd person camera with pull-back for larger ships
+- Multi-crew boarding: multiple players board one ship, each takes a different seat
+- Basic multi-crew: pilot flies, passengers ride. No weapon operation yet.
+- Entry doors/ramps using pass 11 animated parts system
+- Placeholder transport + cruiser models
 
 **After this pass, the system:**
-Three ship classes fly with distinct control schemes: fighters (mouse full), transports (mouse yaw + E/Q), cruisers (WASD boat). Multiple players can board a cruiser. The feel is right — transports sway, cruisers feel heavy and deliberate.
-
----
-
-## Pass 12: Manned Weapons + Weapon Grouping
-**Depends on:** Pass 11
-**What it includes:**
-- Manned weapons: gunner walks to weapon station → proximity prompt → sit → camera moves to pre-defined optimal viewpoint → aim with mouse → fire → F to exit
-- Weapon grouping: one player controls multiple guns (e.g., 4 turbolasers = one station)
-- Multi-gun fire pattern from config (volley, sequential, spread)
-- Full combat framework on manned weapons (all damage types, overheat, ammo, lock-on, auto-aim)
-- Crew protection from external fire (ship hull protects everyone inside)
-- Multi-crew combat loop: pilot flies, gunners independently aim and fire from their stations
-- Gunner HUD: crosshair, overheat, ammo, lock-on indicators, own weapon subsystem health (prep for subsystems)
-
-**After this pass, the system:**
-The multi-crew combat loop works. Pilot flies a cruiser while gunners man weapon stations, aiming from their camera viewpoints. Weapon grouping lets one gunner fire multiple guns. The Galaxy at War manned-weapon experience is working.
-
----
-
-## Pass 13: Power Routing
-**Depends on:** Pass 12 (need pilot + gunners to test weapon pip effects on crew)
-**What it includes:**
-- Squadrons-style 12-pip system: shields (8 max), engines (8 max), weapons (8 max), 12 total budget
-- Default: 4/4/4 (balanced)
-- Pilot redistributes via keybinds
-- Shield pips: more = faster regen rate
-- Engine pips: more = higher max speed
-- Weapon pips: more = faster fire rate / reduced overheat for ALL manned weapons on the ship
-- Applies to ALL piloted ships (fighters, transports, cruisers, capital ships)
-- Pilot HUD: power routing interface (3 bars with pip indicators)
-- Test on multi-crew: pilot shifts power → gunners feel the fire rate change
-
-**After this pass, the system:**
-Every pilot manages power distribution. Cranking shields to max speeds regen but slows the ship and weakens weapons. On a multi-crew cruiser, the pilot's decisions directly affect gunner effectiveness. Tactical depth for every pilot.
+Three ship classes fly with distinct control schemes: fighters (mouse full), transports (mouse yaw + E/Q), cruisers (WASD boat). Multiple players can board and ride. The feel is right — transports sway, cruisers feel heavy.
 
 ---
 
 ## Pass 14: Relative Motion + Ship Interiors
-**Depends on:** Pass 11 (multi-crew ships with walkable interiors)
+**Depends on:** Pass 13
 **What it includes:**
 - Relative motion: players on a moving ship move WITH the ship
 - Jump test: jump on moving ship → land in same spot relative to ship
-- Applies to transports, cruisers, capital ships (not fighters — players always seated)
+- Applies to transports, cruisers, capital ships (not fighters — always seated). Also applies to walkers with walkable interiors.
 - Internal teleporters: proximity prompt at tagged teleporter → instant teleport to paired destination
 - Walking inside moving ship without jitter/desync
 - Vulnerable boarding: walking up a ramp, player can take external fire
 
 **After this pass, the system:**
-Players walk around inside a moving cruiser without falling off or desyncing. Jumping works correctly. Internal teleporters navigate large ships. The walkable-ship experience is ready for capital ships.
+Players walk around inside a moving cruiser without falling off or desyncing. Jumping works correctly. Internal teleporters navigate large ships. This must be proven BEFORE manned weapons — gunners need to reliably walk to their stations on a moving ship.
 
 ---
 
-## Pass 15: Capital Ship Flight + Repulsion
-**Depends on:** Passes 11, 14
+## Pass 15: Manned Weapons + Weapon Grouping
+**Depends on:** Passes 13, 14
+**What it includes:**
+- Manned weapons: gunner walks to weapon station → sit → camera moves to weapon viewpoint → aim → fire → F to exit
+- Weapon grouping: one player controls multiple guns (e.g., 4 turbolasers = one station)
+- Multi-gun fire pattern from config (volley, sequential, spread)
+- Full combat framework on manned weapons (all damage types, overheat, ammo, lock-on, auto-aim)
+- Crew protection from external fire
+- Multi-crew combat loop: pilot flies, gunners independently aim and fire
+- Gunner HUD: crosshair, overheat, ammo, lock-on indicators
+
+**After this pass, the system:**
+The multi-crew combat loop works. Pilot flies a cruiser while gunners man weapon stations, aiming from their camera viewpoints. Weapon grouping lets one gunner fire multiple guns. The manned-weapon experience is working.
+
+---
+
+## Pass 16: Power Routing
+**Depends on:** Pass 15
+**What it includes:**
+- Squadrons-style 12-pip system: shields (8 max), engines (8 max), weapons (8 max), 12 total budget
+- Default: 4/4/4 (balanced). Pilot redistributes via keybinds.
+- Shield pips: faster regen. Engine pips: higher max speed. Weapon pips: faster fire rate / reduced overheat for ALL weapons on the ship.
+- Applies to ALL piloted platforms (fighters, transports, cruisers, capital ships, vehicles)
+- Pilot HUD: power routing interface (3 bars with pip indicators)
+- Test on multi-crew: pilot shifts power → gunners feel the fire rate change
+
+**After this pass, the system:**
+Every pilot manages power distribution. Tactical depth for every piloted platform. On multi-crew ships, the pilot's decisions directly affect gunner effectiveness.
+
+---
+
+## Pass 17: Capital Ship Flight + Repulsion
+**Depends on:** Passes 13, 14
 **What it includes:**
 - Capital ship flight model: same as cruiser but larger/slower/even wider turning radius
 - 3rd person camera pulled way back (show entire capital ship)
 - Capital-to-capital repulsion field: invisible bumper pushes large ships apart before physical contact
-- No collision physics jank — repulsion prevents Roblox from ever calculating large-model collisions
 - Capital ship with full interior, teleporters, manned weapons, power routing (all from previous passes)
 
 **After this pass, the system:**
-Capital ships fly with appropriate weight and scale. Camera pulls way back to show the massive ship. Two capital ships approaching each other gently push apart instead of clipping/exploding. Capital ships have working interiors, weapons, and power routing from previous passes.
+Capital ships fly with appropriate weight and scale. Two capital ships approaching each other gently push apart instead of clipping/exploding. Capital ships have working interiors, weapons, and power routing from previous passes.
 
 ---
 
-## Pass 16: Subsystem Framework
-**Depends on:** Pass 15
+## Pass 18: Subsystem Framework
+**Depends on:** Pass 17
 **What it includes:**
 - Targetable subsystems on capital ships: shield generator, hangar bay, weapon batteries, torpedo launchers, engines
 - Each subsystem has independent HP pool (does NOT correlate with hull HP)
 - Subsystems do NOT regenerate (permanent damage)
 - Subsystem destruction effects:
-  - Shield generator → shields collapse to 0 immediately, no regen possible
+  - Shield generator → shields collapse to 0 immediately, no regen
   - Engines → ship slows to ~20% speed, cannot enter hyperspace
-  - Hangar → no more fighter launches/returns (prep for hangar pass)
+  - Hangar → no more fighter launches/returns
   - Weapon battery → that weapon/group permanently offline
   - Torpedo launcher → no more torpedo capability
-- Subsystem targeting: lock onto ship → cycle to target specific subsystem → auto-aim aims at subsystem hitbox
-- Ion cannon stun effect: temporarily disables subsystem without destroying it (duration config-driven)
+- Subsystem targeting: lock onto ship → cycle to subsystem → auto-aim aims at subsystem hitbox
+- Ion cannon stun effect: temporarily disables subsystem (duration config-driven)
 - Pilot HUD: all subsystem health visible at all times
 - Hyperspace integration: destroyed engines block hyperspace entry
 
 **After this pass, the system:**
-Capital ships have targetable subsystems with strategic destruction effects. Destroying the shield generator collapses shields. Crippling engines prevents escape. Ion cannons temporarily disable subsystems. The full Empire at War tactical health model works.
+Capital ships have targetable subsystems with strategic destruction effects. The full Empire at War tactical health model works.
 
 ---
 
-## Pass 17: Hangars
-**Depends on:** Passes 8, 16 (need fighters + capital ships with subsystems)
+## Pass 19: Hangars
+**Depends on:** Passes 10, 18
 **What it includes:**
-- Hangar launch: player walks to console in hangar → proximity prompt → screen blacks out → spawns in fighter at dev-defined point outside hangar, ready to fly
-- Hangar return: fighter flies close to hangar → docking prompt → confirm → screen blacks out → teleported inside
-- Repair + rearm: inside hangar, hull HP restored, shields restored, subsystems repaired, ammo refilled. Takes config-driven time. Player waits.
-- Re-launch: same process as initial launch
+- Hangar launch: walk to console → proximity prompt → screen blacks out → spawn in fighter outside hangar
+- Hangar return: fly close → docking prompt → confirm → screen blacks out → teleported inside
+- Repair + rearm: hull restored, shields restored, ammo refilled. Config-driven timer.
 - Hangar as targetable subsystem: destroyed = no launches or returns
-- Pilot-role restriction: ideally only pilot-role faction members can launch (faction integration point)
 
 **After this pass, the system:**
-Capital ships launch and recover fighters. Fighters return to dock, repair, and rearm on a timer. Destroying the hangar cuts off all fighter operations. The full carrier gameplay loop works.
+Capital ships launch and recover fighters. Fighters return to dock, repair, and rearm. Destroying the hangar cuts off all fighter operations.
 
 ---
 
-## Pass 18: Ship Ownership + Despawn
-**Depends on:** Pass 8+ (ships must exist)
+## Pass 20: Ownership + Despawn
+**Depends on:** Passes 6, 10 (vehicles and ships must exist)
 **What it includes:**
-- Crew registry: board ship → join crew list. Leave when physically exit, die, or disconnect.
-- Owner-based persistence: ship stays while owner in same server
-- Despawn timer: owner leaves server + crew empty → grace timer → ship removed
-- Max 2 active ships per player
-- Shorter despawn: if owner is piloting their OTHER ship, unoccupied one despawns faster
-- Server transfer: ship deleted from old server, reconstructed in new when owner teleports while piloting
+- Crew registry: board → join crew list. Leave when physically exit, die, or disconnect.
+- Owner-based persistence: stays while owner in same server
+- Despawn timer: owner leaves server + crew empty → grace timer → removed
+- **Shared limit: max 2 active across ships AND vehicles per player**
+- Despawn-on-spawn: at limit, spawning prompts which to despawn
+- Shorter despawn if owner is in another ship/vehicle
+- Server transfer: deleted from old server, reconstructed in new
 
 **After this pass, the system:**
-Ship persistence works. Land and walk away — ship stays. Fleet sharing works (anyone can pilot your ship). Abandoned ships despawn. Max 2 ships prevents spam. Server transfers don't duplicate ships.
+Unified ownership across ships and vehicles. Shared 2-limit. Persistence works. Fleet sharing works (anyone can drive/pilot your stuff). Abandoned platforms despawn.
 
 ---
 
-## Pass 19: Scanning Station
-**Depends on:** Pass 16 (capital ships with subsystems)
+## Pass 21: Scanning Station
+**Depends on:** Pass 18
 **What it includes:**
-- Dedicated bridge crew seat (tagged + configured)
-- Scanner selects enemy ship within sensor range
-- Scan takes a few seconds (config-driven)
-- Reveals: hull HP %, shield HP %, subsystem status (intact/damaged/destroyed), ship class
-- Info on scanner's screen AND captain/pilot's tactical HUD
-- Info persists for duration then goes stale (must re-scan)
-- Range-limited (config-driven sensor range)
-- Scanner operator HUD: target selector, scan progress, scanned info panel
+- Dedicated bridge crew seat
+- Scan enemy ship within sensor range (config-driven range, scan duration)
+- Reveals: hull HP %, shield HP %, subsystem status, ship class
+- Info on scanner's screen AND pilot's tactical HUD
+- Info goes stale, must re-scan
 
 **After this pass, the system:**
-Capital ships have a dedicated intel role. Scanner crew scans enemies to reveal health, shields, and subsystem damage. Info appears for the scanner and captain. Stale data must be refreshed. Coordinated crews with active scanners have a tactical edge.
+Capital ships have a dedicated intel role. Coordinated crews with active scanners have a tactical edge.
 
 ---
 
-## Pass 20: Ship Upgrades
-**Depends on:** Pass 6 (ship authoring with upgrade cap config)
+## Pass 22: Upgrades
+**Depends on:** Passes 6, 10 (vehicles and ships with config)
 **What it includes:**
 - 6 upgrade categories: Shields, Hull/Armor, Engines, Weapons (energy), Weapons (ordnance), Sensors
 - Tier structure: Mk I (base), Mk II, Mk III
-- Per-ship caps in config (some ships max at Mk II for certain categories)
-- One bucket per category (upgrade "shields" → all shield stats improve proportionally)
-- Numbers change, identity doesn't (TIE never becomes tanky)
-- Combat framework reads upgrade-modified config values at ship spawn time
-- Integration: upgrade data from separate shop/upgrade system
+- Per-vehicle/ship caps in config
+- Numbers change, identity doesn't
+- Combat framework reads upgrade-modified config values at spawn time
+- Applies to both ships AND vehicles
 
 **After this pass, the system:**
-Players upgrade individual ship components. Mk II shields noticeably improve HP and regen. Per-ship caps preserve identity. The progression layer is working.
+Players upgrade individual components on ships and vehicles. Per-platform caps preserve identity. The progression layer is working.
 
 ---
 
-## Pass 21: Animated Ship Parts
-**Depends on:** Pass 10 (extended authoring with animation tags)
+## Pass 23: Vehicle Transport + Troop Deployment
+**Depends on:** Passes 7-8, 11, 13, 14 (walkers, animated parts, transport ships, relative motion)
 **What it includes:**
-- Animated external parts system: tagged parts tween between start/end CFrame positions
-- Interactive triggers: physical buttons on hull or pilot-seat keybinds activate animations
-- Landing gear deploy/retract
-- Entry doors/ramps open/close
-- X-wing foil folding, Imperial transport wings, etc.
-- Config-driven: which keybind triggers which animation, tween speed
+- Small vehicle transport: transport ship approaches ground vehicle, keybind snaps vehicle to predetermined carry position. Same keybind to deploy. Dead stop required.
+- Large vehicle transport: spawned at space station with transport ship, visually carried, interior not loaded until deployment. Dead stop to deploy.
+- Troop deployment from transport-capable walkers: vehicle at full stop, transport bay doors open (animated), players interact to rappel down (smooth position tween, 2-way)
+- Vehicle-in-vehicle: carried vehicle model parented to carrier, activates as independent vehicle when a player sits in it
 
 **After this pass, the system:**
-Ships have working animated parts. Pilots press keybinds to deploy landing gear, open doors, fold wings. Entry ramps lower for boarding. Ships feel alive instead of static models.
+Transport ships carry vehicles between planets. Transport walkers deploy troops via rappel. Small vehicles snap to transport ships for relocation. The full ground force logistics loop works.
 
 ---
 
-## Pass 22: Formation Autopilot (Not Committed)
-**Depends on:** Pass 11+ (multiple ships flying)
+## Pass 24: Formation Autopilot (Not Committed)
+**Depends on:** Pass 13+
 **What it includes:**
 - Escort ships maintain relative position to flagship via autopilot
-- Displaced ships maneuver back: turn, accelerate, reposition, match heading/speed
-- Realistic maneuvering (no teleporting to position)
+- Realistic maneuvering (turn, accelerate, reposition)
 - **Cut if performance cost too high**
 
 **After this pass, the system:**
-Fleets form up and move together. Escorts automatically maintain position. Flagship turns → escorts maneuver to stay in formation.
+Fleets form up and move together. Escorts automatically maintain position.
 
 ---
 
-## Pass 23: Tractor Beams (Not Committed)
-**Depends on:** Pass 15 (capital ships)
+## Pass 25: Tractor Beams (Not Committed)
+**Depends on:** Pass 17
 **What it includes:**
 - Capital ships emit tractor beam toward target
-- Gravitational pull draws target toward source hangar
-- Enables blockades / ship capture
-- Escape mechanics TBD
+- Gravitational pull draws target toward source
 - **Scope TBD — may be cut**
 
 **After this pass, the system:**
-Capital ships pull enemy ships toward them with tractor beams. Blockades become possible.
+Capital ships pull enemy ships toward them. Blockades become possible.
 
 ---
 
@@ -404,14 +435,14 @@ Capital ships pull enemy ships toward them with tractor beams. Blockades become 
 **Depends on:** All previous passes
 **What it includes:**
 - Object pooling for projectile visuals
-- LOD for ships at distance
+- LOD for ships/vehicles at distance
 - Network culling (don't replicate irrelevant distant data)
 - Projectile batching (group updates into fewer messages)
 - Efficient turret rotation via IK Control LookAt
-- Math-based ship movement optimization (CFrame, minimize physics)
-- Scale testing: 30+ ships, 100 players, hundreds of shots/sec
+- CFrame movement optimization
+- Scale testing: 30+ ships/vehicles, 100 players, hundreds of shots/sec
 - Performance profiling + bottleneck fixes
-- True-to-scale validation (compress if needed)
+- Scale validation (compress if needed per tiered scale convention)
 
 **After this pass, the system:**
-Same behavior, dramatically better performance. Sustains 30+ ships, hundreds of shots per second, 100 players. LOD, pooling, and culling keep client and server in budget.
+Same behavior, dramatically better performance. Sustains 30+ ships/vehicles, hundreds of shots per second, 100 players.

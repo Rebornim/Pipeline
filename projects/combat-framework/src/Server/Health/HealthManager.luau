@@ -47,6 +47,7 @@ local entityRespawnedRemote: RemoteEvent? = nil
 local explosionOverlapParams = OverlapParams.new()
 local heartbeatConnection: RBXScriptConnection? = nil
 local respawnCallback: ((string) -> ())? = nil
+local destroyCallback: ((string) -> ())? = nil
 
 local function readConfigNumber(name: string, defaultValue: number): number
 	local raw = CombatConfig[name]
@@ -363,6 +364,12 @@ local function destroyEntity(state: HealthStateInternal)
 	end
 
 	state.state = CombatEnums.EntityState.Destroyed
+	if destroyCallback ~= nil then
+		local ok, callbackErr = pcall(destroyCallback, state.entityId)
+		if not ok then
+			warn(string.format("[P5_DESTROY_CALLBACK] entity=%s error=%s", state.entityId, tostring(callbackErr)))
+		end
+	end
 
 	local seat = state.instance:FindFirstChildWhichIsA("Seat", true)
 	local operatorHumanoid: Humanoid? = nil
@@ -582,6 +589,10 @@ end
 
 function HealthManager.setRespawnCallback(callback: (string) -> ())
 	respawnCallback = callback
+end
+
+function HealthManager.setDestroyCallback(callback: (string) -> ())
+	destroyCallback = callback
 end
 
 function HealthManager.getHealth(entityId: string): HealthState?

@@ -26,22 +26,45 @@ Run this every time before your first `start_playtest` in a session. Catches Roj
 - **One fix at a time.** Never batch multiple fixes.
 - **Do not move on until bugs are fixed.** A broken module is a broken foundation.
 - **Minimize blast radius on fixes.** Smallest change that fixes the problem. Don't restructure or refactor while fixing.
-- **After 3 failed test-fix cycles: STOP.** Tell the user to take it to Claude for a fix plan. Do not keep guessing.
+- **File scope:** Only modify files listed in the current pass's design doc or in a Fix Plan from Claude. Do not touch files outside this scope.
+
+## Codex Restrictions
+
+You are a **pure executor**. You build exactly what is specified and report results. You do not reason about architecture, debugging strategy, or test design.
+
+- **Never invent probes, test harnesses, or debugging strategies.** The design doc's Test Packet specifies all prints, markers, and test procedures. Build only what it says.
+- **Never interpret test results.** Pattern-match MCP output against the Test Packet's pass/fail conditions. If it matches → pass. If it doesn't → fail. No further analysis.
+- **Never design fixes for behavioral failures.** If the code runs but does the wrong thing, that's Claude's job. File a Failure Report and stop.
+- **MCP is an execution tool, not a reasoning tool.** Run the procedure, capture output, match against conditions. Nothing more.
 
 ## Automated Testing via MCP
 
-You have access to Roblox Studio via the `robloxstudio-mcp` server. After writing code for each build step:
+You have access to Roblox Studio via the `robloxstudio-mcp` server. **MCP testing is only allowed during the initial build loop (step 2c in build.md).** After that, MCP is locked unless the user explicitly tells you to test.
 
-0. **Clear stale test session first:** Call `stop_playtest` once before `start_playtest`.  
-   - If it returns **"No test is currently running"**, continue normally.  
+### When MCP testing is allowed (no permission needed):
+- **Initial build verification** of each step — after writing new code for a build step
+- **One mechanical fix retest** if the failure is clearly mechanical (syntax, import, typo, nil on code you just wrote)
+
+### When MCP testing requires user permission:
+- **Everything else.** After a build step passes and the user confirms the visual check, do NOT run further MCP tests unless the user says "test it" or reports an error/warning from their own playtesting.
+- This includes: prove step golden tests, regression checks, post-cleanup verification, and any retesting of already-passing code.
+
+### Build loop test procedure (when allowed):
+
+0. **Clear stale test session first:** Call `stop_playtest` once before `start_playtest`.
+   - If it returns **"No test is currently running"**, continue normally.
    - This prevents overlap with any manual/user playtest still running in Studio.
 1. **Checkpoint:** `git add -A && git commit -m "checkpoint: pass N step [name] pre-test"`
 2. **Test:** `start_playtest` → wait for marker → `get_playtest_output` once → `stop_playtest`
-3. **Read AI build prints.** The `[TAG] key=value` lines tell you what ran and what failed.
-4. **If fail:** Fix one thing, retest. Max 3 cycles.
-5. **If pass:** Tell the user it's ready for their visual check.
+3. **Match output against the Test Packet's pass/fail conditions.** Pattern-match only. Do not interpret beyond what the conditions specify.
+4. **If pass:** Tell the user it's ready for their visual check.
+5. **If fail — classify the failure:**
+   - **Mechanical** (syntax error, missing require, typo, nil on code you just wrote, wrong literal/path): Fix one thing, retest. **Max 1 mechanical fix attempt.** If still failing, escalate as behavioral.
+   - **Behavioral** (logic mismatch, contract violation, wrong data flow, failing pass/fail conditions): **Do NOT diagnose or fix.** Fill out a Build Failure Report and stop. The user takes it to Claude.
 
 **No-regression rule:** If your fix breaks something that was previously passing, revert it. Do not fix forward.
+
+**MCP is not free.** Every playtest cycle burns tokens on log output. Do not use MCP to "double-check" or "verify one more time." If the build test passed and the user confirmed, it's done. Move on.
 
 ## MCP Efficiency Rules
 
@@ -57,13 +80,46 @@ These are hard limits. MCP output eats tokens fast if you're careless.
 
 ## AI Build Prints
 
-Add temporary print statements so you can read what the code does at runtime. These are your eyes.
+Add the temporary print statements **specified in the design doc's Test Packet**. Do not invent additional prints beyond what the Test Packet specifies.
 
 - **Format:** `[PN_TEST] key=value` — use pass-specific tag prefix, one line per event, non-spammy
 - **Markers:** Add a script that prints `========== START READ HERE ==========` after a few seconds of startup, so you know where to read from
-- **Summaries:** End each test window with `[PN_SUMMARY] spawned=N despawned=N errors=N`
+- **Summaries:** End each test window with the exact `[PN_SUMMARY]` format specified in the Test Packet
 - **These are temporary.** They get removed after the pass is proven. They are NOT permanent diagnostics.
 - **Keep global diagnostics OFF** during testing. Only your pass-specific test prints should be active.
+
+## Build Failure Report
+
+When you hit a behavioral failure (or a mechanical failure that didn't resolve in 1 attempt), fill out this template and stop. Do not attempt further diagnosis.
+
+```
+## Build Failure Report
+**Pass:** [N]
+**Step:** [step name]
+**Failure Type:** Mechanical | Behavioral
+**Expected:** [from Test Packet pass/fail conditions]
+**Actual:** [what the output actually showed]
+**Relevant Output Lines:**
+[2-5 key lines from the log — not a full dump]
+**Mechanical Fix Attempted:** [what was tried, or "None — behavioral"]
+**Result of Mechanical Fix:** [still failing / N/A]
+```
+
+**You MUST end this message with a Claude handoff prompt:**
+
+```
+Read: projects/<name>/pass-N-design.md. Then read: [specific file(s) involved]. Diagnose and write Fix Plan.
+```
+
+## Applying Fix Plans
+
+When the user gives you a Fix Plan from Claude:
+1. Read the Fix Plan exactly
+2. Read the file(s) it references from disk
+3. Apply the changes specified — no improvising on top of them
+4. Retest using the Test Packet procedure and pass/fail conditions
+5. If pass → tell the user it's ready for visual check
+6. If fail → new Failure Report. Do not iterate further.
 
 ## Wrap-Up Protocol
 
@@ -81,7 +137,7 @@ Search every file you touched this pass and remove:
 
 **Keep:** Permanent diagnostics (`DEBUG_MODE`-gated logging, lifecycle reason codes, health counters). Those stay.
 
-**Verify:** After removing, do one final `start_playtest` → `get_playtest_output` → `stop_playtest` to confirm the game still runs clean without the test artifacts.
+**Do NOT run a verification playtest after cleanup.** The user will test it themselves. Only run MCP if the user explicitly asks you to.
 
 ### Step 2: Write build delta to state.md
 
@@ -132,3 +188,35 @@ Both Rojo and MCP connect Studio to the Linux VM. Keep them stable:
 - Server authority on sensitive operations, validate RemoteEvent args
 - Use diagnostics module for lifecycle events, config for all tunables
 - Clean up connections on player leave
+
+## Handoff Rules
+
+**Every message that is a handoff point MUST end with a copy-pasteable handoff prompt.** The human relays between AIs — if there's no handoff prompt, the human is stranded. No exceptions.
+
+### Failure Escalation Handoff (Codex → Claude, mid-conversation)
+
+After a Build Failure Report, end your message with:
+
+```
+Read: projects/<name>/pass-N-design.md. Then read: [specific file(s) involved]. Diagnose and write Fix Plan.
+```
+
+Claude already has `CLAUDE.md` in context. Don't re-read it mid-conversation.
+
+### Wrap-Up Handoff (Codex → Claude)
+
+After wrap-up protocol completes, end your message with:
+
+```
+Read: CLAUDE.md, projects/<name>/state.md. Then read code in projects/<name>/src/. Design pass [N+1].
+```
+
+### Visual Check Ready (Codex → User)
+
+After a build step passes, end with:
+
+```
+Step [name] passes automated tests. Ready for your visual check in Studio.
+```
+
+These are the **only** handoff formats. Use them exactly.

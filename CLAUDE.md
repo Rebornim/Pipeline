@@ -37,9 +37,29 @@ Read: codex-instructions.md, projects/<name>/state.md, projects/<name>/pass-N-de
 
 When the user asks, or every 3-5 passes, run a full critic review on the entire codebase using `pipeline/checklists/critic-checklist.md`. This catches accumulated drift, tech debt, and contract looseness. Feedback goes to Codex to address.
 
-## Bug Escalation
+## Bug Escalation + Fix Plans
 
-If the user tells you Codex is stuck on a bug, read the code, diagnose the root cause, and write a targeted fix plan (what file, what function, what change, why). **Do NOT write the actual Luau code.** Codex implements the fix plan.
+When the user delivers a **Build Failure Report** from Codex (behavioral failure during build), or tells you Codex is stuck:
+
+1. Read the Failure Report
+2. Read the code files referenced
+3. Read the pass design doc's Test Packet for expected behavior
+4. Diagnose the root cause
+5. Write a structured Fix Plan (template below)
+6. **End your message with a Codex handoff prompt** (see Handoff Rules)
+
+**Do NOT write Luau code.** You write the Fix Plan. Codex implements it.
+
+### Fix Plan Template
+
+```
+## Fix Plan — Pass [N] Step [step-name]
+**Root Cause:** [what's actually wrong and why]
+**File(s):** [exact file paths to modify]
+**Change:** [what to change — function, logic, data flow. Be specific.]
+**Why:** [why this fixes the root cause]
+**Retest:** [which Test Packet pass/fail conditions to re-check]
+```
 
 ## One-Time Stages
 
@@ -51,11 +71,56 @@ These happen once per project before the pass cycle begins.
 ## Rules
 
 - **Never enter plan mode.** Do not use EnterPlanMode. The pipeline IS the plan. Read the files, follow the steps, write the design doc. Plan mode breaks the pipeline flow.
-- **Never write Luau code.** You write design docs and fix plans. Codex writes code.
-- **Never create or edit files in `src/`.** You read them. Codex writes them.
+- **Never write Luau code.** You write design docs and fix plans. Codex writes code. *(Exception: Emergency Builder Mode)*
+- **Never create or edit files in `src/`.** You read them. Codex writes them. *(Exception: Emergency Builder Mode)*
 - **Design against real code, not specs.** The code + build deltas are truth.
 - **Stay scoped.** Only design what this pass needs. Don't anticipate future passes.
 - **Be specific.** Codex needs exact function signatures, exact data types, exact integration points.
+
+## Handoff Rules
+
+**Every message that is a handoff point MUST end with a copy-pasteable handoff prompt.** The human relays between AIs — if there's no handoff prompt, the human is stranded. No exceptions.
+
+### Design Handoff (Claude → Codex)
+
+```
+Read: codex-instructions.md, projects/<name>/state.md, projects/<name>/pass-N-design.md. Then read code in projects/<name>/src/. Build pass N.
+```
+
+### Fix Plan Handoff (Claude → Codex, mid-conversation)
+
+```
+Read: projects/<name>/pass-N-design.md. Then read: [specific file(s)]. Apply Fix Plan below.
+
+[Fix Plan]
+```
+
+Codex already has `codex-instructions.md` in context from the start of the pass. Don't re-read it mid-conversation.
+
+## Emergency Builder Mode
+
+When Codex is rate-limited or unavailable, the user can say **"emergency builder mode"** to activate Claude as both architect and builder. This overrides the "never write Luau code" and "never edit src/" rules for the duration of the session.
+
+### What changes:
+- Claude writes code directly to `src/` files
+- Claude builds from its own design doc (or the current one if mid-pass)
+- Claude follows the same build process as Codex: one step at a time, checkpoint before testing, file scope rule
+- Claude adds AI build prints as specified in the Test Packet
+
+### What doesn't change:
+- Design → Build → Prove cycle is the same
+- Golden tests, config extraction, diagnostics — all the same
+- Build deltas still get written to state.md
+- Wrap-up protocol still applies
+
+### Limitations:
+- **No MCP.** Claude cannot run playtests or read Studio output.
+- **User is the test loop.** After each build step, the user playtests in Studio and pastes back: the `[PN_SUMMARY]` line, any errors/warnings, and visual observations.
+- **Claude matches output against the Test Packet's pass/fail conditions** — same as Codex would, but using the user's pasted output instead of MCP.
+- **Slower iteration.** Each test cycle requires user involvement.
+
+### Exiting emergency builder mode:
+When Codex is available again, the user says **"back to normal"**. Claude returns to architect-only. If mid-pass, Claude writes a build delta for what it built and produces a Codex handoff prompt so Codex can pick up the remaining steps.
 
 ## Key Files
 

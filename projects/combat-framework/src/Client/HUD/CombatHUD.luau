@@ -17,6 +17,8 @@ local hitmarkerTween: Tween? = nil
 local cursorDot: Frame? = nil
 local hpFrame: Frame? = nil
 local hpLabel: TextLabel? = nil
+local speedFrame: Frame? = nil
+local speedLabel: TextLabel? = nil
 local shieldFrame: Frame? = nil
 local shieldFill: Frame? = nil
 local shieldLabel: TextLabel? = nil
@@ -461,6 +463,28 @@ function CombatHUD.init()
 	label.Text = "Hull: -- / --"
 	label.Parent = frame
 
+	local vehicleSpeedFrame = Instance.new("Frame")
+	vehicleSpeedFrame.Name = "SpeedFrame"
+	vehicleSpeedFrame.AnchorPoint = Vector2.new(0.5, 1)
+	vehicleSpeedFrame.Position = UDim2.new(0.5, 0, 1, -46)
+	vehicleSpeedFrame.Size = UDim2.fromOffset(160, 28)
+	vehicleSpeedFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	vehicleSpeedFrame.BackgroundTransparency = 0.35
+	vehicleSpeedFrame.Visible = false
+	vehicleSpeedFrame.Parent = gui
+
+	local vehicleSpeedLabel = Instance.new("TextLabel")
+	vehicleSpeedLabel.Name = "SpeedLabel"
+	vehicleSpeedLabel.Size = UDim2.fromScale(1, 1)
+	vehicleSpeedLabel.BackgroundTransparency = 1
+	vehicleSpeedLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+	vehicleSpeedLabel.TextScaled = false
+	vehicleSpeedLabel.TextSize = 16
+	vehicleSpeedLabel.Font = Enum.Font.Code
+	vehicleSpeedLabel.TextXAlignment = Enum.TextXAlignment.Center
+	vehicleSpeedLabel.Text = "Speed: 0"
+	vehicleSpeedLabel.Parent = vehicleSpeedFrame
+
 	local shieldStatusFrame = Instance.new("Frame")
 	shieldStatusFrame.Name = "ShieldFrame"
 	shieldStatusFrame.AnchorPoint = Vector2.new(0.5, 1)
@@ -584,6 +608,8 @@ function CombatHUD.init()
 	cursorDot = dot
 	hpFrame = frame
 	hpLabel = label
+	speedFrame = vehicleSpeedFrame
+	speedLabel = vehicleSpeedLabel
 	shieldFrame = shieldStatusFrame
 	shieldFill = shieldBarFill
 	shieldLabel = shieldText
@@ -678,6 +704,15 @@ function CombatHUD.setCursorDotPosition(screenPosition: Vector2)
 	cursorDot.Position = UDim2.fromOffset(math.floor(screenPosition.X + 0.5), math.floor(screenPosition.Y + 0.5))
 end
 
+function CombatHUD.showVehicleCursor(visible: boolean)
+	if cursorDot ~= nil then
+		cursorDot.Visible = visible
+		if not visible then
+			cursorDot.BackgroundColor3 = Color3.new(1, 1, 1)
+		end
+	end
+end
+
 function CombatHUD.showHP(entityId: string)
 	currentEntityId = entityId
 	if hpFrame ~= nil then
@@ -701,6 +736,18 @@ end
 function CombatHUD.showShield(visible: boolean)
 	if shieldFrame ~= nil then
 		shieldFrame.Visible = visible
+	end
+end
+
+function CombatHUD.showSpeed(visible: boolean)
+	if speedFrame ~= nil then
+		speedFrame.Visible = visible
+	end
+end
+
+function CombatHUD.setSpeed(speed: number)
+	if speedLabel ~= nil then
+		speedLabel.Text = string.format("Speed: %d", math.floor(speed + 0.5))
 	end
 end
 

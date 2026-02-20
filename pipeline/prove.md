@@ -6,36 +6,36 @@ Confirming that this feature pass works correctly and hasn't broken anything fro
 
 ## Process
 
-### Step 1: Run All Golden Tests
+### Step 1: User Runs Golden Tests
 
-Run every golden test in `projects/<name>/golden-tests.md`:
+The **user** runs golden tests in Studio — not Codex via MCP. Codex provides the checklist, the user plays and reports back.
+
+Give the user a clear checklist from `projects/<name>/golden-tests.md`:
 - This pass's golden tests (new functionality works)
 - All previous passes' golden tests (no regressions)
+- For each test: what to set up, what to do, what to look for
 
-For each test:
-- Set up workspace as described
-- Set config overrides as specified
-- Run the test
-- Check expected outcomes (visual behavior + diagnostics output)
-- Record results
+The user plays, observes, and reports results. If they report errors or warnings from the output log, Codex investigates. **Codex only uses MCP if the user explicitly says to.**
 
-### Step 2: Diagnostics Health Check
+### Step 2: User Diagnostics Health Check
 
-With DEBUG_MODE enabled, play for a few minutes and check:
+Tell the user to enable DEBUG_MODE and play for a few minutes. They check:
 - Active entity counts: stable, or drifting?
 - Spawn/destroy rates: balanced?
 - Failure/reject counts: any unexpected failures?
 - Per-entity trails: do they show the expected lifecycle?
 - Any new warning or error messages?
 
+The user reports what they see. Codex interprets and fixes if needed.
+
 ### Step 3: Regression Check
 
-Specifically verify that behaviors from previous passes still work correctly:
+The user verifies that behaviors from previous passes still work correctly:
 - Does pass 1's core loop still function?
 - Do previous passes' features still behave as expected?
 - Are diagnostics patterns from previous passes unchanged?
 
-If a regression is found: **this is a blocking issue.** Fix it before this pass can be locked. The fix goes through the normal build process (categorize issue, send to Codex with diagnostics, one fix at a time).
+If a regression is found: **this is a blocking issue.** Fix it before this pass can be locked. The fix goes through the normal build process (categorize issue, send to Codex with diagnostics, one fix at a time). MCP is allowed for fix cycles only if the user says to test.
 
 ### Step 4: Clean Up AI Build Prints
 
@@ -45,6 +45,8 @@ If a regression is found: **this is a blocking issue.** Fix it before this pass 
 - All `[SUMMARY]` print lines
 
 Keep permanent diagnostics (the `DEBUG_MODE`-gated logging, lifecycle reason codes, health counters). Those are human-focused and stay in the codebase. Only the temporary AI-focused prints get removed.
+
+**Do NOT run a verification playtest after cleanup.** The user will confirm it runs clean themselves.
 
 ### Step 5: Build Delta + Handoff
 

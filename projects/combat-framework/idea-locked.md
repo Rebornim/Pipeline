@@ -87,6 +87,28 @@ Four classes. Every ship individually tuned — unique stats, weapons, seats. No
 
 ---
 
+## Interiors — Convention (Applies to All Ships & Vehicles)
+
+### Two-Layer Interior Architecture
+All walkable interiors use a two-layer approach:
+- **Visual layer:** Full detailed MeshPart interiors (corridors, consoles, panels, pipes, lights). All set to `CanCollide = false`. These are cosmetic only.
+- **Collision layer:** Invisible simple Parts (boxes, wedges, cylinders) placed over every walkable/collidable surface — floors, walls, ramps, doorways, railings. These handle all physics collision.
+
+Players walk on the invisible collision parts, see the detailed mesh around them. This gives full visual fidelity with cheap, reliable collision.
+
+### Why Not Mesh Collision?
+Roblox's PreciseConvexDecomposition breaks meshes into multiple convex hulls. Even simple mesh floors become expensive — more hulls = more physics checks per frame. With 100 players walking in multiple ship interiors on moving platforms, collision must be as cheap as possible. A single invisible box Part is one convex shape — near-zero cost.
+
+### Authoring Requirement
+Every ship/vehicle with a walkable interior must have both layers. This is a one-time cost per model. The startup validator should warn if a tagged interior zone has no collision parts.
+
+### Which Platforms Need Interiors
+- **No interior:** Speeder bikes, single-seat fighters (TIE, X-wing) — player is always seated, sealed cockpit
+- **Minimal interior (cockpit only):** AT-ST, small transports — a few seats, no walkable space, just proximity prompts
+- **Full walkable interior:** AT-AT, capital ships, large transports, cruisers — troops walk around, multiple rooms, teleporters
+
+---
+
 ## Ship Interiors & Boarding
 
 - Ships have full interiors. Players physically walk onto ships via doors, ramps, hatches.
@@ -280,9 +302,9 @@ Exact values config-tunable per ship per weapon.
 ## Ship Ownership & Occupancy
 
 ### Ownership
-- Ships spawned via the existing shop system (buy a ship, own it forever, spawn at ship dealer sites)
-- **Max 2 active ships per player** at any time
-- Any player can sit in any unoccupied seat — no ownership lock on controls (allows fleet sharing of upgraded ships)
+- Ships and vehicles spawned via the existing shop system (buy, own forever, spawn at dealer sites)
+- **Max 2 active across ships AND vehicles combined per player.** If at the limit, spawning a new one prompts the player to choose which existing one to despawn.
+- Any player can sit in any unoccupied seat — no ownership lock on controls (allows fleet sharing, vehicle theft)
 - Owner designation is for despawn logic only
 
 ### Occupancy & Despawn
@@ -427,7 +449,7 @@ Fighters stay true to lore. Larger ships progressively compress to keep capital 
 - Capital ships at 1:2 are still enormous (2,000 studs = 4x default baseplate length) but keep engagement distances under ~5,000 studs where ships remain visible as 3D objects
 - Distant ships beyond visual range use **targeting UI markers/icons** for battlefield awareness
 - Performance depends on **part count per ship**, not stud dimensions — a 2,000-stud ship with 80 MeshParts performs fine; the same ship built from 3,000 parts does not
-- Exact scale validated empirically during fighter pass (pass 7) — if performance issues appear at these scales, compress further
+- Exact scale validated empirically during fighter pass (pass 9) — if performance issues appear at these scales, compress further
 
 ---
 
@@ -509,7 +531,9 @@ Fighters stay true to lore. Larger ships progressively compress to keep capital 
 | Pilot (fighter) | Hull HP, shield status, speed, weapon selector (1/2/3), weapon overheat/ammo, power routing (3 bars, 8 pips, 12 budget), 3rd person view |
 | Pilot (cruiser/capital) | Hull HP, shield status, speed, power routing interface, **all subsystem health visible at all times**, 3rd person pulled back |
 | Scanner operator | Scan target selector, scan progress, scanned ship info (hull/shield/subsystem status) |
-| Passenger | Minimal — maybe ship health |
+| Vehicle driver | Hull HP, shield status (if applicable), speed. No weapon controls (unless pilot-fired). 3rd person. |
+| Vehicle gunner | Same as turret gunner — crosshair, overheat, ammo, lock-on. Camera at weapon viewpoint. |
+| Passenger | Minimal — maybe ship/vehicle health |
 | All ship contexts | Targeting UI markers/icons for distant ships on the battlefield |
 
 ---
@@ -519,7 +543,7 @@ Fighters stay true to lore. Larger ships progressively compress to keep capital 
 | System | Integration |
 |---|---|
 | Blaster system | Visual match (bolt style, feel). Shared projectile rendering where possible. |
-| Vehicle system | Ground vehicles bolt combat framework on top. Decision pending: rebuild vs bolt-on (evaluate after current vehicle system review). |
+| Vehicle system | **Custom-built from scratch** (existing system scrapped). Full vehicle idea locked in vehicle-idea-locked.md. Shares architecture with ships. |
 | Faction system | Warfare, navy organization, crew roles, pilot restrictions. Mission-based victory. |
 | Spawn system | Handles respawning after death. Separate. |
 | Shop system | Ships bought/spawned via shop. Separate. |
@@ -530,7 +554,7 @@ Fighters stay true to lore. Larger ships progressively compress to keep capital 
 ## Platforms (Build Order)
 
 1. **Static ground turret** — combat framework foundation (weapons, math-based projectiles, damage types, targeting, health)
-2. **Armed ground vehicle** — bolt combat onto existing vehicle system (or rebuild — decision pending)
+2. **Armed ground vehicle** — custom-built vehicle system sharing ship architecture (full idea in vehicle-idea-locked.md)
 3. **Starfighter** — flight physics + combat framework + landing zones + relative motion + power routing
 4. **Capital ship** — multi-seat, subsystems, hangars (launch + return + repair/rearm), weapon grouping, power routing, scanning station, full scale
 

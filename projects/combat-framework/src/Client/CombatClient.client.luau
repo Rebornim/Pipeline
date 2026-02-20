@@ -16,6 +16,8 @@ local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
 local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChild("TargetingClient"))
 local WeaponClient = require(clientRoot:WaitForChild("Weapons"):WaitForChild("WeaponClient"))
+local VehicleClient = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleClient"))
+local RemoteVehicleSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("RemoteVehicleSmoother"))
 local ProjectileVisuals = require(clientRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileVisuals"))
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
 
@@ -671,6 +673,8 @@ end
 CombatHUD.init()
 TargetingClient.init(remotesFolder)
 WeaponClient.init(remotesFolder)
+VehicleClient.init(remotesFolder)
+RemoteVehicleSmoother.init()
 ProjectileVisuals.init(remotesFolder)
 
 -- Keep references so all required remotes are guaranteed to exist in pass 1.

@@ -44,8 +44,8 @@ Codex generates placeholder geometry from code. No real models needed until the 
 
 **When placeholders are used:**
 - Passes 1-4 (turrets): Placeholder turret = seat + barrel part + base part. Placeholder target = anchored part with health module.
-- Passes 7-8 (fighters): Placeholder fighter = box with seat, engine attachment, weapon mount attachments. Enough to test flight and combat.
-- Passes 11+ (multi-crew ships): Placeholder cruiser/capital = larger box with multiple seats, walkable interior floor, weapon mount points.
+- Passes 9-10 (fighters): Placeholder fighter = box with seat, engine attachment, weapon mount attachments. Enough to test flight and combat.
+- Passes 13+ (multi-crew ships): Placeholder cruiser/capital = larger box with multiple seats, walkable interior floor, weapon mount points.
 
 **When to swap in real models:**
 - Whenever the user has a real model ready, they tag it per the authoring system and drop it in
@@ -78,7 +78,7 @@ Each pass adds functional programmer-art UI for whatever it introduces. No dedic
 This project touches two existing game systems that live outside this repo:
 
 - **Weapon/blaster system** (working) — the combat framework's visual style must match this
-- **Vehicle system** (working) — pass 5 bolts combat onto this, or rebuilds it (decision at design time)
+- **Vehicle system** — custom-built from scratch (passes 5-8). Full idea in vehicle-idea-locked.md.
 
 **Rules for existing system integration:**
 - The design doc for the relevant pass specifies exact integration points
@@ -201,10 +201,10 @@ MCP runs Play Solo. Combat is multiplayer. Bugs that only appear with real netwo
 | After Pass | What to Test With a Second Player |
 |------------|-----------------------------------|
 | 4 (targeting) | Two players in turrets shooting each other. Lock-on, damage, shields, destruction — under real latency. |
-| 8 (fighter combat) | Dogfight. Two fighters shooting each other. Does lock-on work on a real moving player? Do projectile visuals sync? |
-| 12 (manned weapons) | Multi-crew ship. One pilots, one mans weapons. Does the gunner's aim stay correct while the pilot turns? |
-| 15 (capital flight) | Two capital ships in proximity. Repulsion fields. Multiple crew on each. Does relative motion hold with network lag? |
-| 18 (ownership/despawn) | Both players have ships. Board each other's ships. Disconnect and reconnect. Does persistence work? |
+| 10 (fighter combat) | Dogfight. Two fighters shooting each other. Does lock-on work on a real moving player? Do projectile visuals sync? |
+| 15 (manned weapons) | Multi-crew ship. One pilots, one mans weapons. Does the gunner's aim stay correct while the pilot turns? |
+| 17 (capital flight) | Two capital ships in proximity. Repulsion fields. Multiple crew on each. Does relative motion hold with network lag? |
+| 20 (ownership/despawn) | Both players have ships. Board each other's ships. Disconnect and reconnect. Does persistence work? |
 
 **How to test:**
 - User invites one friend to a private test server
@@ -231,7 +231,7 @@ Ships spawn, get destroyed, respawn. Projectiles fire constantly. A single leake
 - **Use Maids/Janitors or manual cleanup tables.** Each entity (ship, turret, projectile) tracks its own connections. Destruction = iterate and disconnect all.
 - **No global tables that grow forever.** If a table tracks active entities, removing an entity must remove its entry. No "mark as inactive" — delete it.
 - **RemoteEvent listeners for per-player state clean up on `PlayerRemoving`.** If a player disconnects mid-combat, all their state (locks, crew membership, weapon state) must be released.
-- **Test harness includes a leak check.** After a combat sequence (spawn 10 entities, destroy them all), log the count of active connections/table entries. Should be zero.
+- **Every pass test harness MUST include a leak check.** This is mandatory, not optional. After a combat sequence (spawn entities, fight, destroy them all), log the count of active connections and table entries. Non-zero = pass fails. This is enforced from pass 1 onward.
 
 **The design doc for each pass specifies cleanup paths.** Claude designs them. Codex implements them. This isn't optional — it's part of the module contract.
 
@@ -311,3 +311,19 @@ Not every pass can be fully tested via MCP. Here's the split:
 - Interior navigation and teleporters
 - Power routing feedback feel
 - Camera transitions between modes
+
+---
+
+## 13. Pass Failure Protocol
+
+When a pass is fundamentally broken and can't be fixed within reasonable iteration:
+
+**Step 1: Diagnose.** Claude reads the code, identifies the root cause, writes a fix plan. Codex implements.
+
+**Step 2: If the fix plan fails twice,** escalate. Claude does a full code review of all modules touched by this pass. Look for architectural mismatches, wrong assumptions, or contract violations.
+
+**Step 3: If the architecture is wrong,** revert the pass entirely (git revert to last proven commit). Claude redesigns the pass with a different approach. Codex rebuilds from scratch.
+
+**Step 4: If the pass concept itself is flawed** (e.g., IK walking proves impossible at acceptable performance), the user decides: simplify the feature, cut it, or find an alternative approach. Claude proposes options.
+
+**Key rule:** Never push forward with a broken pass. A broken foundation guarantees broken everything built on top of it. Revert and redesign is always cheaper than debugging a cascading failure 5 passes later.

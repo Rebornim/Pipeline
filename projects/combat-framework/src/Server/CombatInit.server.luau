@@ -3,6 +3,7 @@
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+local Workspace = game:GetService("Workspace")
 
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
@@ -13,6 +14,8 @@ local StartupValidator = require(serverRoot:WaitForChild("Authoring"):WaitForChi
 local HealthManager = require(serverRoot:WaitForChild("Health"):WaitForChild("HealthManager"))
 local ProjectileServer = require(serverRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileServer"))
 local TargetingServer = require(serverRoot:WaitForChild("Targeting"):WaitForChild("TargetingServer"))
+local TestHarnessRunner = require(serverRoot:WaitForChild("TestHarness"):WaitForChild("Runner"))
+local VehicleServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("VehicleServer"))
 local WeaponServer = require(serverRoot:WaitForChild("Weapons"):WaitForChild("WeaponServer"))
 
 type ValidatedEntity = CombatTypes.ValidatedEntity
@@ -70,6 +73,8 @@ local function createRemotesFolder(): Folder
 	createRemoteEvent(folder, "RequestLockOn")
 	createRemoteEvent(folder, "ClearLockOn")
 	createRemoteEvent(folder, "LockOnState")
+	createRemoteEvent(folder, "VehicleInput")
+	createRemoteEvent(folder, "VehicleExitRequest")
 
 	return folder
 end
@@ -133,15 +138,47 @@ local function addTurretPrompt(turretSeat: Seat, entityId: string)
 	end)
 end
 
+local function findDriverSeat(model: Model): Seat?
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("Seat") and CollectionService:HasTag(descendant, "DriverSeat") then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function collectHoverPoints(model: Model): { BasePart }
+	local points: { BasePart } = {}
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") and CollectionService:HasTag(descendant, "HoverPoint") then
+			table.insert(points, descendant)
+		end
+	end
+
+	table.sort(points, function(a: BasePart, b: BasePart)
+		return a:GetFullName() < b:GetFullName()
+	end)
+
+	return points
+end
+
 local remotesFolder = createRemotesFolder()
+local harnessEnabled = TestHarnessRunner.isEnabled() or Workspace:GetAttribute("CombatTestHarnessEnabled") == true
 
 HealthManager.init(remotesFolder)
 ProjectileServer.init(remotesFolder)
 TargetingServer.init(remotesFolder)
 WeaponServer.init(remotesFolder)
+VehicleServer.init(remotesFolder)
+if harnessEnabled then
+	TestHarnessRunner.setup()
+end
 HealthManager.setRespawnCallback(function(entityId: string)
 	TargetingServer.clearLock(entityId)
 	WeaponServer.resetEntity(entityId)
+end)
+HealthManager.setDestroyCallback(function(entityId: string)
+	VehicleServer.onEntityDestroyed(entityId)
 end)
 
 local validatedEntities: { ValidatedEntity } = StartupValidator.validate()
@@ -160,9 +197,25 @@ for _, validatedEntity in ipairs(validatedEntities) do
 	validatedEntity.instance:SetAttribute("TurretExposed", turretExposed)
 	HealthManager.registerEntity(entityId, validatedEntity)
 	WeaponServer.registerEntity(entityId)
+	if CollectionService:HasTag(validatedEntity.instance, "VehicleEntity") then
+		local vehicleConfigId = validatedEntity.instance:GetAttribute("VehicleConfigId")
+		if type(vehicleConfigId) == "string" and CombatConfig.Vehicles[vehicleConfigId] ~= nil then
+			local driverSeat = findDriverSeat(validatedEntity.instance)
+			local hoverPoints = collectHoverPoints(validatedEntity.instance)
+			if driverSeat ~= nil and #hoverPoints >= 4 then
+				VehicleServer.registerVehicle(entityId, validatedEntity.instance, vehicleConfigId, driverSeat, hoverPoints)
+			end
+		end
+	end
 
 	if validatedEntity.turretSeat ~= nil then
 		CollectionService:AddTag(validatedEntity.turretSeat, "TurretSeat")
 		addTurretPrompt(validatedEntity.turretSeat, entityId)
 	end
+end
+
+if harnessEnabled then
+	task.spawn(function()
+		TestHarnessRunner.run()
+	end)
 end
