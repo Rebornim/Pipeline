@@ -32,6 +32,13 @@ local lastSourceCFrame: CFrame? = nil
 local lastSourceChangeTick: number = 0
 local estimatedVelocity: Vector3 = Vector3.zero
 local hasMoved: boolean = false
+local estimatedAngularVelocityY: number = 0
+local lastSourceYaw: number? = nil
+
+-- Steer banking (client-side visual only)
+local STEER_BANK_MAX_RAD = math.rad(12)
+local steerBankTarget: number = 0
+local smoothedSteerBank: number = 0
 
 local sourceCharacter: Model? = nil
 local visualCharacter: Model? = nil
@@ -230,10 +237,26 @@ local function stepRender(dt: number)
 				end
 				-- Blend with previous estimate to prevent prediction jumps
 				if estimatedVelocity.Magnitude > 0.1 then
-					estimatedVelocity = estimatedVelocity:Lerp(newVelocity, 0.4)
+					estimatedVelocity = estimatedVelocity:Lerp(newVelocity, 0.7)
 				else
 					estimatedVelocity = newVelocity
 				end
+
+				-- Track angular velocity for curved extrapolation during turns
+				local lv = sourceCFrame.LookVector
+				local currentYaw = math.atan2(lv.X, lv.Z)
+				if lastSourceYaw ~= nil then
+					local yawDelta = currentYaw - lastSourceYaw
+					if yawDelta > math.pi then yawDelta = yawDelta - 2 * math.pi end
+					if yawDelta < -math.pi then yawDelta = yawDelta + 2 * math.pi end
+					local newAngularVel = yawDelta / elapsed
+					if math.abs(estimatedAngularVelocityY) > 0.01 then
+						estimatedAngularVelocityY = estimatedAngularVelocityY + (newAngularVel - estimatedAngularVelocityY) * 0.7
+					else
+						estimatedAngularVelocityY = newAngularVel
+					end
+				end
+				lastSourceYaw = currentYaw
 			end
 		end
 		lastSourceCFrame = sourceCFrame
@@ -247,7 +270,14 @@ local function stepRender(dt: number)
 	if isMoving and lastSourceCFrame ~= nil then
 		local timeSinceUpdate = now - lastSourceChangeTick
 		if timeSinceUpdate > 0 and timeSinceUpdate < EXTRAPOLATION_CAP then
-			local predictedPos = lastSourceCFrame.Position + estimatedVelocity * timeSinceUpdate
+			-- Curve the extrapolation path using angular velocity (handles turns)
+			local halfAngle = estimatedAngularVelocityY * timeSinceUpdate * 0.5
+			local cos = math.cos(halfAngle)
+			local sin = math.sin(halfAngle)
+			local vx = estimatedVelocity.X * cos - estimatedVelocity.Z * sin
+			local vz = estimatedVelocity.X * sin + estimatedVelocity.Z * cos
+			local curvedVelocity = Vector3.new(vx, estimatedVelocity.Y, vz)
+			local predictedPos = lastSourceCFrame.Position + curvedVelocity * timeSinceUpdate
 			targetCFrame = sourceCFrame - sourceCFrame.Position + predictedPos
 		end
 	end
@@ -263,9 +293,27 @@ local function stepRender(dt: number)
 			current = targetCFrame
 		end
 	end
+	-- Steer banking: smooth roll proportional to mouse steer input
+	-- Applied only for display — NOT stored in renderCFrame to prevent compounding
+	local bankDt = math.clamp(dt, 1 / 240, 1 / 20)
+	local bankAlpha = 1 - math.exp(-8 * bankDt)
+	smoothedSteerBank += (steerBankTarget - smoothedSteerBank) * bankAlpha
+
 	renderCFrame = current
 
-	visual:PivotTo(current)
+	local displayCFrame = current
+	if math.abs(smoothedSteerBank) > 0.001 then
+		local heading = src:GetAttribute("VehicleHeading")
+		if type(heading) == "number" then
+			local worldForward = Vector3.new(-math.sin(heading), 0, -math.cos(heading))
+			local localForward = displayCFrame:VectorToObjectSpace(worldForward)
+			if localForward.Magnitude > 1e-4 then
+				displayCFrame = displayCFrame * CFrame.fromAxisAngle(localForward.Unit, smoothedSteerBank * STEER_BANK_MAX_RAD)
+			end
+		end
+	end
+
+	visual:PivotTo(displayCFrame)
 	visual:SetAttribute("VehicleHeading", src:GetAttribute("VehicleHeading"))
 	visual:SetAttribute("VehicleSpeed", src:GetAttribute("VehicleSpeed"))
 
@@ -273,12 +321,20 @@ local function stepRender(dt: number)
 	local visCharacter = visualCharacter
 	if srcCharacter ~= nil and visCharacter ~= nil and sourcePrimary.Parent ~= nil then
 		setCharacterHidden(srcCharacter, true)
-		local delta = current * sourcePrimary.CFrame:Inverse()
+		local delta = displayCFrame * sourcePrimary.CFrame:Inverse()
 		for _, pair in ipairs(characterPartPairs) do
 			if pair.source.Parent ~= nil and pair.visual.Parent ~= nil then
 				pair.visual.CFrame = delta * pair.source.CFrame
 			end
 		end
+	end
+end
+
+function VehicleVisualSmoother.setSteerBank(steerX: number, speedFraction: number, leanActive: boolean): ()
+	if leanActive then
+		steerBankTarget = 0
+	else
+		steerBankTarget = math.clamp(steerX, -1, 1) * math.clamp(speedFraction, 0, 1)
 	end
 end
 
@@ -306,6 +362,10 @@ function VehicleVisualSmoother.activate(model: Model): Model
 	lastSourceChangeTick = 0
 	estimatedVelocity = Vector3.zero
 	hasMoved = false
+	estimatedAngularVelocityY = 0
+	lastSourceYaw = nil
+	steerBankTarget = 0
+	smoothedSteerBank = 0
 
 	local character = LOCAL_PLAYER.Character
 	if character ~= nil then
@@ -373,6 +433,10 @@ function VehicleVisualSmoother.deactivate()
 	lastSourceChangeTick = 0
 	estimatedVelocity = Vector3.zero
 	hasMoved = false
+	estimatedAngularVelocityY = 0
+	lastSourceYaw = nil
+	steerBankTarget = 0
+	smoothedSteerBank = 0
 	table.clear(characterPartPairs)
 end
 

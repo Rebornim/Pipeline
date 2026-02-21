@@ -307,9 +307,10 @@ function StartupValidator.validate(): { ValidatedEntity }
 			continue
 		end
 
-		local forwardRef = model.PrimaryPart:FindFirstChild("ForwardRef")
-		if forwardRef == nil or not forwardRef:IsA("Attachment") then
-			warn(string.format("[VALIDATE] VehicleEntity '%s' missing ForwardRef attachment on PrimaryPart", modelName))
+		local forwardAxis = model:GetAttribute("ForwardAxis")
+		local validAxes = { X = true, ["-X"] = true, Z = true, ["-Z"] = true }
+		if type(forwardAxis) ~= "string" or not validAxes[forwardAxis] then
+			warn(string.format("[VALIDATE] VehicleEntity '%s' missing/invalid ForwardAxis attribute (expected \"X\", \"-X\", \"Z\", or \"-Z\")", modelName))
 		end
 	end
 

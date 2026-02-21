@@ -59,7 +59,7 @@ function CollisionHandler.checkObstacles(state: VehicleRuntimeState, dt: number,
 	local rayCountConfig = math.floor(readConfigNumber("VehicleCollisionRayCount", 3))
 	local rayCount = math.max(1, rayCountConfig)
 	local rightDir = computeRightDirection(forwardDir)
-	local origin = state.primaryPart.Position
+	local origin = state.simulatedCFrame.Position
 
 	for i = 1, rayCount do
 		local alpha = if rayCount == 1 then 0 else (((i - 1) / (rayCount - 1)) * 2 - 1)
@@ -73,8 +73,8 @@ function CollisionHandler.checkObstacles(state: VehicleRuntimeState, dt: number,
 			if hit.Normal.Y >= drivableMinUpDot then
 				continue
 			end
-			-- Terrain-like faces are handled by vehicle intent + sweep logic, not frontal obstacle collisions.
-			if hit.Normal.Y > 0.08 then
+			-- Terrain-like faces: skip slopes but keep near-vertical walls (up to ~20° from vertical).
+			if hit.Normal.Y > 0.35 then
 				continue
 			end
 			-- Descending crest/drop transitions can produce edge hits that should not count as frontal impacts.
@@ -107,15 +107,6 @@ function CollisionHandler.checkObstacles(state: VehicleRuntimeState, dt: number,
 					)
 					if damage > 0 then
 						HealthManager.applyDamage(state.entityId, damage, "impact", "", state.primaryPart.Position, true)
-						print(
-							string.format(
-								"[P5_COLLISION] vehicleId=%s intoWallSpeed=%.1f damage=%d angle=%.0f",
-								state.vehicleId,
-								intoWallSpeed,
-								damage,
-								math.deg(math.acos(math.clamp(-forwardDir:Dot(wallNormal), -1, 1)))
-							)
-						)
 					end
 				end
 			end
@@ -199,7 +190,7 @@ function CollisionHandler.checkOverlapPushback(state: VehicleRuntimeState, rayPa
 end
 
 function CollisionHandler.checkVehicleCollisions(state: VehicleRuntimeState, allVehicles: { VehicleRuntimeState }): ()
-	local myPosition = state.primaryPart.Position
+	local myPosition = state.simulatedCFrame.Position
 	local myRadius = state.config.collisionRadius
 
 	for _, other in ipairs(allVehicles) do
@@ -244,14 +235,6 @@ function CollisionHandler.checkVehicleCollisions(state: VehicleRuntimeState, all
 				if damage > 0 then
 					HealthManager.applyDamage(state.entityId, damage, "impact", "", myPosition, true)
 					HealthManager.applyDamage(other.entityId, damage, "impact", "", other.primaryPart.Position, true)
-					print(
-						string.format(
-							"[P5_VEHICLE_COLLISION] vehicleA=%s vehicleB=%s relativeSpeed=%.1f",
-							state.vehicleId,
-							other.vehicleId,
-							relativeSpeed
-						)
-					)
 				end
 			end
 		end

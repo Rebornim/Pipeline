@@ -242,15 +242,16 @@ CombatConfig.Vehicles = {
 		accelerationMinFactor = 1.0,
 		tiltStiffness = 100,
 		tiltDamping = 14,
+		terrainConformity = 0.15,
 		landingShakeThreshold = 25,
 		landingShakeIntensity = 0.35,
 		hoverHeight = 1,
 		springStiffness = 250,
 		springDamping = 25,
 		gravity = 150,
-		maxClimbSlope = 45,
-		fallDamageThreshold = 80,
-		fallDamageScale = 0.8,
+		maxClimbSlope = 65,
+		fallDamageThreshold = 160,
+		fallDamageScale = 0.5,
 		collisionDamageThreshold = 60,
 		collisionDamageScale = 1.2,
 		collisionBounce = 0.2,
@@ -258,6 +259,9 @@ CombatConfig.Vehicles = {
 		cameraDistance = 15,
 		cameraHeight = 6,
 		cameraLerpSpeed = 0.15,
+		boostSpeedMultiplier = 1.5,
+		boostDuration = 5,
+		boostCooldown = 6,
 	},
 }
 
@@ -287,6 +291,24 @@ CombatConfig.VehicleDormancyDelay = 2.0
 CombatConfig.VehicleCFrameWriteRateActive = 20
 CombatConfig.VehicleCFrameWriteRateSettling = 5
 CombatConfig.VehicleCFramePositionDeadband = 0.01
+
+CombatConfig.VehicleSounds = {
+	EngineClose = "rbxassetid://81523091591629",
+	EngineNoise = "rbxassetid://125801987418280",
+	EngineStart = "rbxassetid://133156108150442",
+	EngineStop = "rbxassetid://130536465269031",
+	BoostStart = "rbxassetid://121610140362996",
+	BoostLoop = "rbxassetid://108823494358596",
+	BoostEnd = "rbxassetid://110378500658798",
+	GearShift1 = "rbxassetid://86242827234208",
+	GearShift2 = "rbxassetid://90476845102813",
+	Howl1 = "rbxassetid://77342888973670",
+	Howl2 = "rbxassetid://121442634892704",
+	Misfire1 = "rbxassetid://83938697342525",
+	Misfire2 = "rbxassetid://84098429703499",
+	Broken1 = "rbxassetid://96339590628062",
+	Broken2 = "rbxassetid://71789598888160",
+}
 
 CombatConfig.TurretPromptText = "Man Turret"
 CombatConfig.TurretPromptDistance = 10

@@ -43,6 +43,9 @@ local smoothedLeanDirection = 0
 local vehicleShakeAmplitude = 0
 local vehicleShakeDecayRate = 0
 local vehicleShakePhase = 0
+local boostFOVTarget = 0
+local smoothedBoostFOV = 0
+local BOOST_FOV_AMOUNT = 12
 local freelookPaused = false
 local freelookYaw = 0
 local freelookPitch = 0
@@ -53,6 +56,24 @@ local zoomOffset = 0
 local ZOOM_STEP = 5
 local ZOOM_MIN = -10
 local ZOOM_MAX = 35
+
+-- Speed-reactive FOV and vibration
+local SPEED_FOV_MAX = 4
+local smoothedSpeedFOV = 0
+local SPEED_VIB_MAX = 0.012
+
+-- Broken engine vibration
+local brokenVibActive = false
+local BROKEN_VIB_AMP = 0.07
+
+-- FOV punch (gear shift / misfire)
+local fovPunchValue = 0
+local fovPunchDecay = 0
+
+-- Roll wobble (howl wind gust)
+local rollWobbleValue = 0
+local rollWobblePhase = 0
+local rollWobbleDecay = 0
 
 local function computeAlpha(stiffness: number, dt: number): number
 	return 1 - math.exp(-stiffness * dt)
@@ -186,6 +207,7 @@ local function stepCamera(dt: number)
 	smoothedSpeed += speedDelta
 	smoothedSpeed += (targetSpeed - smoothedSpeed) * computeAlpha(4.5, clampedDt)
 	local speedFactor = math.clamp(smoothedSpeed / math.max(1, config.maxSpeed), 0, 1)
+	smoothedSpeedFOV += (SPEED_FOV_MAX * speedFactor - smoothedSpeedFOV) * computeAlpha(4, clampedDt)
 
 	local forward = getForwardVectorFromHeading(headingNow)
 	smoothedForward = flattenUnit(smoothedForward:Lerp(forward, computeAlpha(11, clampedDt)), forward)
@@ -201,10 +223,7 @@ local function stepCamera(dt: number)
 	smoothedAnchorPosition = anchor
 
 	local pitchTarget = 0
-	local forwardRef = vehicleModel:FindFirstChild("VehicleForwardRef", true)
-	if forwardRef ~= nil and forwardRef:IsA("Attachment") then
-		pitchTarget = math.clamp(forwardRef.WorldAxis.Y, -0.45, 0.45)
-	elseif primaryPart ~= nil then
+	if primaryPart ~= nil then
 		pitchTarget = math.clamp(primaryPart.CFrame.LookVector.Y, -0.45, 0.45)
 	end
 	if math.abs(pitchTarget) < 0.06 then
@@ -304,6 +323,22 @@ local function stepCamera(dt: number)
 		local shakeY = math.sin(vehicleShakePhase * 35 + 1.3) * vehicleShakeAmplitude * 0.25
 		cameraPosition += shakeRight * shakeX + Vector3.yAxis * shakeY
 	end
+	-- Speed micro-vibration (smooth sine hum scaling with speed)
+	if speedFactor > 0.05 then
+		local vibAmp = SPEED_VIB_MAX * speedFactor
+		local vibTime = tick()
+		local vibRight = smoothedForward:Cross(Vector3.yAxis)
+		cameraPosition += vibRight * math.sin(vibTime * 13.7) * vibAmp
+			+ Vector3.yAxis * math.sin(vibTime * 17.3 + 0.9) * vibAmp * 0.6
+	end
+	-- Broken engine vibration (low-freq, scales with speed — subtle at idle, full at speed)
+	if brokenVibActive then
+		local brokenScale = 0.12 + 0.88 * speedFactor
+		local brokenPhase = tick() * 6
+		local vibRight = smoothedForward:Cross(Vector3.yAxis)
+		cameraPosition += vibRight * math.sin(brokenPhase) * BROKEN_VIB_AMP * brokenScale * 0.5
+			+ Vector3.yAxis * math.sin(brokenPhase * 1.3 + 0.7) * BROKEN_VIB_AMP * brokenScale * 0.3
+	end
 	currentCameraPosition = cameraPosition
 
 	local lookAtPosition = currentLookAtPosition
@@ -323,10 +358,35 @@ local function stepCamera(dt: number)
 	smoothedLeanDirection += (activeLeanInput - smoothedLeanDirection) * leanDirAlpha
 
 	local leanFovSpeedScale = math.max(0.3, speedFactor)
+	local boostFovAlpha = if boostFOVTarget > 0 then computeAlpha(12, clampedDt) else computeAlpha(4, clampedDt)
+	smoothedBoostFOV += (boostFOVTarget - smoothedBoostFOV) * boostFovAlpha
+	-- FOV punch decay (gear shift / misfire)
+	if math.abs(fovPunchValue) > 0.01 then
+		local punchSign = if fovPunchValue > 0 then 1 else -1
+		fovPunchValue -= punchSign * fovPunchDecay * clampedDt
+		if punchSign * fovPunchValue < 0 then
+			fovPunchValue = 0
+		end
+	else
+		fovPunchValue = 0
+	end
+
 	local baseFieldOfView = savedFieldOfView or camera.FieldOfView
-	local targetFieldOfView = baseFieldOfView - (LEAN_FOV_PUSH_IN * smoothedLeanMagnitude * leanFovSpeedScale)
+	local targetFieldOfView = baseFieldOfView - (LEAN_FOV_PUSH_IN * smoothedLeanMagnitude * leanFovSpeedScale) + smoothedBoostFOV + smoothedSpeedFOV + fovPunchValue
 	camera.FieldOfView += (targetFieldOfView - camera.FieldOfView) * computeAlpha(8.5, clampedDt)
 	camera.CFrame = CFrame.lookAt(cameraPosition, lookAtPosition, Vector3.yAxis)
+
+	-- Roll wobble (howl wind gust)
+	if math.abs(rollWobbleValue) > 0.01 then
+		rollWobblePhase += clampedDt
+		local wobbleAngle = rollWobbleValue * math.sin(rollWobblePhase * 18)
+		camera.CFrame *= CFrame.Angles(0, 0, math.rad(wobbleAngle))
+		local wobbleSign = if rollWobbleValue > 0 then 1 else -1
+		rollWobbleValue -= wobbleSign * rollWobbleDecay * clampedDt
+		if wobbleSign * rollWobbleValue < 0 then
+			rollWobbleValue = 0
+		end
+	end
 end
 
 function VehicleCamera.setLeanInput(lean: number): ()
@@ -335,6 +395,10 @@ function VehicleCamera.setLeanInput(lean: number): ()
 		return
 	end
 	activeLeanInput = math.clamp(math.round(lean), -1, 1)
+end
+
+function VehicleCamera.setBoostFOV(active: boolean): ()
+	boostFOVTarget = if active then BOOST_FOV_AMOUNT else 0
 end
 
 function VehicleCamera.pushShake(amplitude: number, duration: number): ()
@@ -382,6 +446,21 @@ function VehicleCamera.addFreelookInput(deltaX: number, deltaY: number): ()
 	freelookPitch = math.clamp(freelookPitch, FREELOOK_PITCH_MIN, FREELOOK_PITCH_MAX)
 end
 
+function VehicleCamera.pushFOVPunch(amount: number, duration: number): ()
+	fovPunchValue = amount
+	fovPunchDecay = math.abs(amount) / math.max(0.01, duration)
+end
+
+function VehicleCamera.pushRollWobble(degrees: number, duration: number): ()
+	rollWobbleValue = degrees
+	rollWobbleDecay = degrees / math.max(0.01, duration)
+	rollWobblePhase = 0
+end
+
+function VehicleCamera.setBrokenVibration(active: boolean): ()
+	brokenVibActive = active
+end
+
 function VehicleCamera.activate(vehicleModel: Model, config: VehicleConfig): ()
 	VehicleCamera.deactivate()
 
@@ -421,6 +500,13 @@ function VehicleCamera.activate(vehicleModel: Model, config: VehicleConfig): ()
 	vehicleShakeDecayRate = 0
 	vehicleShakePhase = 0
 	zoomOffset = 0
+	smoothedSpeedFOV = 0
+	fovPunchValue = 0
+	fovPunchDecay = 0
+	rollWobbleValue = 0
+	rollWobblePhase = 0
+	rollWobbleDecay = 0
+	brokenVibActive = false
 	stepCamera(1 / 60)
 	cameraConnection = RunService.RenderStepped:Connect(stepCamera)
 end
@@ -464,6 +550,15 @@ function VehicleCamera.deactivate(): ()
 	vehicleShakePhase = 0
 	freelookPaused = false
 	zoomOffset = 0
+	boostFOVTarget = 0
+	smoothedBoostFOV = 0
+	smoothedSpeedFOV = 0
+	fovPunchValue = 0
+	fovPunchDecay = 0
+	rollWobbleValue = 0
+	rollWobblePhase = 0
+	rollWobbleDecay = 0
+	brokenVibActive = false
 end
 
 return VehicleCamera

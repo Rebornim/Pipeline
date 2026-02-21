@@ -21,6 +21,7 @@ local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD
 local VehicleCamera = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleCamera"))
 local VehicleVisualSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleVisualSmoother"))
 local RemoteVehicleSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("RemoteVehicleSmoother"))
+local VehicleSoundManager = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleSoundManager"))
 type VehicleConfig = CombatTypes.VehicleConfig
 type VehicleInputPayload = CombatTypes.VehicleInputPayload
 
@@ -35,6 +36,7 @@ local characterAddedConnection: RBXScriptConnection? = nil
 local inputConnection: RBXScriptConnection? = nil
 local scrollConnection: RBXScriptConnection? = nil
 local landingShakeConnection: RBXScriptConnection? = nil
+local misfireVisualConnection: RBXScriptConnection? = nil
 
 local activeVehicleEntityId: string? = nil
 local activeVehicleModel: Model? = nil
@@ -57,6 +59,11 @@ local hoverDustEmitters: { { part: BasePart, emitter: ParticleEmitter } } = {}
 local dustRayParams: RaycastParams? = nil
 local currentDustColor: Color3? = nil
 local DUST_MAX_LIFETIME = 1.6
+
+-- Boost visuals
+local boostActive: boolean = false
+local boostConnection: RBXScriptConnection? = nil
+local boostShakeAccumulator: number = 0
 
 -- Damage smoke
 local damageSmokeEmitter: ParticleEmitter? = nil
@@ -162,10 +169,15 @@ local function readInputPayload(): VehicleInputPayload
 		end
 	end
 
+	local boost = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+		and throttle > 0
+		and lean == 0
+
 	return {
 		throttle = throttle,
 		steerX = steerX,
 		lean = lean,
+		boost = boost,
 	}
 end
 
@@ -307,6 +319,59 @@ local function updateDamageSmoke()
 	emitter.Rate = intensity * 15
 end
 
+local function onBoostChanged(model: Model)
+	local isBoosting = model:GetAttribute("VehicleBoosting") == true
+	if isBoosting and not boostActive then
+		boostActive = true
+		boostShakeAccumulator = 0
+		-- Initial impact shake
+		VehicleCamera.pushShake(0.5, 0.25)
+		VehicleCamera.setBoostFOV(true)
+	elseif not isBoosting and boostActive then
+		boostActive = false
+		VehicleCamera.setBoostFOV(false)
+	end
+end
+
+local function setupBoostConnection(model: Model)
+	if boostConnection ~= nil then
+		boostConnection:Disconnect()
+	end
+	boostActive = model:GetAttribute("VehicleBoosting") == true
+	boostConnection = model:GetAttributeChangedSignal("VehicleBoosting"):Connect(function()
+		onBoostChanged(model)
+	end)
+end
+
+local function cleanupBoostConnection()
+	if boostConnection ~= nil then
+		boostConnection:Disconnect()
+		boostConnection = nil
+	end
+	if boostActive then
+		boostActive = false
+		VehicleCamera.setBoostFOV(false)
+	end
+end
+
+local function updateBoostVisuals(dt: number)
+	if not boostActive then
+		return
+	end
+	-- Sustained light shake during boost
+	boostShakeAccumulator += dt
+	if boostShakeAccumulator >= 0.15 then
+		boostShakeAccumulator -= 0.15
+		VehicleCamera.pushShake(0.08, 0.1)
+	end
+	-- Extra dust during boost
+	for _, entry in ipairs(hoverDustEmitters) do
+		if entry.emitter.Parent ~= nil then
+			entry.emitter.Rate = math.max(entry.emitter.Rate, 25)
+		end
+	end
+end
+
 local function exitVehicleMode()
 	if inputConnection ~= nil then
 		inputConnection:Disconnect()
@@ -318,6 +383,8 @@ local function exitVehicleMode()
 		scrollConnection = nil
 	end
 
+	VehicleSoundManager.deactivate()
+	cleanupBoostConnection()
 	VehicleVisualSmoother.deactivate()
 	RemoteVehicleSmoother.setLocalVehicle(nil)
 	VehicleCamera.deactivate()
@@ -325,6 +392,10 @@ local function exitVehicleMode()
 	if landingShakeConnection ~= nil then
 		landingShakeConnection:Disconnect()
 		landingShakeConnection = nil
+	end
+	if misfireVisualConnection ~= nil then
+		misfireVisualConnection:Disconnect()
+		misfireVisualConnection = nil
 	end
 	CombatHUD.showVehicleCursor(false)
 	cleanupDamageSmoke()
@@ -474,9 +545,11 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 	RemoteVehicleSmoother.setLocalVehicle(vehicleModel)
 	activeVehicleRenderModel = VehicleVisualSmoother.activate(vehicleModel)
 	activateVehicleMouse()
+	setupBoostConnection(vehicleModel)
 	if activeVehicleRenderModel ~= nil then
 		setupHoverDustEmitters(activeVehicleRenderModel)
 		setupDamageSmoke(activeVehicleRenderModel)
+		VehicleSoundManager.activate(vehicleModel, activeVehicleRenderModel, config)
 	end
 	local shakeModel = activeVehicleRenderModel or vehicleModel
 	landingShakeConnection = shakeModel:GetAttributeChangedSignal("VehicleLandingImpact"):Connect(function()
@@ -494,6 +567,13 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 		local amplitude = fraction * intensity
 		if amplitude > 0.01 then
 			VehicleCamera.pushShake(amplitude, 0.2)
+		end
+	end)
+
+	-- Misfire visual burst (synced with sound/camera from VehicleSoundManager)
+	misfireVisualConnection = vehicleModel:GetAttributeChangedSignal("VehicleMisfire"):Connect(function()
+		if vehicleModel:GetAttribute("VehicleMisfire") == true and damageSmokeEmitter ~= nil then
+			damageSmokeEmitter:Emit(8)
 		end
 	end)
 
@@ -542,7 +622,16 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 		updateSpeedHud()
 		updateHoverDust()
 		updateDamageSmoke()
+		updateBoostVisuals(dt)
+		VehicleSoundManager.update(dt)
 		local payload = readInputPayload()
+		-- Steer banking: pass mouse steer + speed fraction to visual smoother
+		local steerSpeedAttr = activeVehicleRenderModel and activeVehicleRenderModel:GetAttribute("VehicleSpeed")
+		local steerSpeed = if type(steerSpeedAttr) == "number" then steerSpeedAttr else 0
+		local steerSpeedFrac = if activeVehicleConfig ~= nil and activeVehicleConfig.maxSpeed > 0
+			then math.clamp(steerSpeed / activeVehicleConfig.maxSpeed, 0, 1)
+			else 0
+		VehicleVisualSmoother.setSteerBank(payload.steerX, steerSpeedFrac, payload.lean ~= 0)
 		VehicleCamera.setLeanInput(payload.lean)
 		-- Lean entry effects
 		if previousClientLean == 0 and payload.lean ~= 0 then
@@ -551,6 +640,7 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 			if currentSpeed > 15 and activeVehicleConfig ~= nil then
 				VehicleCamera.pushShake(activeVehicleConfig.leanShakeAmplitude, activeVehicleConfig.leanShakeDuration)
 				fireDustKick(payload.lean, activeVehicleConfig.leanDustEmitCount)
+				VehicleSoundManager.onLeanStarted(currentSpeed / activeVehicleConfig.maxSpeed)
 			end
 		end
 		previousClientLean = payload.lean

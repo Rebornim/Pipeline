@@ -99,10 +99,7 @@ local function createSpeederModel(parent: Instance, name: string, spawnCFrame: C
 	local body = newPart(model, "Body", Vector3.new(6, 2, 10), spawnCFrame, true, true, 0)
 	model.PrimaryPart = body
 
-	local forwardRef = Instance.new("Attachment")
-	forwardRef.Name = "ForwardRef"
-	forwardRef.CFrame = CFrame.new()
-	forwardRef.Parent = body
+	model:SetAttribute("ForwardAxis", "-Z")
 
 	local seat = Instance.new("Seat")
 	seat.Name = "DriverSeat"

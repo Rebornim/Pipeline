@@ -92,10 +92,7 @@ local function createSpeeder(parent: Instance, name: string, spawnCFrame: CFrame
 	)
 	model.PrimaryPart = body
 
-	local fwdRef = Instance.new("Attachment")
-	fwdRef.Name = "ForwardRef"
-	fwdRef.CFrame = CFrame.new()
-	fwdRef.Parent = body
+	model:SetAttribute("ForwardAxis", "-Z")
 
 	local seat = Instance.new("Seat")
 	seat.Name = "DriverSeat"

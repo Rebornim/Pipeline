@@ -164,6 +164,7 @@ export type VehicleConfig = {
 	accelerationMinFactor: number,
 	tiltStiffness: number,
 	tiltDamping: number,
+	terrainConformity: number,
 	landingShakeThreshold: number,
 	landingShakeIntensity: number,
 	hoverHeight: number,
@@ -180,12 +181,16 @@ export type VehicleConfig = {
 	cameraDistance: number,
 	cameraHeight: number,
 	cameraLerpSpeed: number,
+	boostSpeedMultiplier: number,
+	boostDuration: number,
+	boostCooldown: number,
 }
 
 export type VehicleInputPayload = {
 	throttle: number,
 	steerX: number,
 	lean: number,
+	boost: boolean,
 }
 
 export type VehicleRuntimeState = {
@@ -206,6 +211,7 @@ export type VehicleRuntimeState = {
 	inputSteerX: number,
 	inputLean: number,
 	connections: { RBXScriptConnection },
+	simulatedCFrame: CFrame,
 }
 
 return CombatTypes

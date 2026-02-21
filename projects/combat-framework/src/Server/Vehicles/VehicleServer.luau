@@ -23,7 +23,6 @@ type VehicleRuntimeStateInternal = VehicleRuntimeState & {
 	lastSpeedUpdateTick: number,
 	lastReplicatedSpeed: number,
 	lastReplicatedHeading: number,
-	debugPrintAccumulator: number,
 	wasStopped: boolean,
 	attachmentYawOffset: number,
 	attachmentRollAxisLocal: Vector3,
@@ -46,6 +45,12 @@ type VehicleRuntimeStateInternal = VehicleRuntimeState & {
 	simulatedCFrame: CFrame,
 	lastCFrameWriteTick: number,
 	hoverPointLocalOffsets: { CFrame },
+	inputBoost: boolean,
+	boostActive: boolean,
+	boostStartTick: number,
+	boostCooldownUntil: number,
+	nextMisfireTick: number,
+	misfireAttributeClearTick: number,
 }
 
 local VehicleServer = {}
@@ -126,6 +131,9 @@ local function computeTargetSpeed(
 	if inputThrottle > 0 then
 		if currentSpeed < 0 then
 			targetSpeed = math.min(currentSpeed + brakingDeceleration * dt, 0)
+		elseif currentSpeed > maxForwardSpeed then
+			-- Above max (post-boost) — gentle deceleration back to max
+			targetSpeed = math.max(currentSpeed - deceleration * 0.5 * dt, maxForwardSpeed)
 		else
 			targetSpeed = math.min(currentSpeed + acceleration * dt, maxForwardSpeed)
 		end
@@ -162,6 +170,11 @@ local function clearDriver(state: VehicleRuntimeStateInternal)
 	state.inputThrottle = 0
 	state.inputSteerX = 0
 	state.inputLean = 0
+	state.inputBoost = false
+	if state.boostActive then
+		state.boostActive = false
+		state.instance:SetAttribute("VehicleBoosting", false)
+	end
 end
 
 local function appendPlayerCharacters(filter: { Instance })
@@ -201,8 +214,6 @@ local function updateDriverFromSeat(state: VehicleRuntimeStateInternal)
 			if state.velocity.Y > 0 then
 				state.velocity = Vector3.new(state.velocity.X, 0, state.velocity.Z)
 			end
-			print(string.format("[P5_CFRAME_WRITE] vehicleId=%s rate=%d", state.vehicleId, readConfigNumber("VehicleCFrameWriteRateActive", 20)))
-			print(string.format("[P5_DRIVER_ENTER] vehicleId=%s player=%s", state.vehicleId, player.Name))
 			return
 		end
 	end
@@ -212,10 +223,6 @@ local function updateDriverFromSeat(state: VehicleRuntimeStateInternal)
 	if state.replicationState == "Active" then
 		state.replicationState = "Settling"
 		state.settlingStartTick = tick()
-		print(string.format("[P5_CFRAME_WRITE] vehicleId=%s rate=%d", state.vehicleId, readConfigNumber("VehicleCFrameWriteRateSettling", 5)))
-	end
-	if previousDriver ~= nil then
-		print(string.format("[P5_DRIVER_EXIT] vehicleId=%s player=%s", state.vehicleId, previousDriver.Name))
 	end
 end
 
@@ -492,6 +499,28 @@ local function applyTerrainSweep(
 		return nextPosition
 	end
 
+	-- Wall impact damage: apply collision damage for near-vertical surfaces at high speed
+	-- Skip ground-level hits (lips, curbs, seams) — only damage from hits near body height
+	local hitHeightAboveGround = hit.Position.Y - (currentPosition.Y - state.config.hoverHeight * 0.7)
+	if hit.Normal.Y < 0.35 and hitHeightAboveGround > 0 then
+		local wallNormal = Vector3.new(hit.Normal.X, 0, hit.Normal.Z)
+		if wallNormal.Magnitude > 1e-4 then
+			wallNormal = wallNormal.Unit
+			local intoWallSpeed = -state.velocity:Dot(wallNormal)
+			if intoWallSpeed > state.config.collisionDamageThreshold then
+				local canApplyDamage = state.driver ~= nil or math.abs(state.inputThrottle) > 0.01
+				if canApplyDamage then
+					local damage = math.floor(
+						(intoWallSpeed - state.config.collisionDamageThreshold) * state.config.collisionDamageScale + 0.5
+					)
+					if damage > 0 then
+						HealthManager.applyDamage(state.entityId, damage, "impact", "", currentPosition, true)
+					end
+				end
+			end
+		end
+	end
+
 	local intoSurface = state.velocity:Dot(hit.Normal)
 	if intoSurface < 0 then
 		state.velocity -= hit.Normal * intoSurface
@@ -524,6 +553,9 @@ local function detectCrestDropAhead(state: VehicleRuntimeStateInternal, rayParam
 	local origin = state.simulatedCFrame.Position
 	local probeForward = math.max(2, state.config.collisionRadius + state.config.hoverHeight * 0.45)
 	local probeDown = math.max(10, state.config.hoverHeight * 3)
+	-- Lift forward probes so uphill slopes don't cause false "no ground" results.
+	-- Covers slopes up to ~56° at the default probe distance.
+	local probeLift = probeForward * 1.5
 	local lateralOffsets = { -0.6, 0, 0.6 }
 	local dropSum = 0
 	local hitCount = 0
@@ -531,8 +563,8 @@ local function detectCrestDropAhead(state: VehicleRuntimeStateInternal, rayParam
 	local currentDrop = if currentDropHit ~= nil then (origin.Y - currentDropHit.Position.Y) else state.config.hoverHeight
 
 	for _, alpha in ipairs(lateralOffsets) do
-		local probeOrigin = origin + forwardDir * probeForward + rightDir * (alpha * state.config.collisionRadius)
-		local hit = Workspace:Raycast(probeOrigin, Vector3.new(0, -probeDown, 0), rayParams)
+		local probeOrigin = origin + forwardDir * probeForward + rightDir * (alpha * state.config.collisionRadius) + Vector3.new(0, probeLift, 0)
+		local hit = Workspace:Raycast(probeOrigin, Vector3.new(0, -(probeDown + probeLift), 0), rayParams)
 		if hit ~= nil then
 			hitCount += 1
 			local drop = origin.Y - hit.Position.Y
@@ -571,7 +603,6 @@ local function cleanupVehicleState(state: VehicleRuntimeStateInternal)
 	state.instance:SetAttribute("VehicleHeading", nil)
 	vehiclesByEntityId[state.entityId] = nil
 	vehiclesByVehicleId[state.vehicleId] = nil
-	print(string.format("[P5_DESTROYED] vehicleId=%s", state.vehicleId))
 end
 
 local function stepSingleVehicle(
@@ -592,6 +623,57 @@ local function stepSingleVehicle(
 	end
 	if not HealthManager.isAlive(state.entityId) then
 		return
+	end
+
+	-- Boost logic (tap-to-activate: runs full duration regardless of shift held)
+	local now = tick()
+	local wantsBoost = state.inputBoost and state.inputThrottle > 0 and state.inputLean == 0
+	if state.boostActive then
+		local elapsed = now - state.boostStartTick
+		if elapsed >= state.config.boostDuration then
+			state.boostActive = false
+			state.boostCooldownUntil = now + state.config.boostCooldown
+			state.instance:SetAttribute("VehicleBoosting", false)
+		end
+	elseif wantsBoost and now >= state.boostCooldownUntil then
+		state.boostActive = true
+		state.boostStartTick = now
+		state.instance:SetAttribute("VehicleBoosting", true)
+	end
+
+	local boostMultiplier = 1.0
+	if state.boostActive then
+		local elapsed = now - state.boostStartTick
+		local duration = state.config.boostDuration
+		local peak = state.config.boostSpeedMultiplier
+		local endMult = 1 + (peak - 1) * 0.4
+		local rampFraction = math.clamp(elapsed / 0.3, 0, 1)
+		local decayFraction = math.clamp(elapsed / duration, 0, 1)
+		local currentPeak = peak + (endMult - peak) * decayFraction
+		boostMultiplier = 1 + (currentPeak - 1) * rampFraction
+	end
+
+	-- Misfire logic (damage-based engine stutters)
+	if state.misfireAttributeClearTick > 0 and now >= state.misfireAttributeClearTick then
+		state.instance:SetAttribute("VehicleMisfire", nil)
+		state.misfireAttributeClearTick = 0
+	end
+	if state.driver ~= nil then
+		local misfireHullHP = state.instance:GetAttribute("HullHP")
+		local misfireMaxHP = state.instance:GetAttribute("MaxHullHP")
+		if type(misfireHullHP) == "number" and type(misfireMaxHP) == "number" and misfireMaxHP > 0 then
+			local misfireHpFrac = misfireHullHP / misfireMaxHP
+			if misfireHpFrac > 0 and misfireHpFrac <= 0.6 and now >= state.nextMisfireTick then
+				state.instance:SetAttribute("VehicleMisfire", true)
+				state.misfireAttributeClearTick = now + 0.15
+				-- Speed stutter: immediate 15% horizontal velocity reduction
+				local hVel = Vector3.new(state.velocity.X, 0, state.velocity.Z)
+				state.velocity = hVel * 0.85 + Vector3.new(0, state.velocity.Y, 0)
+				-- Next interval: 10s at 60% HP → 3s near death
+				local intervalBase = 3 + 7 * math.clamp(misfireHpFrac / 0.6, 0, 1)
+				state.nextMisfireTick = now + intervalBase * (0.7 + math.random() * 0.6)
+			end
+		end
 	end
 
 	local previousAirborne = state.isAirborne
@@ -699,9 +781,11 @@ local function stepSingleVehicle(
 			and downhillAlignment > 0.1
 			and slopeAngle > (state.config.maxClimbSlope + 1)
 			and state.velocity.Y <= 8
+		local isGoingUphill = state.inputThrottle > 0 and driveDirection.Y > 0.15
 		local crestCandidate = state.inputThrottle > 0
 			and hasForwardCarry
 			and crestDropAhead
+			and not isGoingUphill
 			and state.velocity.Y <= 10
 			and (downhillAlignment > -0.06 or uphillAlignment < 0.32 or slopeAngle < 22)
 
@@ -750,12 +834,26 @@ local function stepSingleVehicle(
 		lateralVelocity *= math.clamp(1 - (5 * dt), 0, 1)
 		local releaseHorizontal = forwardDirection * carrySpeed + lateralVelocity
 
-		local dropBoost = if crestDropAhead then math.clamp(crestDropAmount * 0.45, 0, 3.5) else 0
-		local baseRelease = math.max(2.5, state.config.gravity * 0.02)
-		local releaseVertical = math.min(
-			state.velocity.Y - state.config.gravity * dt * 0.28,
-			-(baseRelease + dropBoost)
-		)
+		local releaseVertical: number
+		-- Hover physics absorbs most vertical velocity during climbs, so velocity.Y
+		-- is only ~5 even on steep slopes at high speed. Synthesize launch velocity
+		-- from horizontal speed so crests produce proper arcs regardless of hover.
+		local launchVelY = state.velocity.Y
+		if horizontalSpeed > state.config.maxSpeed * 0.4 then
+			local synthLaunchY = horizontalSpeed * 0.15
+			launchVelY = math.max(launchVelY, synthLaunchY)
+		end
+		if launchVelY > 10 and horizontalSpeed > state.config.maxSpeed * 0.4 then
+			-- Launch: apply normal gravity, independent of downhill slope.
+			releaseVertical = launchVelY - state.config.gravity * dt
+		else
+			local dropBoost = if crestDropAhead then math.clamp(crestDropAmount * 0.45, 0, 3.5) else 0
+			local baseRelease = math.max(2.5, state.config.gravity * 0.02)
+			releaseVertical = math.min(
+				state.velocity.Y - state.config.gravity * dt * 0.28,
+				-(baseRelease + dropBoost)
+			)
+		end
 		state.velocity = Vector3.new(releaseHorizontal.X, releaseVertical, releaseHorizontal.Z)
 	elseif terrainIntent == "BlockedClimb" and canUseGroundDrive then
 		local over = math.clamp((slopeAngle - state.config.maxClimbSlope) / 25, 0, 1)
@@ -769,7 +867,7 @@ local function stepSingleVehicle(
 			state.config.acceleration,
 			state.config.deceleration,
 			state.config.brakingDeceleration,
-			state.config.maxSpeed,
+			state.config.maxSpeed * boostMultiplier,
 			state.config.reverseMaxSpeed,
 			dt
 		)
@@ -788,7 +886,14 @@ local function stepSingleVehicle(
 		state.velocity = Vector3.new(driveVelocity.X, math.min(state.velocity.Y, -4), driveVelocity.Z)
 	else
 		if canUseGroundDrive then
-			local climbSpeedCap = state.config.maxSpeed
+			local climbSpeedCap = state.config.maxSpeed * boostMultiplier
+			-- Slope speed penalty: reduce target speed proportional to grade.
+			-- Applied to the cap so computeTargetSpeed aims for the reduced value
+			-- instead of multiplying desiredHorizontal per-frame (which compounds).
+			if slopeAngle > 5 and state.inputThrottle > 0 and driveDirection.Y > 0.05 then
+				local slopeFraction = math.clamp(slopeAngle / state.config.maxClimbSlope, 0, 1)
+				climbSpeedCap = climbSpeedCap * (1 - slopeFraction * 0.30)
+			end
 			if isClimbing then
 				local softStart = state.config.maxClimbSlope * 0.85
 				if slopeAngle > softStart then
@@ -799,7 +904,7 @@ local function stepSingleVehicle(
 						local over = math.clamp((slopeAngle - state.config.maxClimbSlope) / 25, 0, 1)
 						capFactor -= over * 0.08
 					end
-					climbSpeedCap = math.max(state.config.maxSpeed * 0.65, state.config.maxSpeed * capFactor)
+					climbSpeedCap = math.min(climbSpeedCap, math.max(state.config.maxSpeed * 0.65, state.config.maxSpeed * capFactor))
 				end
 			end
 			if state.inputLean ~= 0 then
@@ -813,6 +918,10 @@ local function stepSingleVehicle(
 				else
 					driveSpeedForThrottle = math.max(driveSpeedForThrottle, horizontalSpeed)
 				end
+			elseif state.inputThrottle < 0 and driveSpeedForThrottle > 0 and horizontalSpeed < 5 then
+				-- At low speed, snap to 0 so reverse starts immediately instead of
+				-- fighting hover oscillations that keep currentDriveSpeed slightly positive.
+				driveSpeedForThrottle = 0
 			end
 
 			-- Acceleration taper: reduce acceleration as speed approaches max
@@ -844,10 +953,25 @@ local function stepSingleVehicle(
 				local climbAssist = targetSpeed * (1 - math.clamp(averageNormal.Y, 0, 1)) * 0.35
 				desiredVerticalSpeed += math.clamp(climbAssist, 0, 10)
 			end
-			local verticalBlend = math.clamp(8 * dt, 0, 1)
+			-- At high speed with significant upward velocity, slow the vertical blend
+			-- so momentum carries through crest transitions for natural launch arcs.
+			-- Also clamp how negative desiredVerticalSpeed can be during launch so
+			-- a steep downhill slope on the far side doesn't eat upward momentum.
+			local verticalBlendRate = 8
+			if state.velocity.Y > 10 and horizontalSpeed > state.config.maxSpeed * 0.35
+				and desiredVerticalSpeed < state.velocity.Y * 0.5 then
+				-- Crest transition: terrain flattening/dropping while we have upward momentum.
+				-- Slow the blend so momentum carries through for a launch arc.
+				verticalBlendRate = 0.8
+				-- If terrain is actually pointing down, clamp so steep downhill
+				-- doesn't eat launch momentum more than gentle gravity would.
+				if desiredVerticalSpeed < 0 then
+					desiredVerticalSpeed = math.max(desiredVerticalSpeed, -state.config.gravity * dt * 2)
+				end
+			end
+			local verticalBlend = math.clamp(verticalBlendRate * dt, 0, 1)
 			local blendedVerticalSpeed = state.velocity.Y + (desiredVerticalSpeed - state.velocity.Y) * verticalBlend
-			-- Lateral momentum: blend current horizontal velocity toward desired direction
-			local desiredHorizontal = Vector3.new(driveVelocity.X, 0, driveVelocity.Z)
+			local desiredHorizontal = forwardDirection * targetSpeed
 			local currentHorizontal = Vector3.new(state.velocity.X, 0, state.velocity.Z)
 			local gripRate =
 				state.config.lateralGripLow + (state.config.lateralGripHigh - state.config.lateralGripLow) * speedFractionForTurn
@@ -874,7 +998,7 @@ local function stepSingleVehicle(
 				state.config.acceleration * 0.35,
 				state.config.deceleration * 0.2,
 				state.config.brakingDeceleration * 0.4,
-				state.config.maxSpeed,
+				state.config.maxSpeed * boostMultiplier,
 				state.config.reverseMaxSpeed,
 				dt
 			)
@@ -892,7 +1016,7 @@ local function stepSingleVehicle(
 	end
 
 	state.velocity += Vector3.new(0, verticalAccel * dt, 0)
-	if terrainIntent == "CrestRelease" then
+	if terrainIntent == "CrestRelease" and state.velocity.Y <= 15 then
 		local minFallSpeed = -math.max(6, state.config.gravity * 0.035)
 		if state.velocity.Y > minFallSpeed then
 			state.velocity = Vector3.new(state.velocity.X, minFallSpeed, state.velocity.Z)
@@ -938,14 +1062,6 @@ local function stepSingleVehicle(
 				local damage = math.floor((impactSpeed - state.config.fallDamageThreshold) * state.config.fallDamageScale + 0.5)
 				if damage > 0 then
 					HealthManager.applyDamage(state.entityId, damage, "impact", "", state.simulatedCFrame.Position, true)
-					print(
-						string.format(
-							"[P5_FALL_DAMAGE] vehicleId=%s verticalSpeed=%.1f damage=%d",
-							state.vehicleId,
-							impactSpeed,
-							damage
-						)
-					)
 				end
 			end
 		end
@@ -1027,8 +1143,13 @@ local function stepSingleVehicle(
 		unbankedCurrentCFrame = unbankedCurrentCFrame * CFrame.fromAxisAngle(rollAxis, -state.currentBankAngle)
 	end
 	local currentUp = unbankedCurrentCFrame.UpVector
+	-- Reduce terrain roll (sideways tilt) based on conformity; pitch (uphill/downhill) always preserved
+	local conformity = state.config.terrainConformity
+	local tiltForward = computeForwardDirection(state.heading - state.attachmentYawOffset)
+	local rollAmount = averageNormal:Dot(tiltForward)
+	local tiltTarget = (averageNormal - tiltForward * rollAmount * (1 - conformity)).Unit
 	-- Spring-damper tilt: rotational inertia with overshoot-and-settle
-	local tiltError = averageNormal - currentUp
+	local tiltError = tiltTarget - currentUp
 	local springForce = tiltError * state.config.tiltStiffness
 	local dampingForce = -state.tiltAngularVelocity * state.config.tiltDamping
 	state.tiltAngularVelocity += (springForce + dampingForce) * dt
@@ -1094,12 +1215,6 @@ local function stepSingleVehicle(
 	state.leanExitTimer = math.max(0, state.leanExitTimer - dt)
 	state.prevInputLean = state.inputLean
 
-	if not previousAirborne and state.isAirborne then
-		print(string.format("[P5_AIRBORNE] vehicleId=%s verticalSpeed=%.1f", state.vehicleId, state.velocity.Y))
-	elseif previousAirborne and not state.isAirborne then
-		print(string.format("[P5_GROUNDED] vehicleId=%s verticalSpeed=%.1f", state.vehicleId, state.velocity.Y))
-	end
-
 	local speedThreshold = readConfigNumber("VehicleStopThreshold", 0.5)
 	local hasInput = math.abs(state.inputThrottle) > 0 or math.abs(state.inputSteerX) > 0
 	if state.driver == nil and not hasInput and state.velocity.Magnitude < speedThreshold then
@@ -1107,7 +1222,6 @@ local function stepSingleVehicle(
 		state.velocity = Vector3.new(0, state.velocity.Y, 0)
 		if not state.wasStopped then
 			state.wasStopped = true
-			print(string.format("[P5_STOPPED] vehicleId=%s", state.vehicleId))
 		end
 	else
 		state.wasStopped = false
@@ -1115,55 +1229,6 @@ local function stepSingleVehicle(
 
 	applySpeedAttributeReplication(state, horizontalSpeed)
 
-	if state.driver ~= nil then
-		state.debugPrintAccumulator += dt
-		if state.debugPrintAccumulator >= 0.5 then
-			state.debugPrintAccumulator = 0
-			local debugTurnFraction = math.clamp(horizontalSpeed / math.max(1, state.config.maxSpeed), 0, 1)
-			local debugTurnSpeed =
-				state.config.turnSpeedLow + (state.config.turnSpeedHigh - state.config.turnSpeedLow) * debugTurnFraction
-			local lateralSpeed = 0
-			if horizontalSpeed > 1 then
-				local hVel = Vector3.new(state.velocity.X, 0, state.velocity.Z)
-				local fwd = computeForwardDirection(state.heading)
-				local fwdComponent = hVel:Dot(fwd)
-				lateralSpeed = math.sqrt(math.max(0, horizontalSpeed * horizontalSpeed - fwdComponent * fwdComponent))
-			end
-			print(
-				string.format(
-					"[P5_SPEED] vehicleId=%s speed=%.1f turnRate=%.0f slide=%.1f",
-					state.vehicleId,
-					horizontalSpeed,
-					debugTurnSpeed,
-					lateralSpeed
-				)
-			)
-			local hoverHeight = measureHoverHeight(state)
-			if hoverHeight ~= nil then
-				print(
-					string.format(
-						"[P5_HOVER] vehicleId=%s height=%.2f target=%.2f grounded=%d",
-						state.vehicleId,
-						hoverHeight,
-						state.config.hoverHeight,
-						groundedCount
-					)
-				)
-			end
-			print(
-				string.format(
-					"[P5_LEAN] vehicleId=%s lean=%d bank=%.1f entry=%.2f exit=%.2f",
-					state.vehicleId,
-					state.inputLean,
-					math.deg(state.currentBankAngle),
-					state.leanEntryTimer,
-					state.leanExitTimer
-				)
-			)
-		end
-	else
-		state.debugPrintAccumulator = 0
-	end
 end
 
 local function stepVehicles(dt: number)
@@ -1193,8 +1258,6 @@ local function stepVehicles(dt: number)
 					state.lastReplicatedHeading = state.heading
 					state.lastSpeedUpdateTick = now
 					state.velocity = Vector3.zero
-					print(string.format("[P5_CFRAME_WRITE] vehicleId=%s rate=%d", state.vehicleId, 0))
-					print(string.format("[P5_DORMANT] vehicleId=%s", state.vehicleId))
 				else
 					table.insert(activeVehicles, state)
 				end
@@ -1276,29 +1339,32 @@ function VehicleServer.registerVehicle(
 		instance:SetPrimaryPartCFrame(primaryPart.CFrame + Vector3.new(0, liftDelta, 0))
 	end
 
-	local forwardRef = primaryPart:FindFirstChild("ForwardRef")
-	local worldForward: Vector3
-	local attachmentYawOffset = 0
-	local attachmentRollAxisLocal = Vector3.zAxis
-	if forwardRef and forwardRef:IsA("Attachment") then
-		-- Forward is attachment-driven only; body orientation is ignored.
-		-- Attachments author forward primarily through Axis (X) in Studio gizmos.
-		worldForward = forwardRef.WorldAxis
-		local localAxis = forwardRef.CFrame.XVector
-		if localAxis.Magnitude > 1e-4 then
-			attachmentRollAxisLocal = localAxis.Unit
-		end
-
-		local partForwardHorizontal = Vector3.new(primaryPart.CFrame.LookVector.X, 0, primaryPart.CFrame.LookVector.Z)
-		local attachmentForwardHorizontal = Vector3.new(worldForward.X, 0, worldForward.Z)
-		if partForwardHorizontal.Magnitude > 1e-4 and attachmentForwardHorizontal.Magnitude > 1e-4 then
-			local partHeading = computeHeadingFromLook(partForwardHorizontal.Unit)
-			local attachmentHeading = computeHeadingFromLook(attachmentForwardHorizontal.Unit)
-			attachmentYawOffset = shortestAngleDelta(attachmentHeading, partHeading)
-		end
+	-- Read forward axis from string attribute: "X", "-X", "Z", "-Z"
+	local forwardAxisRaw = instance:GetAttribute("ForwardAxis")
+	local forwardAxisLocal: Vector3
+	if forwardAxisRaw == "X" then
+		forwardAxisLocal = Vector3.new(1, 0, 0)
+	elseif forwardAxisRaw == "-X" then
+		forwardAxisLocal = Vector3.new(-1, 0, 0)
+	elseif forwardAxisRaw == "Z" then
+		forwardAxisLocal = Vector3.new(0, 0, 1)
+	elseif forwardAxisRaw == "-Z" then
+		forwardAxisLocal = Vector3.new(0, 0, -1)
 	else
-		worldForward = instance:GetPivot().LookVector
-		warn("[P5_WARN] No ForwardRef on " .. instance.Name .. ", using LookVector")
+		forwardAxisLocal = Vector3.new(0, 0, -1)
+		warn("[VEHICLE] No/invalid ForwardAxis on " .. instance.Name .. ', expected "X", "-X", "Z", or "-Z"')
+	end
+
+	local worldForward: Vector3 = primaryPart.CFrame:VectorToWorldSpace(forwardAxisLocal)
+	local attachmentYawOffset = 0
+	local attachmentRollAxisLocal = forwardAxisLocal
+
+	local partForwardHorizontal = Vector3.new(primaryPart.CFrame.LookVector.X, 0, primaryPart.CFrame.LookVector.Z)
+	local forwardHorizontal = Vector3.new(worldForward.X, 0, worldForward.Z)
+	if partForwardHorizontal.Magnitude > 1e-4 and forwardHorizontal.Magnitude > 1e-4 then
+		local partHeading = computeHeadingFromLook(partForwardHorizontal.Unit)
+		local forwardHeading = computeHeadingFromLook(forwardHorizontal.Unit)
+		attachmentYawOffset = shortestAngleDelta(forwardHeading, partHeading)
 	end
 	local horizontalForward = Vector3.new(worldForward.X, 0, worldForward.Z)
 	if horizontalForward.Magnitude > 1e-4 then
@@ -1328,7 +1394,6 @@ function VehicleServer.registerVehicle(
 		lastSpeedUpdateTick = 0,
 		lastReplicatedSpeed = 0,
 		lastReplicatedHeading = heading,
-		debugPrintAccumulator = 0,
 		wasStopped = true,
 		attachmentYawOffset = attachmentYawOffset,
 		attachmentRollAxisLocal = attachmentRollAxisLocal,
@@ -1351,6 +1416,12 @@ function VehicleServer.registerVehicle(
 		simulatedCFrame = primaryPart.CFrame,
 		lastCFrameWriteTick = 0,
 		hoverPointLocalOffsets = {},
+		inputBoost = false,
+		boostActive = false,
+		boostStartTick = 0,
+		boostCooldownUntil = 0,
+		nextMisfireTick = tick() + 5,
+		misfireAttributeClearTick = 0,
 	}
 
 	local weldedPartCount = 0
@@ -1365,8 +1436,6 @@ function VehicleServer.registerVehicle(
 			weldedPartCount += 1
 		end
 	end
-	print(string.format("[P5_WELD] vehicleId=%s partCount=%d", state.vehicleId, weldedPartCount))
-
 	local localOffsets: { CFrame } = {}
 	for i, hp in ipairs(sortedHoverPoints) do
 		localOffsets[i] = primaryPart.CFrame:Inverse() * hp.CFrame
@@ -1385,7 +1454,6 @@ function VehicleServer.registerVehicle(
 	vehiclesByVehicleId[state.vehicleId] = state
 	instance:SetAttribute("VehicleSpeed", 0)
 	instance:SetAttribute("VehicleHeading", heading)
-	print(string.format("[P5_REGISTERED] vehicleId=%s configId=%s", state.vehicleId, vehicleConfigId))
 end
 
 function VehicleServer.init(remotesFolder: Folder): ()
@@ -1415,7 +1483,13 @@ function VehicleServer.init(remotesFolder: Folder): ()
 
 			state.inputThrottle = math.clamp(math.round(throttle), -1, 1)
 			state.inputSteerX = math.clamp(steerX, -1, 1)
-			state.inputLean = math.clamp(math.round(lean), -1, 1)
+			state.inputBoost = payload.boost == true
+			-- Block lean during active boost
+			if state.boostActive then
+				state.inputLean = 0
+			else
+				state.inputLean = math.clamp(math.round(lean), -1, 1)
+			end
 		end)
 	end
 
