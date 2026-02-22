@@ -2,15 +2,21 @@
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+
+local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
+local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
+
+local clientRoot = Players.LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("CombatFramework")
+local VehicleSoundManager = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleSoundManager"))
 
 local RemoteVehicleSmoother = {}
 
 local VISUALS_FOLDER_NAME = "CombatClientVisuals"
 local SMOOTHING_ALPHA = 10
 local MAX_SNAP_DISTANCE = 40
-local SPEED_ACTIVATE_THRESHOLD = 1
 
 type PartPair = {
 	source: BasePart,
@@ -31,13 +37,15 @@ type RemoteVehicleEntry = {
 	smoothedCFrame: CFrame,
 	isActive: boolean,
 	characterEntries: { [Model]: RemoteCharacterEntry },
+	soundController: VehicleSoundManager.SoundController?,
+	destroyConnection: RBXScriptConnection?,
 }
 
 local LOCAL_PLAYER = Players.LocalPlayer
 
 local localVehicleModel: Model? = nil
 local trackedVehicles: { [Model]: RemoteVehicleEntry } = {}
-local speedWatchers: { [Model]: RBXScriptConnection } = {}
+local activationWatchers: { [Model]: { RBXScriptConnection } } = {}
 local renderConnection: RBXScriptConnection? = nil
 local addedConnection: RBXScriptConnection? = nil
 local removedConnection: RBXScriptConnection? = nil
@@ -206,6 +214,78 @@ local function deactivateCharacter(charEntry: RemoteCharacterEntry)
 	end
 end
 
+--------------------------------------------------------------------------
+-- Sound controller management
+--------------------------------------------------------------------------
+
+local function getMaxSpeedForModel(model: Model): number
+	local configId = model:GetAttribute("VehicleCategory")
+	if type(configId) ~= "string" then
+		configId = model:GetAttribute("VehicleConfigId")
+	end
+	if type(configId) == "string" then
+		local vehConfig = (CombatConfig.Vehicles :: any)[configId]
+		if type(vehConfig) == "table" and type(vehConfig.maxSpeed) == "number" then
+			local baseSpeed = vehConfig.maxSpeed
+			local mod = model:GetAttribute("VehicleMaxSpeedMod")
+			if type(mod) == "number" then
+				baseSpeed = baseSpeed * (1 + mod)
+			end
+			return math.max(1, baseSpeed)
+		end
+	end
+	return 120
+end
+
+local function createSoundController(entry: RemoteVehicleEntry)
+	if entry.soundController ~= nil then return end
+	local clonePrimary = entry.visualClone.PrimaryPart
+	if clonePrimary == nil then return end
+	local ms = getMaxSpeedForModel(entry.sourceModel)
+	entry.soundController = VehicleSoundManager.createController(entry.sourceModel, clonePrimary, ms, false)
+end
+
+local function destroySoundController(entry: RemoteVehicleEntry)
+	if entry.soundController ~= nil then
+		entry.soundController:destroy()
+		entry.soundController = nil
+	end
+end
+
+--------------------------------------------------------------------------
+-- Entry lifecycle
+--------------------------------------------------------------------------
+
+local function deactivateEntry(entry: RemoteVehicleEntry): ()
+	if not entry.isActive then
+		return
+	end
+	entry.isActive = false
+	destroySoundController(entry)
+	if entry.destroyConnection ~= nil then
+		entry.destroyConnection:Disconnect()
+		entry.destroyConnection = nil
+	end
+	for _, charEntry in pairs(entry.characterEntries) do
+		deactivateCharacter(charEntry)
+	end
+	table.clear(entry.characterEntries)
+	restoreSource(entry)
+	if entry.visualClone.Parent ~= nil then
+		entry.visualClone:Destroy()
+	end
+end
+
+local function cleanupWatcher(model: Model)
+	local conns = activationWatchers[model]
+	if conns ~= nil then
+		for _, conn in ipairs(conns) do
+			conn:Disconnect()
+		end
+		activationWatchers[model] = nil
+	end
+end
+
 local function activateEntry(model: Model): RemoteVehicleEntry?
 	local primaryPart = model.PrimaryPart
 	if primaryPart == nil then
@@ -231,47 +311,54 @@ local function activateEntry(model: Model): RemoteVehicleEntry?
 		smoothedCFrame = primaryPart.CFrame,
 		isActive = true,
 		characterEntries = {},
+		soundController = nil,
+		destroyConnection = nil,
 	}
 	hideSource(model, entry)
 
 	-- Track any currently seated characters
-	for _, character in ipairs(findSeatedCharacters(model)) do
+	local occupants = findSeatedCharacters(model)
+	for _, character in ipairs(occupants) do
 		local charEntry = activateCharacter(character)
 		if charEntry ~= nil then
 			entry.characterEntries[character] = charEntry
 		end
 	end
 
+	-- Start sounds if someone is already in the vehicle
+	if #occupants > 0 then
+		createSoundController(entry)
+	end
+
+	-- Watch for source model destruction
+	entry.destroyConnection = model.Destroying:Connect(function()
+		if trackedVehicles[model] ~= nil then
+			deactivateEntry(entry)
+			trackedVehicles[model] = nil
+		end
+		cleanupWatcher(model)
+	end)
+
 	return entry
 end
 
-local function deactivateEntry(entry: RemoteVehicleEntry)
-	if not entry.isActive then
-		return
-	end
-	entry.isActive = false
-	-- Restore characters first
-	for _, charEntry in pairs(entry.characterEntries) do
-		deactivateCharacter(charEntry)
-	end
-	table.clear(entry.characterEntries)
-	restoreSource(entry)
-	if entry.visualClone.Parent ~= nil then
-		entry.visualClone:Destroy()
-	end
-end
+--------------------------------------------------------------------------
+-- Vehicle tracking
+--------------------------------------------------------------------------
 
-local function isMoving(model: Model): boolean
-	local speed = model:GetAttribute("VehicleSpeed")
-	return type(speed) == "number" and speed > SPEED_ACTIVATE_THRESHOLD
-end
-
-local function cleanupSpeedWatcher(model: Model)
-	local conn = speedWatchers[model]
-	if conn ~= nil then
-		conn:Disconnect()
-		speedWatchers[model] = nil
+local function tryActivate(model: Model): boolean
+	if model == localVehicleModel then
+		return false
 	end
+	if trackedVehicles[model] ~= nil then
+		return true
+	end
+	local entry = activateEntry(model)
+	if entry ~= nil then
+		trackedVehicles[model] = entry
+		return true
+	end
+	return false
 end
 
 local function onVehicleAdded(instance: Instance)
@@ -282,44 +369,30 @@ local function onVehicleAdded(instance: Instance)
 	if model == localVehicleModel then
 		return
 	end
-	-- Already watching this model
-	if speedWatchers[model] ~= nil then
+	if trackedVehicles[model] ~= nil then
+		return
+	end
+	if activationWatchers[model] ~= nil then
 		return
 	end
 
-	-- Set up persistent speed watcher: activate when moving, deactivate when stopped
-	local conn = model:GetAttributeChangedSignal("VehicleSpeed"):Connect(function()
-		if model == localVehicleModel then
-			return
-		end
-		if not CollectionService:HasTag(model, "VehicleEntity") then
-			return
-		end
+	if tryActivate(model) then
+		return
+	end
 
-		if isMoving(model) then
-			if trackedVehicles[model] == nil then
-				local entry = activateEntry(model)
-				if entry ~= nil then
-					trackedVehicles[model] = entry
-				end
-			end
-		else
-			local entry = trackedVehicles[model]
-			if entry ~= nil then
-				deactivateEntry(entry)
-				trackedVehicles[model] = nil
-			end
-		end
-	end)
-	speedWatchers[model] = conn
+	-- Model not ready yet — watch multiple signals for when it becomes ready
+	local watchers: { RBXScriptConnection } = {}
+	activationWatchers[model] = watchers
 
-	-- Check current state immediately
-	if isMoving(model) and trackedVehicles[model] == nil then
-		local entry = activateEntry(model)
-		if entry ~= nil then
-			trackedVehicles[model] = entry
+	local function onReady()
+		if tryActivate(model) then
+			cleanupWatcher(model)
 		end
 	end
+
+	table.insert(watchers, model:GetAttributeChangedSignal("VehicleSpeed"):Connect(onReady))
+	table.insert(watchers, model.ChildAdded:Connect(onReady))
+	task.defer(onReady)
 end
 
 local function onVehicleRemoved(instance: Instance)
@@ -327,7 +400,7 @@ local function onVehicleRemoved(instance: Instance)
 		return
 	end
 	local model = instance :: Model
-	cleanupSpeedWatcher(model)
+	cleanupWatcher(model)
 	local entry = trackedVehicles[model]
 	if entry ~= nil then
 		deactivateEntry(entry)
@@ -370,6 +443,20 @@ local function stepAll(dt: number)
 
 		-- Update character tracking: detect occupant changes
 		local currentOccupants = findSeatedCharacters(model)
+		local occupied = #currentOccupants > 0
+
+		-- Sound controller: create when occupied, destroy when empty
+		if occupied and entry.soundController == nil then
+			createSoundController(entry)
+		elseif not occupied and entry.soundController ~= nil then
+			destroySoundController(entry)
+		end
+
+		-- Update sound controller every frame
+		if entry.soundController ~= nil then
+			entry.soundController:update(dt)
+		end
+
 		local currentSet: { [Model]: boolean } = {}
 		for _, character in ipairs(currentOccupants) do
 			currentSet[character] = true
@@ -380,7 +467,6 @@ local function stepAll(dt: number)
 				end
 			end
 		end
-		-- Remove characters that left the vehicle
 		for character, charEntry in pairs(entry.characterEntries) do
 			if not currentSet[character] or character.Parent == nil then
 				deactivateCharacter(charEntry)
@@ -391,7 +477,6 @@ local function stepAll(dt: number)
 		-- Position character visuals to follow smoothed vehicle
 		local cframeDelta = entry.smoothedCFrame * sourceCFrame:Inverse()
 		for _, charEntry in pairs(entry.characterEntries) do
-			-- Re-hide in case Roblox resets transparency while seated
 			hideCharacter(charEntry)
 			for _, pair in ipairs(charEntry.partPairs) do
 				if pair.source.Parent ~= nil and pair.visual.Parent ~= nil then
@@ -406,7 +491,6 @@ function RemoteVehicleSmoother.setLocalVehicle(model: Model?): ()
 	local previousLocal = localVehicleModel
 	localVehicleModel = model
 
-	-- If the new local vehicle was being tracked as remote, deactivate it
 	if model ~= nil then
 		local entry = trackedVehicles[model]
 		if entry ~= nil then
@@ -415,10 +499,15 @@ function RemoteVehicleSmoother.setLocalVehicle(model: Model?): ()
 		end
 	end
 
-	-- Don't re-track the previous local vehicle immediately.
-	-- The speed watcher will re-activate it if another player drives it.
-	-- This prevents hiding the source model right after the local player exits,
-	-- which would block re-entry.
+	-- Re-track the previous local vehicle as remote now that we've exited it
+	if previousLocal ~= nil and previousLocal ~= model and previousLocal.Parent ~= nil then
+		if CollectionService:HasTag(previousLocal, "VehicleEntity") and trackedVehicles[previousLocal] == nil then
+			local entry = activateEntry(previousLocal)
+			if entry ~= nil then
+				trackedVehicles[previousLocal] = entry
+			end
+		end
+	end
 end
 
 function RemoteVehicleSmoother.init(): ()

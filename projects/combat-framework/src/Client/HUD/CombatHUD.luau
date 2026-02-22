@@ -31,6 +31,10 @@ local readyLabel: TextLabel? = nil
 local lockReadyLabel: TextLabel? = nil
 local lockReticleFrame: Frame? = nil
 local leadingIndicatorDot: Frame? = nil
+local artilleryFrame: Frame? = nil
+local elevationLabel: TextLabel? = nil
+local headingLabel: TextLabel? = nil
+local rangeLabel: TextLabel? = nil
 local vignetteEdges: { Frame } = {}
 local hitmarkerToken = 0
 local readyCueToken = 0
@@ -602,6 +606,56 @@ function CombatHUD.init()
 	weaponsReadyLabel.ZIndex = 8
 	weaponsReadyLabel.Parent = gui
 
+	local artFrame = Instance.new("Frame")
+	artFrame.Name = "ArtilleryFrame"
+	artFrame.AnchorPoint = Vector2.new(0.5, 1)
+	artFrame.Position = UDim2.new(0.5, 0, 1, -10)
+	artFrame.Size = UDim2.fromOffset(240, 78)
+	artFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	artFrame.BackgroundTransparency = 0.35
+	artFrame.Visible = false
+	artFrame.ZIndex = 5
+	artFrame.Parent = gui
+
+	local elevText = Instance.new("TextLabel")
+	elevText.Name = "ElevationLabel"
+	elevText.Position = UDim2.fromOffset(10, 4)
+	elevText.Size = UDim2.new(1, -20, 0, 22)
+	elevText.BackgroundTransparency = 1
+	elevText.TextColor3 = Color3.new(1, 1, 1)
+	elevText.TextSize = 16
+	elevText.Font = Enum.Font.Code
+	elevText.TextXAlignment = Enum.TextXAlignment.Left
+	elevText.Text = "ELEV: 45.0\194\176"
+	elevText.ZIndex = 6
+	elevText.Parent = artFrame
+
+	local hdgText = Instance.new("TextLabel")
+	hdgText.Name = "HeadingLabel"
+	hdgText.Position = UDim2.fromOffset(10, 26)
+	hdgText.Size = UDim2.new(1, -20, 0, 22)
+	hdgText.BackgroundTransparency = 1
+	hdgText.TextColor3 = Color3.new(1, 1, 1)
+	hdgText.TextSize = 16
+	hdgText.Font = Enum.Font.Code
+	hdgText.TextXAlignment = Enum.TextXAlignment.Left
+	hdgText.Text = "HDG:  180.0\194\176"
+	hdgText.ZIndex = 6
+	hdgText.Parent = artFrame
+
+	local rngText = Instance.new("TextLabel")
+	rngText.Name = "RangeLabel"
+	rngText.Position = UDim2.fromOffset(10, 48)
+	rngText.Size = UDim2.new(1, -20, 0, 22)
+	rngText.BackgroundTransparency = 1
+	rngText.TextColor3 = Color3.fromRGB(255, 220, 130)
+	rngText.TextSize = 16
+	rngText.Font = Enum.Font.Code
+	rngText.TextXAlignment = Enum.TextXAlignment.Left
+	rngText.Text = "RANGE: 0"
+	rngText.ZIndex = 6
+	rngText.Parent = artFrame
+
 	screenGui = gui
 	crosshairLabel = crosshair
 	hitmarkerFrame = hitmarker
@@ -622,6 +676,10 @@ function CombatHUD.init()
 	lockReadyLabel = lockReadyText
 	lockReticleFrame = lockReticle
 	leadingIndicatorDot = leadDot
+	artilleryFrame = artFrame
+	elevationLabel = elevText
+	headingLabel = hdgText
+	rangeLabel = rngText
 end
 
 function CombatHUD.setZoomVignette(intensity: number)
@@ -1061,6 +1119,48 @@ function CombatHUD.onHitConfirm(payload)
 			marker.Visible = false
 		end
 	end)
+end
+
+function CombatHUD.showArtillery(visible: boolean)
+	if artilleryFrame ~= nil then
+		artilleryFrame.Visible = visible
+	end
+	if visible then
+		if lockReadyLabel ~= nil then
+			lockReadyLabel.Visible = false
+		end
+		if heatFrame ~= nil then
+			heatFrame.Visible = false
+		end
+		-- Move ammo frame above artillery frame
+		if ammoFrame ~= nil then
+			ammoFrame.Position = UDim2.new(0.5, 0, 1, -94)
+		end
+		-- Move hull frame above ammo
+		if hpFrame ~= nil then
+			hpFrame.Position = UDim2.new(0.5, 0, 1, -126)
+		end
+	else
+		-- Restore default positions
+		if ammoFrame ~= nil then
+			ammoFrame.Position = UDim2.new(0.5, 0, 1, -46)
+		end
+		if hpFrame ~= nil then
+			hpFrame.Position = UDim2.new(0.5, 0, 1, -86)
+		end
+	end
+end
+
+function CombatHUD.setArtilleryAim(elevDeg: number, hdgDeg: number, rangeSt: number)
+	if elevationLabel ~= nil then
+		elevationLabel.Text = string.format("ELEV: %.1f\194\176", elevDeg)
+	end
+	if headingLabel ~= nil then
+		headingLabel.Text = string.format("HDG:  %.1f\194\176", hdgDeg)
+	end
+	if rangeLabel ~= nil then
+		rangeLabel.Text = string.format("RANGE: %d", math.floor(rangeSt + 0.5))
+	end
 end
 
 return CombatHUD

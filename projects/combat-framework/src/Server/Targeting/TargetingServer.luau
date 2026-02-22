@@ -4,6 +4,9 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local PLAYER_TARGET_PREFIX = "player_"
 
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
@@ -44,12 +47,78 @@ local velocitySamplesByEntityId: { [string]: TargetVelocitySample } = {}
 local validationAccumulator = 0
 local MIN_SAMPLE_DT = 1 / 240
 local VELOCITY_SMOOTH_ALPHA = 0.35
+local losRaycastParams = RaycastParams.new()
+losRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+losRaycastParams.IgnoreWater = true
 
 local function getLockOnStateRemote(): RemoteEvent
 	if lockOnStateRemote == nil then
 		error("TargetingServer not initialized")
 	end
 	return lockOnStateRemote
+end
+
+local function isPlayerTargetId(targetId: string): boolean
+	return string.sub(targetId, 1, #PLAYER_TARGET_PREFIX) == PLAYER_TARGET_PREFIX
+end
+
+local function getPlayerFromTargetId(targetId: string): Player?
+	if not isPlayerTargetId(targetId) then
+		return nil
+	end
+	local userIdStr = string.sub(targetId, #PLAYER_TARGET_PREFIX + 1)
+	local userId = tonumber(userIdStr)
+	if userId == nil then
+		return nil
+	end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.UserId == userId then
+			return player
+		end
+	end
+	return nil
+end
+
+local function getPlayerCharacterAlive(player: Player): Model?
+	local character = player.Character
+	if character == nil then
+		return nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil or humanoid.Health <= 0 then
+		return nil
+	end
+	return character
+end
+
+local function getModelAimPosition(model: Model): Vector3
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid ~= nil then
+		local rootPart = humanoid.RootPart
+		if rootPart ~= nil then
+			return rootPart.Position
+		end
+	end
+	return model:GetPivot().Position
+end
+
+local function normalizeTeamOrFaction(raw: string?): string?
+	if raw == nil then
+		return nil
+	end
+	local trimmed = string.match(raw, "^%s*(.-)%s*$")
+	if trimmed == nil or trimmed == "" then
+		return nil
+	end
+	return string.lower(trimmed)
+end
+
+local function getPlayerFaction(player: Player): string?
+	local team = player.Team
+	if team == nil then
+		return nil
+	end
+	return normalizeTeamOrFaction(team.Name)
 end
 
 local function findTaggedDescendant(model: Model, tagName: string, className: string?): Instance?
@@ -131,15 +200,29 @@ local function estimateAssemblyVelocity(targetModel: Model): Vector3
 	return rootPart.AssemblyLinearVelocity
 end
 
-local function getTargetPositionAndVelocity(targetEntityId: string, targetState: HealthState): (Vector3?, Vector3)
-	local targetModel = targetState.instance
+local function resolveTargetModel(targetEntityId: string): Model?
+	if isPlayerTargetId(targetEntityId) then
+		local player = getPlayerFromTargetId(targetEntityId)
+		if player == nil then
+			return nil
+		end
+		return getPlayerCharacterAlive(player)
+	end
+	local targetState = HealthManager.getHealth(targetEntityId)
+	if targetState == nil then
+		return nil
+	end
+	return targetState.instance
+end
+
+local function getTargetPositionAndVelocity(targetEntityId: string, targetModel: Model): (Vector3?, Vector3)
 	if targetModel.Parent == nil then
 		velocitySamplesByEntityId[targetEntityId] = nil
 		return nil, Vector3.zero
 	end
 
 	local now = tick()
-	local targetPosition = targetModel:GetPivot().Position
+	local targetPosition = getModelAimPosition(targetModel)
 	local velocity = estimateAssemblyVelocity(targetModel)
 
 	local sample = velocitySamplesByEntityId[targetEntityId]
@@ -217,18 +300,34 @@ local function validateLockCandidate(
 		return false, "self"
 	end
 
-	if not HealthManager.isAlive(targetEntityId) then
-		return false, "dead"
-	end
+	local targetModel: Model?
+	local targetFaction: string?
 
-	local targetState = HealthManager.getHealth(targetEntityId)
-	if targetState == nil then
-		return false, "missing"
+	if isPlayerTargetId(targetEntityId) then
+		local targetPlayer = getPlayerFromTargetId(targetEntityId)
+		if targetPlayer == nil then
+			return false, "missing"
+		end
+		local character = getPlayerCharacterAlive(targetPlayer)
+		if character == nil then
+			return false, "dead"
+		end
+		targetModel = character
+		targetFaction = getPlayerFaction(targetPlayer)
+	else
+		if not HealthManager.isAlive(targetEntityId) then
+			return false, "dead"
+		end
+		local targetState = HealthManager.getHealth(targetEntityId)
+		if targetState == nil then
+			return false, "missing"
+		end
+		targetModel = targetState.instance
+		targetFaction = HealthManager.getFaction(targetEntityId)
 	end
 
 	local attackerFaction = HealthManager.getFaction(attackerEntityId)
-	local targetFaction = HealthManager.getFaction(targetEntityId)
-	if attackerFaction ~= nil and targetFaction ~= nil and attackerFaction == targetFaction then
+	if not CombatConfig.FriendlyFireEnabled and attackerFaction ~= nil and targetFaction ~= nil and attackerFaction == targetFaction then
 		return false, "friendly"
 	end
 
@@ -237,7 +336,7 @@ local function validateLockCandidate(
 		return false, "no_lock_range"
 	end
 
-	local targetPosition, _targetVelocity = getTargetPositionAndVelocity(targetEntityId, targetState)
+	local targetPosition, _targetVelocity = getTargetPositionAndVelocity(targetEntityId, targetModel :: Model)
 	if targetPosition == nil then
 		return false, "missing_target"
 	end
@@ -254,6 +353,13 @@ local function validateLockCandidate(
 
 	if not isDirectionWithinMountArc(weaponMount, toTarget.Unit) then
 		return false, "arc"
+	end
+
+	-- Line-of-sight check: raycast from mount to target, blocked if geometry intervenes
+	losRaycastParams.FilterDescendantsInstances = { attackerHealthState.instance }
+	local losResult = Workspace:Raycast(sourcePosition, toTarget, losRaycastParams)
+	if losResult ~= nil and not losResult.Instance:IsDescendantOf(targetModel :: Model) then
+		return false, "los"
 	end
 
 	return true, nil
@@ -445,16 +551,13 @@ function TargetingServer.computeLeadDirection(
 	if projectileSpeed <= 0 then
 		return nil
 	end
-	if not HealthManager.isAlive(targetEntityId) then
+
+	local targetModel = resolveTargetModel(targetEntityId)
+	if targetModel == nil then
 		return nil
 	end
 
-	local targetState = HealthManager.getHealth(targetEntityId)
-	if targetState == nil then
-		return nil
-	end
-
-	local targetPosition, targetVelocity = getTargetPositionAndVelocity(targetEntityId, targetState)
+	local targetPosition, targetVelocity = getTargetPositionAndVelocity(targetEntityId, targetModel)
 	if targetPosition == nil then
 		return nil
 	end

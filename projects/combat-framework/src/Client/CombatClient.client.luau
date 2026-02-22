@@ -20,6 +20,7 @@ local VehicleClient = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("
 local RemoteVehicleSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("RemoteVehicleSmoother"))
 local ProjectileVisuals = require(clientRoot:WaitForChild("Projectiles"):WaitForChild("ProjectileVisuals"))
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
+local ArtilleryClient = require(clientRoot:WaitForChild("Weapons"):WaitForChild("ArtilleryClient"))
 
 type EntityDestroyedPayload = CombatTypes.EntityDestroyedPayload
 type ActiveShakeBurst = {
@@ -673,6 +674,7 @@ end
 CombatHUD.init()
 TargetingClient.init(remotesFolder)
 WeaponClient.init(remotesFolder)
+ArtilleryClient.init(remotesFolder, CombatHUD)
 VehicleClient.init(remotesFolder)
 RemoteVehicleSmoother.init()
 ProjectileVisuals.init(remotesFolder)

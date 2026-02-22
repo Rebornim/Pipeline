@@ -9,9 +9,14 @@ local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local Runner = {}
 local Pass5Test = require(script.Parent:WaitForChild("Pass5_Test"))
 local Pass5CriticVerify = require(script.Parent:WaitForChild("Pass5_CriticVerify"))
+local CollisionMatrix = require(script.Parent:WaitForChild("CollisionMatrix"))
 
 local function useCriticVerify(): boolean
 	return Workspace:GetAttribute("P5CriticVerifyEnabled") == true
+end
+
+local function useCollisionMatrix(): boolean
+	return Workspace:GetAttribute("CollisionMatrixEnabled") == true
 end
 
 function Runner.isEnabled(): boolean
@@ -22,7 +27,7 @@ function Runner.setup(): ()
 	if not Runner.isEnabled() then
 		return
 	end
-	if useCriticVerify() then
+	if useCriticVerify() or useCollisionMatrix() then
 		return
 	end
 	Pass5Test.setup()
@@ -30,6 +35,10 @@ end
 
 function Runner.run(): ()
 	if not Runner.isEnabled() then
+		return
+	end
+	if useCollisionMatrix() then
+		CollisionMatrix.run()
 		return
 	end
 	if useCriticVerify() then

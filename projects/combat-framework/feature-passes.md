@@ -1,7 +1,7 @@
 # Feature Passes: Combat Framework
 
 **Based on:** idea-locked.md + vehicle-idea-locked.md
-**Date:** 2026-02-19 (revised — passes 5+ rebuilt for custom vehicle system, walker split, animated parts moved earlier)
+**Date:** 2026-02-21 (revised — artillery emplacement added as pass 7, passes 7+ renumbered)
 
 ---
 
@@ -131,7 +131,33 @@ Armed speeders are fully combat-capable. Driver shoots while driving, locks onto
 
 ---
 
-## Pass 7: Walker Movement
+## Pass 7: Artillery Emplacement
+**Depends on:** Passes 1-4
+**What it includes:**
+- New weaponClass: "artillery" — parabolic projectile trajectory with configurable gravity
+- Server-side arc simulation: projectile position/velocity stepped each Heartbeat frame with gravity, collision checked along arc segment via raycasts
+- WASD aiming controls: A/D rotates heading (azimuth), W/S adjusts elevation (pitch). No mouse aim.
+- Shift + WASD for fine adjustment (slower adjustment rate for precision)
+- HUD: elevation angle (degrees with decimals), heading (degrees with decimals), estimated flat-ground range (studs)
+- Estimated range formula displayed live: `range = v² × sin(2θ) / g`
+- Minimum range enforcement (~100 studs) — elevation angles that produce sub-minimum range are clamped or rejected
+- Elevation limits: configurable min/max per weapon (e.g., 15° to 85°)
+- Ammo-based with reload timer (not overheat): fire → reload timer → ready. Config-driven ammo capacity and reload duration.
+- Splash damage on impact: uses existing explosion damage type with radius falloff (existing splash infrastructure from pass 1)
+- Impact feedback: explosion visual effect + hitmarkers for enemies in blast radius (same hitmarker system as turrets)
+- No arc preview, no lock-on, no auto-aim — pure manual skill-based indirect fire
+- Same ProximityPrompt entry / F exit as turrets
+- Artillery entity config in CombatConfig: hull HP, ammo capacity, reload time, muzzle velocity, artillery gravity, splash radius, splash damage, min/max elevation, normal adjust speed, fine adjust speed
+- Config starting points: gravity ~300-500, muzzle velocity ~400, splash radius ~25 studs
+- Tagging: CombatEntity tag + ArtillerySeat (new seat type), "artillery" weaponClass in config
+- Client visual: shell part traveling along the arc (reuses projectile visual system with arc interpolation instead of straight line)
+
+**After this pass, the system:**
+A player enters an artillery emplacement, adjusts elevation and heading with WASD (shift for precision), reads the estimated range, and fires. The shell arcs realistically through the air and impacts with splash damage. Pure skill-based indirect fire — no aim assist, no targeting computer. The indirect fire paradigm is proven on a ground emplacement before vehicle-mounted variants.
+
+---
+
+## Pass 8: Walker Movement
 **Depends on:** Pass 5 (CFrame velocity system proven on speeders)
 **What it includes:**
 - Walker body CFrame movement: WASD controls, terrain-height following
@@ -152,8 +178,8 @@ A walker moves with IK-animated legs that step on terrain. Head swivels independ
 
 ---
 
-## Pass 8: Walker Combat
-**Depends on:** Pass 7
+## Pass 9: Walker Combat
+**Depends on:** Pass 8
 **What it includes:**
 - Weapons on walkers: head-mounted weapons aimed by mouse (head aim = weapon aim)
 - Body-mounted weapons on separate gunner seats (configurable per walker)
@@ -170,7 +196,7 @@ Walkers are fully combat-capable. Head weapons aim with mouse, body weapons have
 
 ---
 
-## Pass 9: Fighter Flight
+## Pass 10: Fighter Flight
 **Depends on:** Pass 5 (CFrame velocity system proven on speeders)
 **What it includes:**
 - Fighter flight physics: mouse controls heading + pitch (ship follows mouse with lag), W/S throttle, A/D roll
@@ -189,8 +215,8 @@ Fighters fly with Battlefront 2 controls. Mouse aims, W/S controls speed, A/D ro
 
 ---
 
-## Pass 10: Fighter Combat
-**Depends on:** Pass 9
+## Pass 11: Fighter Combat
+**Depends on:** Pass 10
 **What it includes:**
 - Pilot weapons: left click to fire, 1/2/3 to switch weapon types
 - Each weapon type has own overheat/ammo tracking
@@ -206,8 +232,8 @@ Fighters are fully combat-capable. Pilots shoot lasers, switch to torpedoes, loc
 
 ---
 
-## Pass 11: Animated Parts
-**Depends on:** Passes 5-9 (platforms exist to test on)
+## Pass 12: Animated Parts
+**Depends on:** Passes 5-10 (platforms exist to test on)
 **What it includes:**
 - Animated external parts system: tagged parts tween between start/end CFrame positions
 - Interactive triggers: keybinds or physical buttons activate animations
@@ -221,15 +247,15 @@ Platforms have working animated parts. Pilots press keybinds to deploy landing g
 
 ---
 
-## Pass 12: Landing System
-**Depends on:** Passes 9, 11 (fighter flight + animated parts for landing gear)
+## Pass 13: Landing System
+**Depends on:** Passes 10, 12 (fighter flight + animated parts for landing gear)
 **What it includes:**
 - Developer-placed landing zones (invisible volumes):
   - Atmosphere zones (large, near planet surfaces)
   - Landing pad zones (specific locations at bases/stations)
   - Hangar approach zones (prep for future — in front of capital ship hangars)
 - Landing mode: inside landing zone, minimum speed lifts → pilot decelerates → manual touchdown
-- Landing gear animation via pass 11 animated parts system
+- Landing gear animation via pass 12 animated parts system
 - Weapons functional while landed
 - Space-to-ground transition: atmosphere zone = server boundary → confirmation prompt → intentional-only teleport
 
@@ -238,8 +264,8 @@ Fighters can land at designated locations with animated landing gear. Ships can'
 
 ---
 
-## Pass 13: Transport + Cruiser Flight
-**Depends on:** Pass 9
+## Pass 14: Transport + Cruiser Flight
+**Depends on:** Pass 10
 **What it includes:**
 - Transport flight model: mouse controls yaw only (pitch ignored), E/Q altitude, W/S throttle
 - Transport visual sway: ship leans/sways with movement (cosmetic, not player-controlled)
@@ -247,7 +273,7 @@ Fighters can land at designated locations with animated landing gear. Ships can'
 - 3rd person camera with pull-back for larger ships
 - Multi-crew boarding: multiple players board one ship, each takes a different seat
 - Basic multi-crew: pilot flies, passengers ride. No weapon operation yet.
-- Entry doors/ramps using pass 11 animated parts system
+- Entry doors/ramps using pass 12 animated parts system
 - Placeholder transport + cruiser models
 
 **After this pass, the system:**
@@ -255,8 +281,8 @@ Three ship classes fly with distinct control schemes: fighters (mouse full), tra
 
 ---
 
-## Pass 14: Relative Motion + Ship Interiors
-**Depends on:** Pass 13
+## Pass 15: Relative Motion + Ship Interiors
+**Depends on:** Pass 14
 **What it includes:**
 - Relative motion: players on a moving ship move WITH the ship
 - Jump test: jump on moving ship → land in same spot relative to ship
@@ -270,8 +296,8 @@ Players walk around inside a moving cruiser without falling off or desyncing. Ju
 
 ---
 
-## Pass 15: Manned Weapons + Weapon Grouping
-**Depends on:** Passes 13, 14
+## Pass 16: Manned Weapons + Weapon Grouping
+**Depends on:** Passes 14, 15
 **What it includes:**
 - Manned weapons: gunner walks to weapon station → sit → camera moves to weapon viewpoint → aim → fire → F to exit
 - Weapon grouping: one player controls multiple guns (e.g., 4 turbolasers = one station)
@@ -286,8 +312,8 @@ The multi-crew combat loop works. Pilot flies a cruiser while gunners man weapon
 
 ---
 
-## Pass 16: Power Routing
-**Depends on:** Pass 15
+## Pass 17: Power Routing
+**Depends on:** Pass 16
 **What it includes:**
 - Squadrons-style 12-pip system: shields (8 max), engines (8 max), weapons (8 max), 12 total budget
 - Default: 4/4/4 (balanced). Pilot redistributes via keybinds.
@@ -301,8 +327,8 @@ Every pilot manages power distribution. Tactical depth for every piloted platfor
 
 ---
 
-## Pass 17: Capital Ship Flight + Repulsion
-**Depends on:** Passes 13, 14
+## Pass 18: Capital Ship Flight + Repulsion
+**Depends on:** Passes 14, 15
 **What it includes:**
 - Capital ship flight model: same as cruiser but larger/slower/even wider turning radius
 - 3rd person camera pulled way back (show entire capital ship)
@@ -314,8 +340,8 @@ Capital ships fly with appropriate weight and scale. Two capital ships approachi
 
 ---
 
-## Pass 18: Subsystem Framework
-**Depends on:** Pass 17
+## Pass 19: Subsystem Framework
+**Depends on:** Pass 18
 **What it includes:**
 - Targetable subsystems on capital ships: shield generator, hangar bay, weapon batteries, torpedo launchers, engines
 - Each subsystem has independent HP pool (does NOT correlate with hull HP)
@@ -336,8 +362,8 @@ Capital ships have targetable subsystems with strategic destruction effects. The
 
 ---
 
-## Pass 19: Hangars
-**Depends on:** Passes 10, 18
+## Pass 20: Hangars
+**Depends on:** Passes 11, 19
 **What it includes:**
 - Hangar launch: walk to console → proximity prompt → screen blacks out → spawn in fighter outside hangar
 - Hangar return: fly close → docking prompt → confirm → screen blacks out → teleported inside
@@ -349,8 +375,8 @@ Capital ships launch and recover fighters. Fighters return to dock, repair, and 
 
 ---
 
-## Pass 20: Ownership + Despawn
-**Depends on:** Passes 6, 10 (vehicles and ships must exist)
+## Pass 21: Ownership + Despawn
+**Depends on:** Passes 6, 11 (vehicles and ships must exist)
 **What it includes:**
 - Crew registry: board → join crew list. Leave when physically exit, die, or disconnect.
 - Owner-based persistence: stays while owner in same server
@@ -365,8 +391,8 @@ Unified ownership across ships and vehicles. Shared 2-limit. Persistence works. 
 
 ---
 
-## Pass 21: Scanning Station
-**Depends on:** Pass 18
+## Pass 22: Scanning Station
+**Depends on:** Pass 19
 **What it includes:**
 - Dedicated bridge crew seat
 - Scan enemy ship within sensor range (config-driven range, scan duration)
@@ -379,8 +405,8 @@ Capital ships have a dedicated intel role. Coordinated crews with active scanner
 
 ---
 
-## Pass 22: Upgrades
-**Depends on:** Passes 6, 10 (vehicles and ships with config)
+## Pass 23: Upgrades
+**Depends on:** Passes 6, 11 (vehicles and ships with config)
 **What it includes:**
 - 6 upgrade categories: Shields, Hull/Armor, Engines, Weapons (energy), Weapons (ordnance), Sensors
 - Tier structure: Mk I (base), Mk II, Mk III
@@ -394,8 +420,8 @@ Players upgrade individual components on ships and vehicles. Per-platform caps p
 
 ---
 
-## Pass 23: Vehicle Transport + Troop Deployment
-**Depends on:** Passes 7-8, 11, 13, 14 (walkers, animated parts, transport ships, relative motion)
+## Pass 24: Vehicle Transport + Troop Deployment
+**Depends on:** Passes 8-9, 12, 14, 15 (walkers, animated parts, transport ships, relative motion)
 **What it includes:**
 - Small vehicle transport: transport ship approaches ground vehicle, keybind snaps vehicle to predetermined carry position. Same keybind to deploy. Dead stop required.
 - Large vehicle transport: spawned at space station with transport ship, visually carried, interior not loaded until deployment. Dead stop to deploy.
@@ -407,8 +433,8 @@ Transport ships carry vehicles between planets. Transport walkers deploy troops 
 
 ---
 
-## Pass 24: Formation Autopilot (Not Committed)
-**Depends on:** Pass 13+
+## Pass 25: Formation Autopilot (Not Committed)
+**Depends on:** Pass 14+
 **What it includes:**
 - Escort ships maintain relative position to flagship via autopilot
 - Realistic maneuvering (turn, accelerate, reposition)
@@ -419,8 +445,8 @@ Fleets form up and move together. Escorts automatically maintain position.
 
 ---
 
-## Pass 25: Tractor Beams (Not Committed)
-**Depends on:** Pass 17
+## Pass 26: Tractor Beams (Not Committed)
+**Depends on:** Pass 18
 **What it includes:**
 - Capital ships emit tractor beam toward target
 - Gravitational pull draws target toward source

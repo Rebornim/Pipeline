@@ -198,7 +198,11 @@ for _, validatedEntity in ipairs(validatedEntities) do
 	HealthManager.registerEntity(entityId, validatedEntity)
 	WeaponServer.registerEntity(entityId)
 	if CollectionService:HasTag(validatedEntity.instance, "VehicleEntity") then
-		local vehicleConfigId = validatedEntity.instance:GetAttribute("VehicleConfigId")
+		-- Support both VehicleCategory (new) and VehicleConfigId (legacy)
+		local vehicleConfigId = validatedEntity.instance:GetAttribute("VehicleCategory")
+		if type(vehicleConfigId) ~= "string" then
+			vehicleConfigId = validatedEntity.instance:GetAttribute("VehicleConfigId")
+		end
 		if type(vehicleConfigId) == "string" and CombatConfig.Vehicles[vehicleConfigId] ~= nil then
 			local driverSeat = findDriverSeat(validatedEntity.instance)
 			local hoverPoints = collectHoverPoints(validatedEntity.instance)
@@ -209,7 +213,29 @@ for _, validatedEntity in ipairs(validatedEntities) do
 	end
 
 	if validatedEntity.turretSeat ~= nil then
-		CollectionService:AddTag(validatedEntity.turretSeat, "TurretSeat")
+		local isArtillery = false
+		if entityConfig ~= nil and entityConfig.weaponId ~= nil then
+			local weaponConfig = CombatConfig.Weapons[entityConfig.weaponId]
+			if weaponConfig ~= nil and weaponConfig.weaponClass == "artillery" then
+				isArtillery = true
+			end
+		end
+
+		if isArtillery then
+			CollectionService:RemoveTag(validatedEntity.turretSeat, "TurretSeat")
+			CollectionService:AddTag(validatedEntity.turretSeat, "ArtillerySeat")
+			local artWeaponConfig = CombatConfig.Weapons[entityConfig.weaponId]
+			if artWeaponConfig ~= nil then
+				print(string.format(
+					"[P7_CONFIG] %s weapon loaded: gravity=%d muzzleVel=%d",
+					entityConfig.weaponId,
+					artWeaponConfig.artilleryGravity or 0,
+					artWeaponConfig.projectileSpeed or 0
+				))
+			end
+		else
+			CollectionService:AddTag(validatedEntity.turretSeat, "TurretSeat")
+		end
 		addTurretPrompt(validatedEntity.turretSeat, entityId)
 	end
 end

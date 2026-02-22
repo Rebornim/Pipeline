@@ -2,6 +2,7 @@
 
 local Debris = game:GetService("Debris")
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -38,6 +39,8 @@ type ActiveBolt = {
 	targetEntityId: string?,
 	homingTurnRate: number?,
 	currentPosition: Vector3?,
+	artilleryGravity: number?,
+	currentVelocity: Vector3?,
 }
 
 local ProjectileVisuals = {}
@@ -56,6 +59,11 @@ local warnedMissingFireSoundTemplateByDamageType: { [string]: boolean } = {}
 local warnedMissingImpactSoundTemplate = false
 local warnedMissingShieldImpactSoundTemplate = false
 local warnedMissingShieldBreakSoundTemplate = false
+
+local PLAYER_TARGET_PREFIX = "player_"
+local clientVisualRaycastParams = RaycastParams.new()
+clientVisualRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+clientVisualRaycastParams.IgnoreWater = true
 
 local IMPACT_BURST_COUNTS: { [string]: number } = {
 	Smoke = 18,
@@ -122,6 +130,17 @@ local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
 		whizPitchScale = 0.85,
 		impactScale = 1.45,
 		impactEmitScale = 1.5,
+	},
+	artillery_shell = {
+		boltLengthScale = 5.0,
+		boltWidthScale = 5.0,
+		bulletScale = 4.0,
+		trailWidthScale = 5.0,
+		lightBrightnessScale = 3.0,
+		lightRangeScale = 3.5,
+		whizPitchScale = 0.45,
+		impactScale = 4.0,
+		impactEmitScale = 4.0,
 	},
 }
 
@@ -353,6 +372,13 @@ local function getShieldBreakSoundTemplates(): { Sound }
 
 	return templates
 end
+
+local MISSILE_DAMAGE_TYPES: { [string]: boolean } = {
+	proton_torpedo = true,
+	concussion_missile = true,
+	artillery_shell = true,
+}
+local SMOKE_TRAIL_TEXTURE = "rbxassetid://716847870"
 
 local function prepareVisualPart(part: BasePart)
 	part.Anchored = true
@@ -603,6 +629,37 @@ local function applyBoltVisualColor(boltPart: BasePart, boltColor: Color3?)
 	end
 end
 
+local function attachSmokeTrail(boltPart: BasePart, damageType: string?)
+	if damageType == nil or not MISSILE_DAMAGE_TYPES[damageType] then
+		return
+	end
+
+	local smoke = Instance.new("ParticleEmitter")
+	smoke.Name = "SmokeTrail"
+	smoke.Texture = SMOKE_TRAIL_TEXTURE
+	smoke.EmissionDirection = Enum.NormalId.Back
+	smoke.Rate = 35
+	smoke.Lifetime = NumberRange.new(0.5, 1.2)
+	smoke.Speed = NumberRange.new(0.5, 2.5)
+	smoke.SpreadAngle = Vector2.new(12, 12)
+	smoke.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.4),
+		NumberSequenceKeypoint.new(0.3, 1.0),
+		NumberSequenceKeypoint.new(1, 2.5),
+	})
+	smoke.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(0.4, 0.45),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	smoke.Color = ColorSequence.new(Color3.fromRGB(220, 220, 220), Color3.fromRGB(120, 120, 120))
+	smoke.RotSpeed = NumberRange.new(-60, 60)
+	smoke.Rotation = NumberRange.new(0, 360)
+	smoke.LightEmission = 0
+	smoke.LightInfluence = 1
+	smoke.Parent = boltPart
+end
+
 local function createFallbackBoltPart(
 	projectileId: string,
 	boltColor: Color3?,
@@ -664,7 +721,36 @@ local function createVisualPartsFromTemplate(
 	return boltPart, bulletPart
 end
 
+local function getModelAimPosition(model: Model): Vector3
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid ~= nil then
+		local rootPart = humanoid.RootPart
+		if rootPart ~= nil then
+			return rootPart.Position
+		end
+	end
+	return model:GetPivot().Position
+end
+
 local function findEntityModelById(entityId: string): Model?
+	if string.sub(entityId, 1, #PLAYER_TARGET_PREFIX) == PLAYER_TARGET_PREFIX then
+		local userIdStr = string.sub(entityId, #PLAYER_TARGET_PREFIX + 1)
+		local userId = tonumber(userIdStr)
+		if userId == nil then
+			return nil
+		end
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.UserId == userId then
+				local character = player.Character
+				if character ~= nil then
+					return character
+				end
+				return nil
+			end
+		end
+		return nil
+	end
+
 	for _, tagged in ipairs(CollectionService:GetTagged("CombatEntity")) do
 		if tagged:IsA("Model") and tagged:GetAttribute("EntityId") == entityId then
 			return tagged
@@ -698,19 +784,30 @@ end
 
 local function onRenderStepped()
 	local now = tick()
+
+	local excludeList: { Instance } = {}
+	if boltFolder ~= nil and boltFolder.Parent ~= nil then
+		table.insert(excludeList, boltFolder)
+	end
+	if impactFolder ~= nil and impactFolder.Parent ~= nil then
+		table.insert(excludeList, impactFolder)
+	end
+	clientVisualRaycastParams.FilterDescendantsInstances = excludeList
+
 	for projectileId, bolt in pairs(activeBolts) do
 		local dt = math.max(0, now - bolt.lastUpdatedAt)
 		bolt.lastUpdatedAt = now
 		local position: Vector3
+		local previousPosition: Vector3
 
 		local homingActive = type(bolt.targetEntityId) == "string"
 			and type(bolt.homingTurnRate) == "number"
 			and (bolt.homingTurnRate :: number) > 0
 		if homingActive then
-			local previousPosition = bolt.currentPosition or bolt.origin
+			previousPosition = bolt.currentPosition or bolt.origin
 			local targetModel = findEntityModelById(bolt.targetEntityId :: string)
 			if targetModel ~= nil then
-				local toTarget = targetModel:GetPivot().Position - previousPosition
+				local toTarget = getModelAimPosition(targetModel) - previousPosition
 				if toTarget.Magnitude > 1e-4 then
 					bolt.direction = rotateDirectionToward(
 						bolt.direction.Unit,
@@ -722,20 +819,53 @@ local function onRenderStepped()
 
 			position = previousPosition + bolt.direction.Unit * bolt.speed * dt
 			bolt.currentPosition = position
+		elseif type(bolt.artilleryGravity) == "number" and (bolt.artilleryGravity :: number) > 0 then
+			previousPosition = bolt.currentPosition or bolt.origin
+			local velocity = bolt.currentVelocity
+			if velocity == nil then
+				velocity = bolt.direction * bolt.speed
+				bolt.currentVelocity = velocity
+			end
+
+			velocity = velocity + Vector3.new(0, -(bolt.artilleryGravity :: number) * dt, 0)
+			bolt.currentVelocity = velocity
+			position = previousPosition + velocity * dt
+			bolt.currentPosition = position
+
+			if velocity.Magnitude > 1e-4 then
+				bolt.direction = velocity.Unit
+			end
 		else
 			local elapsed = now - bolt.createdAt
-			local distance = bolt.speed * elapsed
-			position = bolt.origin + bolt.direction * distance
+			local previousElapsed = math.max(0, elapsed - dt)
+			previousPosition = bolt.origin + bolt.direction * bolt.speed * previousElapsed
+			position = bolt.origin + bolt.direction * bolt.speed * elapsed
 		end
 
 		local traveledDistance = (position - bolt.origin).Magnitude
 		if traveledDistance >= bolt.maxRange then
 			destroyBolt(projectileId)
 		else
+			-- Client-side wall collision: stop bolt at geometry instead of phasing through
+			local sweep = position - previousPosition
+			if sweep.Magnitude > 1e-4 then
+				local hitResult = Workspace:Raycast(previousPosition, sweep, clientVisualRaycastParams)
+				if hitResult ~= nil then
+					destroyBolt(projectileId)
+					continue
+				end
+			end
+
 			local projectileCFrame = CFrame.lookAt(position, position + bolt.direction)
 			bolt.boltPart.CFrame = projectileCFrame
 			if bolt.bulletPart ~= nil then
 				bolt.bulletPart.CFrame = projectileCFrame
+			end
+
+			-- Missile/torpedo bolt pulse: transparency throbs while in flight (skip artillery — part is hidden)
+			if bolt.damageType ~= nil and MISSILE_DAMAGE_TYPES[bolt.damageType] and bolt.damageType ~= "artillery_shell" then
+				local elapsed = now - bolt.createdAt
+				bolt.boltPart.Transparency = math.sin(elapsed * 14) * 0.2 + 0.2
 			end
 		end
 	end
@@ -761,6 +891,7 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 	local boltColor = if typeof(payload.boltColor) == "Color3" then (payload.boltColor :: Color3) else nil
 
 	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor, damageType)
+	attachSmokeTrail(boltPart, damageType)
 
 	activeBolts[payload.projectileId] = {
 		boltPart = boltPart,
@@ -775,7 +906,17 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 		targetEntityId = if type(payload.targetEntityId) == "string" then payload.targetEntityId else nil,
 		homingTurnRate = if type(payload.homingTurnRate) == "number" then payload.homingTurnRate else nil,
 		currentPosition = payload.origin,
+		artilleryGravity = if type(payload.artilleryGravity) == "number" then payload.artilleryGravity else nil,
+		currentVelocity = if type(payload.artilleryGravity) == "number" then payload.direction * payload.speed else nil,
 	}
+
+	if type(payload.artilleryGravity) == "number" then
+		boltPart.Transparency = 1
+		if bulletPart ~= nil then
+			bulletPart.Transparency = 1
+		end
+		print(string.format("[P7_VISUAL] shell=%s created gravity=%d", payload.projectileId, payload.artilleryGravity))
+	end
 end
 
 local function onProjectileImpact(payload: ProjectileImpactPayload)

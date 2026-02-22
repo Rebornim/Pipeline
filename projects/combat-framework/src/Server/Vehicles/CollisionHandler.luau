@@ -98,8 +98,9 @@ function CollisionHandler.checkObstacles(state: VehicleRuntimeState, dt: number,
 				continue
 			end
 
-			-- Damage based on into-wall speed, not full forward speed
-			if intoWallSpeed > state.config.collisionDamageThreshold then
+			-- Skip glancing/scraping hits: heading must be aimed into the wall
+			local headingIntoWall = math.abs(-forwardDir:Dot(wallNormal))
+			if headingIntoWall > 0.5 and intoWallSpeed > state.config.collisionDamageThreshold then
 				local canApplyDamage = state.driver ~= nil or math.abs(state.inputThrottle) > 0.01
 				if canApplyDamage then
 					local damage = math.floor(

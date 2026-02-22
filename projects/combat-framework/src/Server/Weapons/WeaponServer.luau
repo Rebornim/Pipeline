@@ -114,6 +114,13 @@ local ATTR_HEAT_MAX_MODIFIER = "WeaponHeatMaxModifier"
 local ATTR_HEAT_PER_SHOT_MODIFIER = "WeaponHeatPerShotModifier"
 local ATTR_HEAT_DECAY_MODIFIER = "WeaponHeatDecayPerSecondModifier"
 local ATTR_HEAT_RECOVER_THRESHOLD_MODIFIER = "WeaponHeatRecoverThresholdModifier"
+local ATTR_AMMO_CAPACITY = "WeaponAmmoCapacity"
+local ATTR_ARTILLERY_GRAVITY = "WeaponArtilleryGravity"
+local ATTR_ARTILLERY_MIN_ELEVATION = "WeaponArtilleryMinElevation"
+local ATTR_ARTILLERY_MAX_ELEVATION = "WeaponArtilleryMaxElevation"
+local ATTR_ARTILLERY_ADJUST_SPEED = "WeaponArtilleryAdjustSpeed"
+local ATTR_ARTILLERY_FINE_ADJUST_SPEED = "WeaponArtilleryFineAdjustSpeed"
+local ATTR_ARTILLERY_MIN_RANGE = "WeaponArtilleryMinRange"
 
 local EFFECTIVE_WEAPON_CLASS = "EffectiveWeaponClass"
 local EFFECTIVE_DAMAGE_TYPE = "EffectiveWeaponDamageType"
@@ -722,6 +729,12 @@ local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponC
 		heatDecayPerSecond = baseWeaponConfig.heatDecayPerSecond,
 		heatRecoverThreshold = baseWeaponConfig.heatRecoverThreshold,
 		ammoCapacity = baseWeaponConfig.ammoCapacity,
+		artilleryGravity = baseWeaponConfig.artilleryGravity,
+		artilleryMinElevation = baseWeaponConfig.artilleryMinElevation,
+		artilleryMaxElevation = baseWeaponConfig.artilleryMaxElevation,
+		artilleryAdjustSpeed = baseWeaponConfig.artilleryAdjustSpeed,
+		artilleryFineAdjustSpeed = baseWeaponConfig.artilleryFineAdjustSpeed,
+		artilleryMinRange = baseWeaponConfig.artilleryMinRange,
 	}
 
 	local weaponClassOverride = entityModel:GetAttribute(ATTR_WEAPON_CLASS)
@@ -804,6 +817,41 @@ local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponC
 		resolved.boltColor = boltColorOverride
 	end
 
+	local ammoCapacityOverride = readNumberAttribute(entityModel, ATTR_AMMO_CAPACITY)
+	if ammoCapacityOverride ~= nil then
+		resolved.ammoCapacity = math.max(1, math.floor(ammoCapacityOverride + 0.5))
+	end
+
+	local artilleryGravityOverride = readNumberAttribute(entityModel, ATTR_ARTILLERY_GRAVITY)
+	if artilleryGravityOverride ~= nil then
+		resolved.artilleryGravity = math.max(1, artilleryGravityOverride)
+	end
+
+	local artilleryMinElevOverride = readNumberAttribute(entityModel, ATTR_ARTILLERY_MIN_ELEVATION)
+	if artilleryMinElevOverride ~= nil then
+		resolved.artilleryMinElevation = math.clamp(artilleryMinElevOverride, 0, 89)
+	end
+
+	local artilleryMaxElevOverride = readNumberAttribute(entityModel, ATTR_ARTILLERY_MAX_ELEVATION)
+	if artilleryMaxElevOverride ~= nil then
+		resolved.artilleryMaxElevation = math.clamp(artilleryMaxElevOverride, 1, 90)
+	end
+
+	local artilleryAdjustSpeedOverride = readNumberAttribute(entityModel, ATTR_ARTILLERY_ADJUST_SPEED)
+	if artilleryAdjustSpeedOverride ~= nil then
+		resolved.artilleryAdjustSpeed = math.max(1, artilleryAdjustSpeedOverride)
+	end
+
+	local artilleryFineAdjustOverride = readNumberAttribute(entityModel, ATTR_ARTILLERY_FINE_ADJUST_SPEED)
+	if artilleryFineAdjustOverride ~= nil then
+		resolved.artilleryFineAdjustSpeed = math.max(0.1, artilleryFineAdjustOverride)
+	end
+
+	local artilleryMinRangeOverride = readNumberAttribute(entityModel, ATTR_ARTILLERY_MIN_RANGE)
+	if artilleryMinRangeOverride ~= nil then
+		resolved.artilleryMinRange = math.max(0, artilleryMinRangeOverride)
+	end
+
 	return resolved
 end
 
@@ -832,6 +880,13 @@ local function publishResolvedWeaponAttributes(entityModel: Model, weaponConfig:
 	else
 		entityModel:SetAttribute(EFFECTIVE_BOLT_COLOR, nil)
 	end
+	entityModel:SetAttribute("EffectiveAmmoCapacity", weaponConfig.ammoCapacity)
+	entityModel:SetAttribute("EffectiveArtilleryGravity", weaponConfig.artilleryGravity)
+	entityModel:SetAttribute("EffectiveArtilleryMinElevation", weaponConfig.artilleryMinElevation)
+	entityModel:SetAttribute("EffectiveArtilleryMaxElevation", weaponConfig.artilleryMaxElevation)
+	entityModel:SetAttribute("EffectiveArtilleryAdjustSpeed", weaponConfig.artilleryAdjustSpeed)
+	entityModel:SetAttribute("EffectiveArtilleryFineAdjustSpeed", weaponConfig.artilleryFineAdjustSpeed)
+	entityModel:SetAttribute("EffectiveArtilleryMinRange", weaponConfig.artilleryMinRange)
 end
 
 local function setHeatAttributes(
@@ -1071,6 +1126,90 @@ local function fireSingleProjectile(
 	return true
 end
 
+local function fireArtilleryProjectile(
+	entityModel: Model,
+	entityId: string,
+	healthState: HealthState,
+	weaponConfig: WeaponConfig,
+	character: Model,
+	normalizedDirection: Vector3,
+	cooldown: number
+): boolean
+	if normalizedDirection.Magnitude < 1e-4 then
+		return false
+	end
+
+	local ammoState = ammoStateByEntityId[entityId]
+	if ammoState ~= nil and ammoState.current <= 0 then
+		print(string.format("[P3_AMMO_EMPTY] entity=%s", entityId))
+		setAmmoAttributes(entityModel, ammoState)
+		return false
+	end
+
+	local fireNode = getNextFireNode(entityId, entityModel)
+	if fireNode == nil then
+		return false
+	end
+
+	local neutralAimFrame = WeaponRig.getNeutralAimFrame(fireNode.mount)
+	local clampedDirection = WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, normalizedDirection)
+	if clampedDirection.Magnitude < 1e-4 then
+		return false
+	end
+
+	local originFrame = WeaponRig.getAimFrame(fireNode.mount, clampedDirection)
+	local fireOrigin = originFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
+
+	local faction = HealthManager.getFaction(entityId)
+	if faction == nil then
+		return false
+	end
+
+	projectileCounter += 1
+	local projectileId = "proj_" .. tostring(projectileCounter)
+	local projectileData: ProjectileData = {
+		projectileId = projectileId,
+		sourceEntityId = entityId,
+		sourceInstance = healthState.instance,
+		sourceCharacter = character,
+		origin = fireOrigin,
+		direction = clampedDirection,
+		speed = weaponConfig.projectileSpeed,
+		maxRange = weaponConfig.maxRange,
+		damage = weaponConfig.damage,
+		damageType = weaponConfig.damageType,
+		faction = faction,
+		boltColor = weaponConfig.boltColor,
+		splashRadius = weaponConfig.splashRadius,
+		targetEntityId = nil,
+		homingTurnRate = nil,
+		currentPosition = nil,
+		createdAt = tick(),
+		artilleryGravity = weaponConfig.artilleryGravity,
+		currentVelocity = nil,
+	}
+
+	if ammoState ~= nil then
+		ammoState.current = math.max(0, ammoState.current - 1)
+		setAmmoAttributes(entityModel, ammoState)
+		print(string.format("[P3_AMMO] entity=%s ammo=%d/%d", entityId, ammoState.current, ammoState.max))
+	end
+
+	local elevationDeg = math.deg(math.asin(math.clamp(clampedDirection.Y, -1, 1)))
+	local headingRad = math.atan2(-clampedDirection.X, -clampedDirection.Z)
+	local headingDeg = math.deg(headingRad) % 360
+	local artilleryGravity = weaponConfig.artilleryGravity or 300
+	local v = weaponConfig.projectileSpeed
+	local flatRange = v * v * math.sin(2 * math.asin(math.clamp(clampedDirection.Y, -1, 1))) / artilleryGravity
+	print(string.format(
+		"[P7_FIRE] entity=%s elevation=%.1f heading=%.1f range=%.0f",
+		entityId, elevationDeg, headingDeg, math.max(0, flatRange)
+	))
+
+	ProjectileServer.fireProjectile(projectileData)
+	return true
+end
+
 local function resolvePlayerTurretContext(player: Player): (Model?, Model?, string?, HealthState?)
 	local character = player.Character
 	if character == nil then
@@ -1083,7 +1222,7 @@ local function resolvePlayerTurretContext(player: Player): (Model?, Model?, stri
 	end
 
 	local seatPart = humanoid.SeatPart
-	if seatPart == nil or not CollectionService:HasTag(seatPart, "TurretSeat") then
+	if seatPart == nil or (not CollectionService:HasTag(seatPart, "TurretSeat") and not CollectionService:HasTag(seatPart, "ArtillerySeat")) then
 		return nil, nil, nil, nil
 	end
 
@@ -1238,6 +1377,21 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 				end)
 			end
 		end
+	elseif weaponClass == "artillery" then
+		local artilleryGravity = weaponConfig.artilleryGravity
+		local muzzleVelocity = weaponConfig.projectileSpeed
+		if type(artilleryGravity) == "number" and artilleryGravity > 0 and muzzleVelocity > 0 then
+			local elevation = math.asin(math.clamp(normalizedDirection.Y, -1, 1))
+			local flatRange = muzzleVelocity * muzzleVelocity * math.sin(2 * elevation) / artilleryGravity
+			local minRange = weaponConfig.artilleryMinRange or 0
+			if flatRange < minRange and minRange > 0 then
+				print(string.format("[P7_MIN_RANGE] entity=%s range=%.0f min=%.0f", entityId, flatRange, minRange))
+				return
+			end
+		end
+		firedAny = fireArtilleryProjectile(
+			entityModel, entityId, healthState, weaponConfig, character, normalizedDirection, cooldown
+		)
 	else
 		if not warnedUnknownWeaponClass[weaponClass] then
 			warn(string.format("[P1_WEAPON] Unknown weaponClass '%s'; falling back to projectile", weaponClass))

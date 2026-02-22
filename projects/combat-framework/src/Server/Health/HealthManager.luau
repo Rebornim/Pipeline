@@ -112,6 +112,57 @@ local function getShieldRegenDelay(config: EntityConfig): number
 	return math.max(0, readConfigNumber("DefaultShieldRegenDelay", 3))
 end
 
+local function readNumberAttribute(instance: Instance, name: string): number?
+	local raw = instance:GetAttribute(name)
+	if type(raw) == "number" then
+		return raw
+	end
+	if type(raw) == "string" then
+		return tonumber(raw)
+	end
+	return nil
+end
+
+local function applyPercentModifier(baseValue: number, modifier: number?, minValue: number?): number
+	local adjusted = baseValue
+	if modifier ~= nil then
+		adjusted = baseValue * (1 + modifier)
+	end
+	if minValue ~= nil then
+		adjusted = math.max(minValue, adjusted)
+	end
+	return adjusted
+end
+
+local function resolveEntityConfig(baseConfig: EntityConfig, instance: Model): EntityConfig
+	local resolved: { [string]: any } = {}
+	for key, value in pairs(baseConfig :: any) do
+		resolved[key] = value
+	end
+
+	local percentModifiers: { { string } } = {
+		{ "EntityHullHPMod", "hullHP" },
+		{ "EntityShieldHPMod", "shieldHP" },
+		{ "EntityShieldRegenRateMod", "shieldRegenRate" },
+		{ "EntityShieldRegenDelayMod", "shieldRegenDelay" },
+		{ "EntityRespawnTimeMod", "respawnTime" },
+	}
+
+	for _, entry in ipairs(percentModifiers) do
+		local attrName = entry[1]
+		local configKey = entry[2]
+		local baseValue = resolved[configKey]
+		if type(baseValue) == "number" then
+			local mod = readNumberAttribute(instance, attrName)
+			if mod ~= nil then
+				resolved[configKey] = applyPercentModifier(baseValue, mod, 0)
+			end
+		end
+	end
+
+	return resolved :: any
+end
+
 local function getDamageTypeMultiplier(damageType: string): DamageTypeMultiplier
 	local defaults: DamageTypeMultiplier = {
 		shieldMult = 1,
@@ -442,12 +493,13 @@ function HealthManager.init(remotes: Folder)
 end
 
 function HealthManager.registerEntity(entityId: string, validated: ValidatedEntity)
-	local entityConfig: EntityConfig? = CombatConfig.Entities[validated.configId]
-	if entityConfig == nil then
+	local baseEntityConfig: EntityConfig? = CombatConfig.Entities[validated.configId]
+	if baseEntityConfig == nil then
 		warn(string.format("[P1_REGISTER_FAIL] entity=%s missing config '%s'", entityId, validated.configId))
 		return
 	end
 
+	local entityConfig = resolveEntityConfig(baseEntityConfig, validated.instance)
 	local maxHP = entityConfig.hullHP
 	local maxShieldHP = 0
 	if type(entityConfig.shieldHP) == "number" then

@@ -16,6 +16,8 @@ local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local LeadSolver = require(sharedRoot:WaitForChild("LeadSolver"))
 local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
 
+local PLAYER_TARGET_PREFIX = "player_"
+
 local TargetingClient = {}
 
 local requestLockRemote: RemoteEvent? = nil
@@ -42,6 +44,21 @@ local LOCK_UI_DEADZONE_PX = 2.5
 local LEAD_WORLD_SMOOTH_RATE = 12
 local LEAD_WORLD_DEADZONE_STUDS = 0.35
 
+local function isPlayerTargetId(targetId: string): boolean
+	return string.sub(targetId, 1, #PLAYER_TARGET_PREFIX) == PLAYER_TARGET_PREFIX
+end
+
+local function getModelAimPosition(model: Model): Vector3
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid ~= nil then
+		local rootPart = humanoid.RootPart
+		if rootPart ~= nil then
+			return rootPart.Position
+		end
+	end
+	return model:GetPivot().Position
+end
+
 local function normalizeTeamOrFaction(raw: string?): string?
 	if raw == nil then
 		return nil
@@ -65,6 +82,24 @@ local function findTaggedDescendant(model: Model, tagName: string, className: st
 end
 
 local function findEntityModelById(entityId: string): Model?
+	if isPlayerTargetId(entityId) then
+		local userIdStr = string.sub(entityId, #PLAYER_TARGET_PREFIX + 1)
+		local userId = tonumber(userIdStr)
+		if userId == nil then
+			return nil
+		end
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.UserId == userId then
+				local character = player.Character
+				if character ~= nil then
+					return character
+				end
+				return nil
+			end
+		end
+		return nil
+	end
+
 	for _, tagged in ipairs(CollectionService:GetTagged("CombatEntity")) do
 		if tagged:IsA("Model") and tagged:GetAttribute("EntityId") == entityId then
 			return tagged
@@ -142,7 +177,13 @@ end
 local function estimateTargetVelocity(targetModel: Model, targetPosition: Vector3): Vector3
 	local now = tick()
 	local fallbackVelocity = Vector3.zero
-	local rootPart = targetModel.PrimaryPart
+	local humanoid = targetModel:FindFirstChildOfClass("Humanoid")
+	local rootPart: BasePart? = nil
+	if humanoid ~= nil and humanoid.RootPart ~= nil then
+		rootPart = humanoid.RootPart
+	else
+		rootPart = targetModel.PrimaryPart
+	end
 	if rootPart == nil then
 		rootPart = targetModel:FindFirstChildWhichIsA("BasePart", true)
 	end
@@ -176,7 +217,7 @@ local function computeLeadPoint(source: Vector3, targetModel: Model, projectileS
 		return nil
 	end
 
-	local targetPosition = targetModel:GetPivot().Position
+	local targetPosition = getModelAimPosition(targetModel)
 	local targetVelocity = estimateTargetVelocity(targetModel, targetPosition)
 	local predicted, _travelTime = LeadSolver.solveInterceptPoint(source, targetPosition, targetVelocity, projectileSpeed)
 	return predicted
@@ -250,7 +291,7 @@ local function updateLockedHud(camera: Camera, turretModel: Model, weaponMount: 
 		return
 	end
 
-	local targetPosition = activeLockedModel:GetPivot().Position
+	local targetPosition = getModelAimPosition(activeLockedModel)
 	local targetViewport, targetOnScreen = camera:WorldToViewportPoint(targetPosition)
 	if targetOnScreen then
 		local rawTargetScreen = Vector2.new(targetViewport.X, targetViewport.Y)
@@ -291,6 +332,20 @@ local function updateLockedHud(camera: Camera, turretModel: Model, weaponMount: 
 	CombatHUD.setLeadingIndicatorScreenPosition(smoothedLeadScreenPos :: Vector2)
 end
 
+local losRaycastParams = RaycastParams.new()
+losRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+losRaycastParams.IgnoreWater = true
+
+local function hasLineOfSight(weaponMount: BasePart, turretModel: Model, targetPosition: Vector3, targetModel: Model): boolean
+	losRaycastParams.FilterDescendantsInstances = { turretModel }
+	local toTarget = targetPosition - weaponMount.Position
+	local losResult = Workspace:Raycast(weaponMount.Position, toTarget, losRaycastParams)
+	if losResult == nil then
+		return true
+	end
+	return losResult.Instance:IsDescendantOf(targetModel)
+end
+
 local function updateLockCandidate(camera: Camera, turretModel: Model, weaponMount: BasePart, lockRange: number)
 	local cameraPosition = camera.CFrame.Position
 	local cameraLook = camera.CFrame.LookVector
@@ -301,6 +356,7 @@ local function updateLockCandidate(camera: Camera, turretModel: Model, weaponMou
 	local bestEntityId: string? = nil
 	local bestModel: Model? = nil
 
+	-- Scan CombatEntity tagged models (turrets, vehicles, target dummies)
 	for _, tagged in ipairs(CollectionService:GetTagged("CombatEntity")) do
 		if tagged:IsA("Model") then
 			local targetModel = tagged :: Model
@@ -310,17 +366,53 @@ local function updateLockCandidate(camera: Camera, turretModel: Model, weaponMou
 					local hullHP = targetModel:GetAttribute("HullHP")
 					if type(hullHP) == "number" and hullHP > 0 then
 						local targetFaction = normalizeTeamOrFaction(targetModel:GetAttribute("Faction"))
-						if turretFaction == nil or targetFaction == nil or targetFaction ~= turretFaction then
-							local targetPosition = targetModel:GetPivot().Position
+						if CombatConfig.FriendlyFireEnabled or turretFaction == nil or targetFaction == nil or targetFaction ~= turretFaction then
+							local targetPosition = getModelAimPosition(targetModel)
 							local toTarget = targetPosition - cameraPosition
 							local distance = toTarget.Magnitude
 							if distance > 1e-4 and distance <= lockRange then
 								local direction = toTarget.Unit
 								local dot = cameraLook:Dot(direction)
 								if dot >= bestDot and isDirectionWithinMountArc(weaponMount, targetPosition - weaponMount.Position) then
+									if hasLineOfSight(weaponMount, turretModel, targetPosition, targetModel) then
+										bestDot = dot
+										bestEntityId = targetEntityId
+										bestModel = targetModel
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Scan player characters
+	local localCharacter = localPlayer.Character
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= localPlayer then
+			local character = player.Character
+			if character ~= nil and character ~= localCharacter then
+				local humanoid = character:FindFirstChildOfClass("Humanoid")
+				if humanoid ~= nil and humanoid.Health > 0 then
+					local targetFaction: string? = nil
+					local team = player.Team
+					if team ~= nil then
+						targetFaction = normalizeTeamOrFaction(team.Name)
+					end
+					if CombatConfig.FriendlyFireEnabled or turretFaction == nil or targetFaction == nil or targetFaction ~= turretFaction then
+						local targetPosition = getModelAimPosition(character)
+						local toTarget = targetPosition - cameraPosition
+						local distance = toTarget.Magnitude
+						if distance > 1e-4 and distance <= lockRange then
+							local direction = toTarget.Unit
+							local dot = cameraLook:Dot(direction)
+							if dot >= bestDot and isDirectionWithinMountArc(weaponMount, targetPosition - weaponMount.Position) then
+								if hasLineOfSight(weaponMount, turretModel, targetPosition, character) then
 									bestDot = dot
-									bestEntityId = targetEntityId
-									bestModel = targetModel
+									bestEntityId = PLAYER_TARGET_PREFIX .. tostring(player.UserId)
+									bestModel = character
 								end
 							end
 						end
@@ -390,7 +482,7 @@ local function onLockOnState(payload: any)
 	else
 		local reason = payload.reason
 		if previousLockedEntityId ~= nil and type(reason) == "string" then
-			if reason == "range" or reason == "arc" or reason == "dead" or reason == "missing" or reason == "missing_target" then
+			if reason == "range" or reason == "arc" or reason == "dead" or reason == "missing" or reason == "missing_target" or reason == "los" then
 				CombatHUD.onLockLostCue(reason)
 			end
 		end

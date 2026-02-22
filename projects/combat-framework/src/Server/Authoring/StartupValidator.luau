@@ -228,7 +228,10 @@ function StartupValidator.validate(): { ValidatedEntity }
 
 			local seatCandidate = findTaggedDescendant(model, "TurretSeat", "Seat")
 			if seatCandidate == nil then
-				fail(modelName, "has weaponId but no TurretSeat tagged child")
+				seatCandidate = findTaggedDescendant(model, "ArtillerySeat", "Seat")
+			end
+			if seatCandidate == nil then
+				fail(modelName, "has weaponId but no TurretSeat or ArtillerySeat tagged child")
 				continue
 			end
 
@@ -265,16 +268,20 @@ function StartupValidator.validate(): { ValidatedEntity }
 			continue
 		end
 
-		local vehicleConfigId = model:GetAttribute("VehicleConfigId")
+		-- Support both VehicleCategory (new) and VehicleConfigId (legacy)
+		local vehicleConfigId = model:GetAttribute("VehicleCategory")
 		if type(vehicleConfigId) ~= "string" then
-			fail(modelName, "VehicleEntity missing VehicleConfigId attribute")
+			vehicleConfigId = model:GetAttribute("VehicleConfigId")
+		end
+		if type(vehicleConfigId) ~= "string" then
+			fail(modelName, "VehicleEntity missing VehicleCategory (or VehicleConfigId) attribute")
 			invalidVehicleModels[model] = true
 			continue
 		end
 
 		local vehicleConfig = CombatConfig.Vehicles[vehicleConfigId]
 		if vehicleConfig == nil then
-			fail(modelName, string.format("unknown VehicleConfigId '%s'", vehicleConfigId))
+			fail(modelName, string.format("unknown VehicleCategory '%s'", vehicleConfigId))
 			invalidVehicleModels[model] = true
 			continue
 		end
@@ -287,7 +294,7 @@ function StartupValidator.validate(): { ValidatedEntity }
 		end
 
 		local hoverPoints = collectTaggedDescendants(model, "HoverPoint", "BasePart")
-		if vehicleConfig.vehicleClass == "light_speeder" or vehicleConfig.vehicleClass == "heavy_speeder" then
+		if vehicleConfig.vehicleClass == "light" or vehicleConfig.vehicleClass == "heavy" then
 			if #hoverPoints < 4 then
 				fail(modelName, string.format("Speeder needs 4 HoverPoint tagged parts, found %d", #hoverPoints))
 				invalidVehicleModels[model] = true
@@ -307,10 +314,13 @@ function StartupValidator.validate(): { ValidatedEntity }
 			continue
 		end
 
-		local forwardAxis = model:GetAttribute("ForwardAxis")
-		local validAxes = { X = true, ["-X"] = true, Z = true, ["-Z"] = true }
-		if type(forwardAxis) ~= "string" or not validAxes[forwardAxis] then
-			warn(string.format("[VALIDATE] VehicleEntity '%s' missing/invalid ForwardAxis attribute (expected \"X\", \"-X\", \"Z\", or \"-Z\")", modelName))
+		local forwardYawOffset = model:GetAttribute("ForwardYawOffset")
+		if type(forwardYawOffset) ~= "number" then
+			local forwardAxis = model:GetAttribute("ForwardAxis")
+			local validAxes = { X = true, ["-X"] = true, Z = true, ["-Z"] = true }
+			if type(forwardAxis) ~= "string" or not validAxes[forwardAxis] then
+				warn(string.format("[VALIDATE] VehicleEntity '%s' missing ForwardAxis or ForwardYawOffset attribute", modelName))
+			end
 		end
 	end
 

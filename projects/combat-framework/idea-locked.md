@@ -29,6 +29,30 @@ Static ground turrets/emplacements. First platform — entire combat framework p
 
 ---
 
+## Artillery Emplacements
+
+Fixed-position indirect fire weapons. Fundamentally different from turrets — arcing projectile trajectories, manual angle/heading adjustment, area denial. No auto-aim, no lock-on, no arc preview. Pure skill.
+
+- Pre-placed by developers in the world
+- Player walks up, **proximity prompt** to enter, **F key** to exit (same as turrets)
+- **WASD aiming**: A/D rotates heading (azimuth), W/S adjusts elevation (pitch). No mouse aim.
+- **Shift + WASD**: fine adjustment mode for precision aiming
+- **HUD**: three numbers — Elevation (degrees with decimals), Heading (degrees with decimals), Estimated Range (studs, assuming target is level with you)
+- Estimated range calculated live from current elevation: `range = v² × sin(2θ) / g`
+- **Parabolic projectile**: shell arcs through the air with gravity, fully server-simulated
+- **Splash damage** on impact — area-of-effect with falloff, not direct hit
+- **Ammo-based** with reload between shots (not overheat) — load, fire, wait, load next
+- **Minimum range**: ~100 studs — prevents firing at targets directly in front
+- **Custom gravity**: config-tunable per weapon, starting at ~400-500 (heavier than Roblox default 196.2 for satisfying punchy arcs)
+- **Impact feedback**: explosion visual + hitmarkers (same hitmarker system as turrets)
+- **No arc preview** — player reads estimated range, fires, observes where shell lands, adjusts
+- Destructible — hull HP, respawns after config timer (same as turrets)
+- Later: mountable on vehicles (heavy speeders, walkers) when vehicle passes are complete
+
+**Success condition:** Player enters artillery emplacement, adjusts elevation and heading with WASD (shift for precision), reads estimated range display, fires. Shell arcs realistically through the air, impacts terrain/target, deals splash damage to everything in blast radius. Player sees explosion, gets hitmarkers on enemies hit. Player adjusts angle based on observed impact point. Shift-aiming allows fine degree adjustments for precision.
+
+---
+
 ## Ship Classes
 
 Four classes. Every ship individually tuned — unique stats, weapons, seats. No generic class defaults.
@@ -187,6 +211,7 @@ Current ship setup is too painful — only the creator can configure ships. New 
 - **Lasers/Blasters/Turbolasers/Ion:** straight-line travel, config speed per weapon type, despawn at max range
 - **Torpedoes:** slower projectile, straight-line toward locked target. Needs lock-on to fire.
 - **Concussion missiles:** homing capability, tracks target after launch. Slower than lasers but follows target.
+- **Artillery shells:** parabolic arc trajectory with configurable gravity. No lock-on — manual aim only. Server-simulated arc with per-frame collision checks. Splash damage on impact.
 
 **Success conditions:**
 - Player fires blaster: visible bolt travels from weapon to target at correct speed. Server registers hit. No physics object created.
@@ -528,6 +553,7 @@ Fighters stay true to lore. Larger ships progressively compress to keep capital 
 | Context | Elements |
 |---|---|
 | Gunner (turret/ship weapon) | Crosshair, overheat display, ammo count (physical weapons), leading indicator bubble, "TARGET LOCK READY" prompt, lock-on indicator, own weapon subsystem health |
+| Artillery operator | Elevation angle (degrees), heading (degrees), estimated range (studs). No crosshair, no lock-on. Ammo count, reload indicator. |
 | Pilot (fighter) | Hull HP, shield status, speed, weapon selector (1/2/3), weapon overheat/ammo, power routing (3 bars, 8 pips, 12 budget), 3rd person view |
 | Pilot (cruiser/capital) | Hull HP, shield status, speed, power routing interface, **all subsystem health visible at all times**, 3rd person pulled back |
 | Scanner operator | Scan target selector, scan progress, scanned ship info (hull/shield/subsystem status) |
@@ -554,9 +580,11 @@ Fighters stay true to lore. Larger ships progressively compress to keep capital 
 ## Platforms (Build Order)
 
 1. **Static ground turret** — combat framework foundation (weapons, math-based projectiles, damage types, targeting, health)
-2. **Armed ground vehicle** — custom-built vehicle system sharing ship architecture (full idea in vehicle-idea-locked.md)
-3. **Starfighter** — flight physics + combat framework + landing zones + relative motion + power routing
-4. **Capital ship** — multi-seat, subsystems, hangars (launch + return + repair/rearm), weapon grouping, power routing, scanning station, full scale
+2. **Armed ground vehicle (speeders)** — custom hover physics, CFrame velocity system
+3. **Artillery emplacement** — indirect fire, parabolic projectiles, WASD aiming
+4. **Armed ground vehicle (walkers)** — IK procedural legs, head-mounted weapons
+5. **Starfighter** — flight physics + combat framework + landing zones + relative motion + power routing
+6. **Capital ship** — multi-seat, subsystems, hangars (launch + return + repair/rearm), weapon grouping, power routing, scanning station, full scale
 
 ---
 

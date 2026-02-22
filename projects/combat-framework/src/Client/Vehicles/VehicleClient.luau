@@ -106,6 +106,118 @@ local function getVehicleInputRate(): number
 	return raw
 end
 
+local function readNumberAttribute(instance: Instance, name: string): number?
+	local raw = instance:GetAttribute(name)
+	if type(raw) == "number" then
+		return raw
+	end
+	if type(raw) == "string" then
+		return tonumber(raw)
+	end
+	return nil
+end
+
+local function readBoolAttribute(instance: Instance, name: string): boolean?
+	local raw = instance:GetAttribute(name)
+	if type(raw) == "boolean" then
+		return raw
+	end
+	return nil
+end
+
+local function applyPercentModifier(baseValue: number, modifier: number?, minValue: number?): number
+	local adjusted = baseValue
+	if modifier ~= nil then
+		adjusted = baseValue * (1 + modifier)
+	end
+	if minValue ~= nil then
+		adjusted = math.max(minValue, adjusted)
+	end
+	return adjusted
+end
+
+local function resolveVehicleConfig(instance: Model): VehicleConfig?
+	local category = instance:GetAttribute("VehicleCategory")
+	if type(category) ~= "string" then
+		category = instance:GetAttribute("VehicleConfigId")
+	end
+	if type(category) ~= "string" then
+		return nil
+	end
+
+	local vehiclesConfig = CombatConfig.Vehicles
+	if type(vehiclesConfig) ~= "table" then
+		return nil
+	end
+	local baseConfig = vehiclesConfig[category]
+	if type(baseConfig) ~= "table" then
+		return nil
+	end
+
+	local resolved: { [string]: any } = {}
+	for key, value in pairs(baseConfig :: any) do
+		resolved[key] = value
+	end
+
+	local percentModifiers: { { string } } = {
+		{ "VehicleMaxSpeedMod", "maxSpeed" },
+		{ "VehicleAccelerationMod", "acceleration" },
+		{ "VehicleDecelerationMod", "deceleration" },
+		{ "VehicleBrakingMod", "brakingDeceleration" },
+		{ "VehicleReverseSpeedMod", "reverseMaxSpeed" },
+		{ "VehicleTurnSpeedLowMod", "turnSpeedLow" },
+		{ "VehicleTurnSpeedHighMod", "turnSpeedHigh" },
+		{ "VehicleLateralGripLowMod", "lateralGripLow" },
+		{ "VehicleLateralGripHighMod", "lateralGripHigh" },
+		{ "VehicleHoverHeightMod", "hoverHeight" },
+		{ "VehicleSpringStiffnessMod", "springStiffness" },
+		{ "VehicleSpringDampingMod", "springDamping" },
+		{ "VehicleTiltStiffnessMod", "tiltStiffness" },
+		{ "VehicleTiltDampingMod", "tiltDamping" },
+		{ "VehicleTerrainConformityMod", "terrainConformity" },
+		{ "VehicleMaxClimbSlopeMod", "maxClimbSlope" },
+		{ "VehicleCollisionRadiusMod", "collisionRadius" },
+		{ "VehicleCollisionBounceMod", "collisionBounce" },
+		{ "VehicleCollisionDmgThresholdMod", "collisionDamageThreshold" },
+		{ "VehicleCollisionDmgScaleMod", "collisionDamageScale" },
+		{ "VehicleFallDmgThresholdMod", "fallDamageThreshold" },
+		{ "VehicleFallDmgScaleMod", "fallDamageScale" },
+		{ "VehicleCameraDistanceMod", "cameraDistance" },
+		{ "VehicleCameraHeightMod", "cameraHeight" },
+		{ "VehicleCameraLerpMod", "cameraLerpSpeed" },
+		{ "VehicleBoostSpeedMod", "boostSpeedMultiplier" },
+		{ "VehicleBoostDurationMod", "boostDuration" },
+		{ "VehicleBoostCooldownMod", "boostCooldown" },
+		{ "VehicleLeanBankAngleMod", "leanBankAngle" },
+		{ "VehicleLeanTurnRateMod", "leanTurnRate" },
+		{ "VehicleLeanSpeedPenaltyMod", "leanSpeedPenalty" },
+	}
+
+	for _, entry in ipairs(percentModifiers) do
+		local attrName = entry[1]
+		local configKey = entry[2]
+		local mod = readNumberAttribute(instance, attrName)
+		if mod ~= nil then
+			resolved[configKey] = applyPercentModifier(resolved[configKey], mod, 0)
+		end
+	end
+
+	local canCrossWater = readBoolAttribute(instance, "VehicleCanCrossWater")
+	if canCrossWater ~= nil then
+		resolved.canCrossWater = canCrossWater
+	end
+	local boostEnabled = readBoolAttribute(instance, "VehicleBoostEnabled")
+	if boostEnabled ~= nil then
+		resolved.boostEnabled = boostEnabled
+	end
+	local leanEnabled = readBoolAttribute(instance, "VehicleLeanEnabled")
+	if leanEnabled ~= nil then
+		resolved.leanEnabled = leanEnabled
+	end
+
+	return resolved :: any
+end
+
 local function findVehicleModelFromSeat(seat: BasePart): Model?
 	local current: Instance? = seat
 	while current ~= nil do
@@ -140,12 +252,14 @@ local function readInputPayload(): VehicleInputPayload
 	end
 
 	local lean = 0
-	local aDown = UserInputService:IsKeyDown(Enum.KeyCode.A)
-	local dDown = UserInputService:IsKeyDown(Enum.KeyCode.D)
-	if aDown and not dDown then
-		lean = -1
-	elseif dDown and not aDown then
-		lean = 1
+	if activeVehicleConfig ~= nil and activeVehicleConfig.leanEnabled then
+		local aDown = UserInputService:IsKeyDown(Enum.KeyCode.A)
+		local dDown = UserInputService:IsKeyDown(Enum.KeyCode.D)
+		if aDown and not dDown then
+			lean = -1
+		elseif dDown and not aDown then
+			lean = 1
+		end
 	end
 
 	local steerX = 0
@@ -242,9 +356,9 @@ local function updateVirtualCursor(dt: number)
 		end
 		local deflectionX = if maxX > 0 then math.abs(virtualCursorX) / maxX else 0
 		local deflectionY = if maxY > 0 then math.abs(virtualCursorY) / maxY else 0
-		-- Full centering at 0%, fades to zero at 50%, none beyond 50%
-		local centerStrengthX = math.clamp(1 - deflectionX / 0.5, 0, 1)
-		local centerStrengthY = math.clamp(1 - deflectionY / 0.5, 0, 1)
+		-- Full centering at 0%, fades to zero at 90%, none beyond 90%
+		local centerStrengthX = math.clamp(1 - deflectionX / 0.9, 0, 1)
+		local centerStrengthY = math.clamp(1 - deflectionY / 0.9, 0, 1)
 		local centerAlpha = 1 - math.exp(-centeringRate * dt)
 		virtualCursorX -= virtualCursorX * centerAlpha * centerStrengthX
 		virtualCursorY -= virtualCursorY * centerAlpha * centerStrengthY
@@ -700,11 +814,10 @@ local function onSeatChanged(humanoid: Humanoid)
 		local vehicleModel = findVehicleModelFromSeat(seatPart)
 		if vehicleModel ~= nil then
 			local entityId = vehicleModel:GetAttribute("EntityId")
-			local vehicleConfigId = vehicleModel:GetAttribute("VehicleConfigId")
-			if type(entityId) == "string" and type(vehicleConfigId) == "string" then
-				local config = CombatConfig.Vehicles[vehicleConfigId]
-				if type(config) == "table" then
-					enterVehicleMode(entityId, vehicleModel, config :: VehicleConfig)
+			if type(entityId) == "string" then
+				local config = resolveVehicleConfig(vehicleModel)
+				if config ~= nil then
+					enterVehicleMode(entityId, vehicleModel, config)
 					return
 				end
 			end

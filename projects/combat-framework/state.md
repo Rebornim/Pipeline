@@ -1,27 +1,36 @@
 # Combat Framework — State
 
-## Current Stage: Pass 5 Post-Fix Stabilization (Polish)
-## Status: Physics polish — Steps 1-4 built, Steps 5-7 designed and queued
+## Current Stage: Pass 5 Complete + Stabilized
+## Status: Movement system stable. Emergency builder fixes applied. Ready for Pass 6 (Speeder Combat).
 
-### Build Order (completed)
-1. ~~`pass-5-collision-deflect-design.md` — angle-aware wall collision (deflection + damage fix)~~
-2. ~~`pass-5-steering-overhaul-design.md` — mouse rework (lock, virtual cursor, centering) + speed-dependent turn rate~~
-3. ~~`pass-5-lean-polish-design.md` — entry bite, exit settle, FOV (server + camera feel)~~
-4. ~~`pass-5-lean-effects-design.md` — camera lateral offset, hover dust kick, entry shake (client VFX)~~
+### Pass 5 Stabilization Build Delta (2026-02-22, emergency builder mode)
 
-### Build Order (active)
-5. `pass-5-movement-weight-design.md` — lateral momentum (grip blend) + acceleration curve (taper near max speed)
-6. `pass-5-terrain-response-design.md` — spring-damper rotational inertia (bobblehead tilt) + landing camera shake
-7. `pass-5-vehicle-optimization-design.md` — Phase 2: weld conversion (N→1 CFrame replication), CFrame rate cap (60Hz→20Hz writes), internal position tracking, remote vehicle client interpolation. Phase 1 (attribute optimization + dormancy) already deployed.
+**Critical bugs fixed:**
+- **Slope system was entirely broken:** `uphillDirection` used raw `averageNormal.X/Z` (points downhill) instead of negated (points uphill). `BlockedClimb` never triggered, slope speed penalties applied to wrong direction, CrestRelease fired going uphill instead of downhill. Fixed by negating horizontal normal components in both `stepSingleVehicle` and `applySlopeLimit`.
+- **Client attribute name mismatch:** VehicleClient.luau and RemoteVehicleSmoother.luau read `VehicleConfigId` (old name) instead of `VehicleCategory` (new name). Vehicles wouldn't initiate when player sat in driver seat. Fixed with VehicleCategory-first fallback in both files.
+- **Client never applied attribute modifiers:** `resolveVehicleConfig` only existed server-side. Client read raw base configs, so `VehicleCameraDistanceMod`, `VehicleMaxSpeedMod`, and all other percentage modifiers were ignored client-side. Fixed by duplicating full resolver to VehicleClient.
+- **Heavy vehicles could A/D lean:** Client input gathering read A/D lean keys without checking `leanEnabled`. Server blocked it but client still sent input. Fixed by wrapping lean input in `leanEnabled` check.
+- **Tilt conformity had pitch/roll swapped:** `rollAmount = averageNormal:Dot(tiltForward)` measured the pitch component (forward projection), not roll. Code removed pitch and preserved roll — opposite of intent. Fixed by computing `tiltRight = tiltForward:Cross(Vector3.yAxis)` and using `averageNormal:Dot(tiltRight)` for actual roll measurement.
+- **Bank axis wrong for non-default forward axes:** `attachmentRollAxisLocal = forwardAxisLocal` caused bank rotation around wrong axis for ForwardAxis = "X", "Z", or ForwardYawOffset models. Fixed to always use `Vector3.new(0, 0, -1)` (CFrame.lookAt local forward).
+- **Flat-ground vertical bobbing:** Hard velocity dead zone (`abs < 2 → 0`) prevented hover springs from making micro-corrections while moving, causing error accumulation then snap correction. Replaced with smooth frame-rate-independent exponential damping (`math.exp(-12 * dt)` upward, `math.exp(-6 * dt)` downward).
 
-## Pass 5 Stabilization Snapshot (2026-02-20)
-- Pass 5 core stabilization is complete enough for active manual playtesting.
-- Primary implementation files: `src/Server/Vehicles/VehicleServer.luau`, `src/Server/Vehicles/HoverPhysics.luau`, `src/Server/Vehicles/CollisionHandler.luau`, `src/Client/Vehicles/VehicleCamera.luau`, `src/Client/Vehicles/VehicleVisualSmoother.luau`.
-- Active pass-5 context is maintained in `pass-5-context.md`.
-- Critical blockers previously reported by user (camera/frame mismatch, crest lock, uphill sink, cliff landing/phase) were iterated and are now reported as working baseline behavior.
-- Impact/fall damage tuning pass was applied in config: reduced short-fall/low-speed impact lethality (`fallDamageThreshold=80`, `fallDamageScale=0.8`, `collisionDamageThreshold=60`, `collisionDamageScale=1.2`).
-- Pass-5 historical artifacts were archived under `archive/pass-5/`.
-- Current policy note: no MCP playtest runs unless explicitly requested by user.
+**Features added:**
+- **ForwardYawOffset attribute:** Number attribute (degrees from local -Z) for vehicles with non-axis-aligned forward directions. Overrides ForwardAxis string. Computes `forwardAxisLocal` via `Vector3.new(math.sin(rad), 0, -math.cos(rad))`. Added to VehicleServer registration and StartupValidator.
+- **RemoteVehicleSmoother maxSpeed modifier:** `getMaxSpeedForModel` now applies `VehicleMaxSpeedMod` for correct remote vehicle sound pitch.
+
+**Config changes:**
+- Heavy vehicle `terrainConformity`: 0.1 → 1.0 (full terrain conformity on both pitch and roll).
+
+**Documentation added:**
+- `attribute-reference.md`: Comprehensive standalone reference for all combat framework attributes (vehicles, turrets, artillery, moving target controller) with types, examples, base values.
+- `vehicle-idea-locked.md`: Expanded attribute modifier section with detailed types and examples.
+
+**Files modified:**
+- `src/Server/Vehicles/VehicleServer.luau` — uphillDirection fix, ForwardYawOffset, rollAxis, tilt conformity fix, smooth vertical damping
+- `src/Client/Vehicles/VehicleClient.luau` — VehicleCategory fallback, resolveVehicleConfig, lean gating
+- `src/Client/Vehicles/RemoteVehicleSmoother.luau` — VehicleCategory fallback, maxSpeed modifier
+- `src/Server/Authoring/StartupValidator.luau` — ForwardYawOffset validation
+- `src/Shared/CombatConfig.luau` — heavy terrainConformity = 1.0
 
 ## History
 - **Idea:** Locked 2026-02-18. Full system defined in idea-locked.md.
@@ -36,12 +45,13 @@
 - **Pass 5 Design:** SCRAPPED 2026-02-19. Bolt-on vehicle approach abandoned — existing vehicle system not worth using.
 - **Vehicle Idea:** Locked 2026-02-19. Custom vehicle system defined in vehicle-idea-locked.md. Shares architecture with ships. 4 vehicle classes (light speeder, heavy speeder, biped walker, quad walker). Hover physics, IK legs, CFrame-based movement.
 - **Roadmap Revision:** Complete 2026-02-19. Passes 5+ rebuilt for custom vehicle system. Walker split (pass 7 movement, pass 8 combat). Animated parts moved to pass 11 (before landing). 25 passes + optimization. AT-AT/AT-ST not configured during development — system supports walkers generically.
+- **Roadmap Revision 2:** 2026-02-21. Artillery emplacement added as pass 7 (indirect fire, parabolic projectiles, WASD aiming). Passes 7+ renumbered (+1). Walkers now passes 8-9, fighters 10-11, etc. 26 passes + optimization.
 - **Pass 5 Design:** Complete 2026-02-19. Speeder movement — CFrame velocity system, hover physics (4-spring raycasts), mouse steering, collision detection + damage, fall damage, 3rd person camera, VehicleEntity/DriverSeat/HoverPoint tagging, placeholder speeder, speed HUD. No combat.
 - **Pass 5 Build:** Failed 2026-02-19. 6 coupled failures: inverted steering, camera side-rotation/jitter, random airborne launches, harness grounded=0. Root causes: heading sign convention, camera tracking tilted model frame, hover physics averaging only over grounded rays. Fix plan archived at `archive/pass-5/pass-5-fix-plan.md`.
 - **Pass 5 Recovery/Debug:** Iterated 2026-02-20. Post-fix baseline accepted by user for continued testing; remaining work is polish/tuning and deferred hull-damage model follow-up.
 
 ## Context Files
-- Read: `feature-passes.md`, `idea-locked.md`, `vehicle-idea-locked.md`, `project-protocol.md`, `golden-tests.md`, `state.md`, `pass-5-context.md`
+- Read: `feature-passes.md`, `idea-locked.md`, `vehicle-idea-locked.md`, `attribute-reference.md`, `golden-tests.md`, `state.md`
 - Source of truth for current behavior: `src/` code + this file + `golden-tests.md`
 
 ## Pass 1 Design Summary

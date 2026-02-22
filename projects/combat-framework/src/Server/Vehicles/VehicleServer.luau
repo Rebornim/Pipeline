@@ -27,6 +27,7 @@ type VehicleRuntimeStateInternal = VehicleRuntimeState & {
 	attachmentYawOffset: number,
 	attachmentRollAxisLocal: Vector3,
 	crestReleaseUntil: number,
+	crestLaunchUntil: number,
 	currentBankAngle: number,
 	leanEntryTimer: number,
 	leanExitTimer: number,
@@ -37,6 +38,7 @@ type VehicleRuntimeStateInternal = VehicleRuntimeState & {
 	waterBounceTimer: number,
 	waterBounceTriggered: boolean,
 	airborneStartedAt: number,
+	landingDampUntil: number,
 	lastLandingShakeAt: number,
 	driverEnterStabilizeUntil: number,
 	driverEnterBaseY: number,
@@ -87,6 +89,142 @@ local function getVehicleConfig(vehicleConfigId: string): VehicleConfig?
 	end
 
 	return rawConfig :: VehicleConfig
+end
+
+local function readNumberAttribute(instance: Instance, name: string): number?
+	local raw = instance:GetAttribute(name)
+	if type(raw) == "number" then
+		return raw
+	end
+	if type(raw) == "string" then
+		return tonumber(raw)
+	end
+	return nil
+end
+
+local function readBoolAttribute(instance: Instance, name: string): boolean?
+	local raw = instance:GetAttribute(name)
+	if type(raw) == "boolean" then
+		return raw
+	end
+	if type(raw) == "number" then
+		return raw ~= 0
+	end
+	if type(raw) == "string" then
+		local normalized = string.lower(string.match(raw, "^%s*(.-)%s*$") or "")
+		if normalized == "true" or normalized == "1" or normalized == "yes" or normalized == "on" then
+			return true
+		end
+		if normalized == "false" or normalized == "0" or normalized == "no" or normalized == "off" then
+			return false
+		end
+	end
+	return nil
+end
+
+local function applyPercentModifier(baseValue: number, modifier: number?, minValue: number?): number
+	local adjusted = baseValue
+	if modifier ~= nil then
+		adjusted = baseValue * (1 + modifier)
+	end
+	if minValue ~= nil then
+		adjusted = math.max(minValue, adjusted)
+	end
+	return adjusted
+end
+
+-- Resolve a vehicle's config by reading its VehicleCategory (or VehicleConfigId fallback),
+-- fetching the base config, and applying any percentage modifier attributes from the model.
+local function resolveVehicleConfig(instance: Model): VehicleConfig?
+	-- Determine which base config to use
+	local category = instance:GetAttribute("VehicleCategory")
+	if type(category) ~= "string" then
+		-- Fallback to old VehicleConfigId attribute
+		category = instance:GetAttribute("VehicleConfigId")
+	end
+	if type(category) ~= "string" then
+		return nil
+	end
+
+	local baseConfig = getVehicleConfig(category)
+	if baseConfig == nil then
+		return nil
+	end
+
+	-- Clone the base config so modifiers don't mutate the shared table
+	local resolved: { [string]: any } = {}
+	for key, value in pairs(baseConfig :: any) do
+		resolved[key] = value
+	end
+
+	-- Percentage modifiers: attribute name -> config key
+	local percentModifiers: { { string } } = {
+		-- Movement
+		{ "VehicleMaxSpeedMod", "maxSpeed" },
+		{ "VehicleAccelerationMod", "acceleration" },
+		{ "VehicleDecelerationMod", "deceleration" },
+		{ "VehicleBrakingMod", "brakingDeceleration" },
+		{ "VehicleReverseSpeedMod", "reverseMaxSpeed" },
+		{ "VehicleTurnSpeedLowMod", "turnSpeedLow" },
+		{ "VehicleTurnSpeedHighMod", "turnSpeedHigh" },
+		{ "VehicleLateralGripLowMod", "lateralGripLow" },
+		{ "VehicleLateralGripHighMod", "lateralGripHigh" },
+		-- Hover
+		{ "VehicleHoverHeightMod", "hoverHeight" },
+		{ "VehicleSpringStiffnessMod", "springStiffness" },
+		{ "VehicleSpringDampingMod", "springDamping" },
+		{ "VehicleTiltStiffnessMod", "tiltStiffness" },
+		{ "VehicleTiltDampingMod", "tiltDamping" },
+		{ "VehicleTerrainConformityMod", "terrainConformity" },
+		{ "VehicleMaxClimbSlopeMod", "maxClimbSlope" },
+		-- Collision
+		{ "VehicleCollisionRadiusMod", "collisionRadius" },
+		{ "VehicleCollisionBounceMod", "collisionBounce" },
+		{ "VehicleCollisionDmgThresholdMod", "collisionDamageThreshold" },
+		{ "VehicleCollisionDmgScaleMod", "collisionDamageScale" },
+		-- Fall damage
+		{ "VehicleFallDmgThresholdMod", "fallDamageThreshold" },
+		{ "VehicleFallDmgScaleMod", "fallDamageScale" },
+		-- Camera
+		{ "VehicleCameraDistanceMod", "cameraDistance" },
+		{ "VehicleCameraHeightMod", "cameraHeight" },
+		{ "VehicleCameraLerpMod", "cameraLerpSpeed" },
+		-- Boost
+		{ "VehicleBoostSpeedMod", "boostSpeedMultiplier" },
+		{ "VehicleBoostDurationMod", "boostDuration" },
+		{ "VehicleBoostCooldownMod", "boostCooldown" },
+		-- Lean (light only, but harmless on heavy since base is 0)
+		{ "VehicleLeanBankAngleMod", "leanBankAngle" },
+		{ "VehicleLeanTurnRateMod", "leanTurnRate" },
+		{ "VehicleLeanSpeedPenaltyMod", "leanSpeedPenalty" },
+	}
+
+	for _, entry in ipairs(percentModifiers) do
+		local attrName = entry[1]
+		local configKey = entry[2]
+		local mod = readNumberAttribute(instance, attrName)
+		if mod ~= nil then
+			resolved[configKey] = applyPercentModifier(resolved[configKey], mod, 0)
+		end
+	end
+
+	-- Absolute boolean overrides
+	local canCrossWater = readBoolAttribute(instance, "VehicleCanCrossWater")
+	if canCrossWater ~= nil then
+		resolved.canCrossWater = canCrossWater
+	end
+
+	local boostEnabled = readBoolAttribute(instance, "VehicleBoostEnabled")
+	if boostEnabled ~= nil then
+		resolved.boostEnabled = boostEnabled
+	end
+
+	local leanEnabled = readBoolAttribute(instance, "VehicleLeanEnabled")
+	if leanEnabled ~= nil then
+		resolved.leanEnabled = leanEnabled
+	end
+
+	return resolved :: any
 end
 
 local function computeHeadingFromLook(lookVector: Vector3): number
@@ -357,7 +495,7 @@ local function applySlopeLimit(state: VehicleRuntimeStateInternal, averageNormal
 		return
 	end
 
-	local uphillDirection = Vector3.new(averageNormal.X, 0, averageNormal.Z)
+	local uphillDirection = Vector3.new(-averageNormal.X, 0, -averageNormal.Z)
 	if uphillDirection.Magnitude <= 1e-4 then
 		return
 	end
@@ -462,6 +600,33 @@ local function applyTerrainSweep(
 		return nextPosition
 	end
 
+	-- Wall impact damage: check BEFORE slope/crest bypasses so those early returns can't skip it
+	-- Skip ground-level hits (lips, curbs, seams) — only damage from hits well below vehicle floor
+	local hitHeightAboveGround = hit.Position.Y - (currentPosition.Y - state.config.hoverHeight * 1.5)
+	if hit.Normal.Y < 0.35 and hitHeightAboveGround > 0 then
+		local wallNormal = Vector3.new(hit.Normal.X, 0, hit.Normal.Z)
+		if wallNormal.Magnitude > 1e-4 then
+			wallNormal = wallNormal.Unit
+			local intoWallSpeed = -state.velocity:Dot(wallNormal)
+			-- Skip glancing/scraping hits: use the vehicle's heading (where it's pointed)
+			-- to determine if this is a head-on impact. Heading only changes via steering,
+			-- not from wall bounces or physics forces, so it reliably reflects approach angle.
+			local headingDir = computeForwardDirection(state.heading)
+			local headingIntoWall = math.abs(-headingDir:Dot(wallNormal))
+			if headingIntoWall > 0.5 and intoWallSpeed > state.config.collisionDamageThreshold then
+				local canApplyDamage = state.driver ~= nil or math.abs(state.inputThrottle) > 0.01
+				if canApplyDamage then
+					local damage = math.floor(
+						(intoWallSpeed - state.config.collisionDamageThreshold) * state.config.collisionDamageScale + 0.5
+					)
+					if damage > 0 then
+						HealthManager.applyDamage(state.entityId, damage, "impact", "", currentPosition, true)
+					end
+				end
+			end
+		end
+	end
+
 	local forwardDir = computeForwardDirection(state.heading)
 	local dropProbeOrigin = nextPosition + forwardDir * math.max(1.5, state.config.collisionRadius * 0.65)
 	local dropProbeLength = math.max(state.config.hoverHeight * 2.6, 10)
@@ -497,28 +662,6 @@ local function applyTerrainSweep(
 		and state.velocity.Y > -(state.config.gravity * 0.15)
 	then
 		return nextPosition
-	end
-
-	-- Wall impact damage: apply collision damage for near-vertical surfaces at high speed
-	-- Skip ground-level hits (lips, curbs, seams) — only damage from hits near body height
-	local hitHeightAboveGround = hit.Position.Y - (currentPosition.Y - state.config.hoverHeight * 0.7)
-	if hit.Normal.Y < 0.35 and hitHeightAboveGround > 0 then
-		local wallNormal = Vector3.new(hit.Normal.X, 0, hit.Normal.Z)
-		if wallNormal.Magnitude > 1e-4 then
-			wallNormal = wallNormal.Unit
-			local intoWallSpeed = -state.velocity:Dot(wallNormal)
-			if intoWallSpeed > state.config.collisionDamageThreshold then
-				local canApplyDamage = state.driver ~= nil or math.abs(state.inputThrottle) > 0.01
-				if canApplyDamage then
-					local damage = math.floor(
-						(intoWallSpeed - state.config.collisionDamageThreshold) * state.config.collisionDamageScale + 0.5
-					)
-					if damage > 0 then
-						HealthManager.applyDamage(state.entityId, damage, "impact", "", currentPosition, true)
-					end
-				end
-			end
-		end
 	end
 
 	local intoSurface = state.velocity:Dot(hit.Normal)
@@ -627,10 +770,10 @@ local function stepSingleVehicle(
 
 	-- Boost logic (tap-to-activate: runs full duration regardless of shift held)
 	local now = tick()
-	local wantsBoost = state.inputBoost and state.inputThrottle > 0 and state.inputLean == 0
+	local wantsBoost = state.config.boostEnabled and state.inputBoost and state.inputThrottle > 0 and state.inputLean == 0
 	if state.boostActive then
 		local elapsed = now - state.boostStartTick
-		if elapsed >= state.config.boostDuration then
+		if elapsed >= state.config.boostDuration or state.inputThrottle < 0 then
 			state.boostActive = false
 			state.boostCooldownUntil = now + state.config.boostCooldown
 			state.instance:SetAttribute("VehicleBoosting", false)
@@ -735,13 +878,26 @@ local function stepSingleVehicle(
 	local exitFraction = math.clamp(state.leanExitTimer / math.max(0.001, state.config.leanExitDuration), 0, 1)
 	local leanSpeedFraction = math.clamp(horizontalSpeed / math.max(1, state.config.maxSpeed), 0, 1)
 	local leanEntryMult = 1 + state.config.leanEntryYawBoost * entryFraction
+	-- Counter-steer: separate opposite yaw impulse at lean start
+	local counterSteerDelta = 0
+	local counterSteerActive = false
+	if state.leanEntryTimer > 0 then
+		local elapsed = state.config.leanEntryDuration - state.leanEntryTimer
+		local csDur = state.config.leanCounterSteerDuration
+		if elapsed < csDur and csDur > 0 then
+			counterSteerActive = true
+			local t = elapsed / csDur
+			local intensity = 1 - t
+			counterSteerDelta = math.rad(-state.inputLean * state.config.leanCounterSteerRate * steerScale * intensity) * dt
+		end
+	end
 	local leanSteerDelta =
 		math.rad(state.inputLean * state.config.leanTurnRate * steerScale * leanSpeedFraction * leanEntryMult) * dt
-	state.heading -= (mouseSteerDelta + leanSteerDelta)
+	state.heading -= (mouseSteerDelta + leanSteerDelta + counterSteerDelta)
 
 	local forwardDirection = computeForwardDirection(state.heading)
 	local driveDirection = forwardDirection
-	local uphillDirection = Vector3.new(averageNormal.X, 0, averageNormal.Z)
+	local uphillDirection = Vector3.new(-averageNormal.X, 0, -averageNormal.Z)
 	local uphillUnit = if uphillDirection.Magnitude > 1e-4 then uphillDirection.Unit else Vector3.zero
 	if canUseGroundDrive then
 		driveDirection = projectVectorOntoPlane(forwardDirection, averageNormal)
@@ -768,7 +924,9 @@ local function stepSingleVehicle(
 	local currentDriveSpeed = state.velocity:Dot(driveDirection)
 	local crestReleaseActive = state.crestReleaseUntil > now
 
-	if canUseGroundDrive then
+	local inLaunchWindow = state.crestLaunchUntil > now
+
+	if canUseGroundDrive and not inLaunchWindow then
 		tooSteepClimbTransition = isClimbing and slopeAngle > (state.config.maxClimbSlope + 1)
 		local shouldProbeCrestDrop = state.inputThrottle > 0
 			and (downhillAlignment > 0.06 or slopeAngle >= 6 or currentDriveSpeed > state.config.maxSpeed * 0.35 or crestReleaseActive)
@@ -801,7 +959,7 @@ local function stepSingleVehicle(
 		elseif crestReleaseActive and state.inputThrottle >= 0 then
 			terrainIntent = "CrestRelease"
 		end
-	elseif crestReleaseActive and state.inputThrottle >= 0 then
+	elseif crestReleaseActive and state.inputThrottle >= 0 and not inLaunchWindow then
 		terrainIntent = "CrestRelease"
 	end
 
@@ -834,27 +992,32 @@ local function stepSingleVehicle(
 		lateralVelocity *= math.clamp(1 - (5 * dt), 0, 1)
 		local releaseHorizontal = forwardDirection * carrySpeed + lateralVelocity
 
-		local releaseVertical: number
 		-- Hover physics absorbs most vertical velocity during climbs, so velocity.Y
 		-- is only ~5 even on steep slopes at high speed. Synthesize launch velocity
 		-- from horizontal speed so crests produce proper arcs regardless of hover.
 		local launchVelY = state.velocity.Y
-		if horizontalSpeed > state.config.maxSpeed * 0.4 then
+		if horizontalSpeed > state.config.maxSpeed * 0.4 and state.velocity.Y < 12 then
 			local synthLaunchY = horizontalSpeed * 0.15
 			launchVelY = math.max(launchVelY, synthLaunchY)
 		end
 		if launchVelY > 10 and horizontalSpeed > state.config.maxSpeed * 0.4 then
-			-- Launch: apply normal gravity, independent of downhill slope.
-			releaseVertical = launchVelY - state.config.gravity * dt
+			-- Launch: kill CrestRelease, set velocity, mark launch window.
+			-- During launch window, NormalDrive skips vertical blend so gravity works cleanly.
+			state.crestReleaseUntil = 0
+			state.crestLaunchUntil = now + 0.3
+			state.velocity = Vector3.new(releaseHorizontal.X, launchVelY, releaseHorizontal.Z)
+			groundedCount = 0
+			canUseGroundDrive = false
+			terrainIntent = "NormalDrive"
 		else
 			local dropBoost = if crestDropAhead then math.clamp(crestDropAmount * 0.45, 0, 3.5) else 0
 			local baseRelease = math.max(2.5, state.config.gravity * 0.02)
-			releaseVertical = math.min(
+			local releaseVertical = math.min(
 				state.velocity.Y - state.config.gravity * dt * 0.28,
 				-(baseRelease + dropBoost)
 			)
+			state.velocity = Vector3.new(releaseHorizontal.X, releaseVertical, releaseHorizontal.Z)
 		end
-		state.velocity = Vector3.new(releaseHorizontal.X, releaseVertical, releaseHorizontal.Z)
 	elseif terrainIntent == "BlockedClimb" and canUseGroundDrive then
 		local over = math.clamp((slopeAngle - state.config.maxClimbSlope) / 25, 0, 1)
 		local rollbackSpeed = math.max(
@@ -922,6 +1085,10 @@ local function stepSingleVehicle(
 				-- At low speed, snap to 0 so reverse starts immediately instead of
 				-- fighting hover oscillations that keep currentDriveSpeed slightly positive.
 				driveSpeedForThrottle = 0
+			else
+				-- No throttle: use horizontal-only projection to prevent vertical
+				-- velocity on slopes from inflating drive speed (causes runaway).
+				driveSpeedForThrottle = currentForwardFlat
 			end
 
 			-- Acceleration taper: reduce acceleration as speed approaches max
@@ -953,24 +1120,15 @@ local function stepSingleVehicle(
 				local climbAssist = targetSpeed * (1 - math.clamp(averageNormal.Y, 0, 1)) * 0.35
 				desiredVerticalSpeed += math.clamp(climbAssist, 0, 10)
 			end
-			-- At high speed with significant upward velocity, slow the vertical blend
-			-- so momentum carries through crest transitions for natural launch arcs.
-			-- Also clamp how negative desiredVerticalSpeed can be during launch so
-			-- a steep downhill slope on the far side doesn't eat upward momentum.
-			local verticalBlendRate = 8
-			if state.velocity.Y > 10 and horizontalSpeed > state.config.maxSpeed * 0.35
-				and desiredVerticalSpeed < state.velocity.Y * 0.5 then
-				-- Crest transition: terrain flattening/dropping while we have upward momentum.
-				-- Slow the blend so momentum carries through for a launch arc.
-				verticalBlendRate = 0.8
-				-- If terrain is actually pointing down, clamp so steep downhill
-				-- doesn't eat launch momentum more than gentle gravity would.
-				if desiredVerticalSpeed < 0 then
-					desiredVerticalSpeed = math.max(desiredVerticalSpeed, -state.config.gravity * dt * 2)
-				end
+			-- During a crest launch, skip vertical blend entirely — let gravity handle it.
+			-- Otherwise blend toward terrain-following desiredVerticalSpeed normally.
+			local blendedVerticalSpeed: number
+			if state.crestLaunchUntil > now then
+				blendedVerticalSpeed = state.velocity.Y - state.config.gravity * dt
+			else
+				local verticalBlend = math.clamp(8 * dt, 0, 1)
+				blendedVerticalSpeed = state.velocity.Y + (desiredVerticalSpeed - state.velocity.Y) * verticalBlend
 			end
-			local verticalBlend = math.clamp(verticalBlendRate * dt, 0, 1)
-			local blendedVerticalSpeed = state.velocity.Y + (desiredVerticalSpeed - state.velocity.Y) * verticalBlend
 			local desiredHorizontal = forwardDirection * targetSpeed
 			local currentHorizontal = Vector3.new(state.velocity.X, 0, state.velocity.Z)
 			local gripRate =
@@ -992,11 +1150,14 @@ local function stepSingleVehicle(
 			end
 			state.velocity = Vector3.new(blendedHorizontal.X, blendedVerticalSpeed, blendedHorizontal.Z)
 		else
+			-- Airborne deceleration: higher when coasting (throttle=0) so slope
+			-- oscillation between grounded/airborne doesn't kill effective decel.
+			local airDecelMult = if state.inputThrottle == 0 then 0.65 else 0.2
 			local targetSpeed = computeTargetSpeed(
 				currentForwardFlat,
 				state.inputThrottle,
 				state.config.acceleration * 0.35,
-				state.config.deceleration * 0.2,
+				state.config.deceleration * airDecelMult,
 				state.config.brakingDeceleration * 0.4,
 				state.config.maxSpeed * boostMultiplier,
 				state.config.reverseMaxSpeed,
@@ -1015,13 +1176,71 @@ local function stepSingleVehicle(
 		state.velocity += forwardDirection * boost
 	end
 
-	state.velocity += Vector3.new(0, verticalAccel * dt, 0)
-	if terrainIntent == "CrestRelease" and state.velocity.Y <= 15 then
+	-- Set landing damp window on the frame we land from significant airtime.
+	-- Must be before verticalAccel application so spring damping takes effect immediately.
+	-- 1.0s window covers the micro-separation→return cycle on slopes (can take 0.6s+).
+	if previousAirborne and hasSurfaceContact and math.abs(previousVerticalSpeed) > 15 then
+		state.landingDampUntil = now + 1.0
+	end
+	-- During crest launch, apply only gravity (skip hover spring forces that cause float).
+	-- Outside launch window, apply verticalAccel (spring + gravity from HoverPhysics).
+	if inLaunchWindow then
+		state.velocity += Vector3.new(0, -state.config.gravity * dt, 0)
+	else
+		local effectiveVAccel = verticalAccel
+		-- During landing damp when briefly airborne (micro-separation), coast
+		-- instead of free-falling under gravity. This prevents gravity from
+		-- accelerating the vehicle away from the slope surface, letting the
+		-- spring recapture and settle the oscillation naturally.
+		if now < state.landingDampUntil and not hasSurfaceContact then
+			effectiveVAccel = 0
+		end
+		state.velocity += Vector3.new(0, effectiveVAccel * dt, 0)
+	end
+	-- Landing damping: when grounded and moving upward, clamp to expected
+	-- terrain-following velocity. Prevents bunny-hop on slopes while allowing climbs.
+	-- Skip during launch window — the launch velocity IS the intended velocity.
+	-- Uses landingDampUntil (0.5s window) so the tight clamp persists across the
+	-- many frames it takes the spring to push velY from negative to positive.
+	local inLandingDamp = now < state.landingDampUntil
+	if groundedCount >= 2 and state.velocity.Y > 2 and not inLaunchWindow then
+		local isOnClimb = slopeAngle > 4 and math.abs(state.inputThrottle) > 0.05
+		local expectedUp = if isOnClimb
+			then horizontalSpeed * math.sin(math.rad(math.min(slopeAngle, 50))) * 0.6
+			else 0
+		local maxBounce: number
+		if inLandingDamp then
+			-- Within landing damp window: tight clamp to kill spring overcorrection.
+			maxBounce = math.max(2, expectedUp * 0.2)
+		else
+			maxBounce = math.max(3, expectedUp)
+		end
+		state.velocity = Vector3.new(state.velocity.X, math.min(state.velocity.Y, maxBounce), state.velocity.Z)
+	end
+	if terrainIntent == "CrestRelease" and state.velocity.Y <= 15
+		and horizontalSpeed < state.config.maxSpeed * 0.4 then
+		-- Terrain-following clamp for low-speed bumps only.
+		-- At high speed, let gravity work naturally for launch arcs.
 		local minFallSpeed = -math.max(6, state.config.gravity * 0.035)
 		if state.velocity.Y > minFallSpeed then
 			state.velocity = Vector3.new(state.velocity.X, minFallSpeed, state.velocity.Z)
 		end
 	end
+	-- Clamp horizontal speed to prevent gravity runaway on downhills.
+	do
+		local hVel = Vector3.new(state.velocity.X, 0, state.velocity.Z)
+		local hSpd = hVel.Magnitude
+		local maxH = state.config.maxSpeed
+		if state.boostActive then
+			maxH *= state.config.boostSpeedMultiplier
+		end
+		if hSpd > maxH and hSpd > 1e-4 then
+			local clamped = hVel * (maxH / hSpd)
+			state.velocity = Vector3.new(clamped.X, state.velocity.Y, clamped.Z)
+		end
+	end
+	-- Recompute horizontal speed post-clamp for accurate replication
+	horizontalSpeed = Vector3.new(state.velocity.X, 0, state.velocity.Z).Magnitude
 	state.velocity = Vector3.new(state.velocity.X, math.clamp(state.velocity.Y, -220, 120), state.velocity.Z)
 	if now < state.driverEnterStabilizeUntil then
 		local maxY = state.driverEnterBaseY + math.max(0.35, state.config.hoverHeight * 0.1)
@@ -1091,16 +1310,26 @@ local function stepSingleVehicle(
 
 	CollisionHandler.checkOverlapPushback(state, obstacleRayParams)
 
-	if canUseGroundDrive and terrainIntent == "NormalDrive" then
+	if canUseGroundDrive and terrainIntent == "NormalDrive" and not inLaunchWindow then
 		local isClimbingSurface = slopeAngle > 4 and math.abs(state.inputThrottle) > 0.05
 		if not isClimbingSurface then
-			if math.abs(state.velocity.Y) < 2 then
-				state.velocity = Vector3.new(state.velocity.X, 0, state.velocity.Z)
-			elseif state.velocity.Y > 0 then
-				state.velocity = Vector3.new(state.velocity.X, state.velocity.Y * 0.72, state.velocity.Z)
+			-- Smooth exponential damping: no dead zone so springs can track terrain
+			-- variations. Stronger upward damp prevents bounce; softer downward
+			-- damp allows smooth settling.
+			if state.velocity.Y > 0 then
+				state.velocity = Vector3.new(state.velocity.X, state.velocity.Y * math.exp(-12 * dt), state.velocity.Z)
+			else
+				state.velocity = Vector3.new(state.velocity.X, state.velocity.Y * math.exp(-6 * dt), state.velocity.Z)
 			end
 		else
-			state.velocity = Vector3.new(state.velocity.X, math.clamp(state.velocity.Y, -65, 45), state.velocity.Z)
+			-- Climbing surface: clamp and decay positive velY to prevent bounce
+			local clampedY = math.clamp(state.velocity.Y, -65, 45)
+			if clampedY > 0 then
+				-- Decay upward velocity — stronger after a landing to kill bounce
+				local decayRate = if previousAirborne then 0.4 else 0.82
+				clampedY *= decayRate
+			end
+			state.velocity = Vector3.new(state.velocity.X, clampedY, state.velocity.Z)
 		end
 		if groundedCount >= 3 and state.velocity.Y > -20 then
 			applySlopeLimit(state, averageNormal)
@@ -1129,6 +1358,31 @@ local function stepSingleVehicle(
 
 	nextPosition = applyTerrainSweep(state, hoverPointWorldPositions, currentPosition, nextPosition, obstacleRayParams)
 
+	-- Post-sweep landing damp: on landing frames during the damp window, set
+	-- velY to the slope-following rate so the vehicle tracks the surface.
+	-- Without this, terrain sweep zeros velY on contact, but on a 20° slope at
+	-- 120 hSpd the surface drops at ~41 studs/s → vehicle separates immediately.
+	-- Only modifies velY — horizontal direction untouched. Skips launch window.
+	if now < state.landingDampUntil and not inLaunchWindow then
+		if previousAirborne and hasSurfaceContact then
+			-- Landing frame: match velY to slope-following rate
+			local hVel = Vector3.new(state.velocity.X, 0, state.velocity.Z)
+			local hSpd = hVel.Magnitude
+			if hSpd > 1 then
+				local hDir = hVel / hSpd
+				local slopeDir = projectVectorOntoPlane(hDir, averageNormal)
+				if slopeDir.Magnitude > 0.01 then
+					slopeDir = slopeDir.Unit
+					local slopeVelY = slopeDir.Y * hSpd
+					state.velocity = Vector3.new(state.velocity.X, slopeVelY, state.velocity.Z)
+				end
+			end
+		elseif hasSurfaceContact and state.velocity.Y > 3 then
+			-- Non-landing grounded frames: cap positive velY
+			state.velocity = Vector3.new(state.velocity.X, 3, state.velocity.Z)
+		end
+	end
+
 	local rollAxis = state.attachmentRollAxisLocal
 	if rollAxis.Magnitude <= 1e-4 then
 		rollAxis = Vector3.zAxis
@@ -1146,8 +1400,14 @@ local function stepSingleVehicle(
 	-- Reduce terrain roll (sideways tilt) based on conformity; pitch (uphill/downhill) always preserved
 	local conformity = state.config.terrainConformity
 	local tiltForward = computeForwardDirection(state.heading - state.attachmentYawOffset)
-	local rollAmount = averageNormal:Dot(tiltForward)
-	local tiltTarget = (averageNormal - tiltForward * rollAmount * (1 - conformity)).Unit
+	local tiltRight = tiltForward:Cross(Vector3.yAxis)
+	if tiltRight.Magnitude <= 1e-4 then
+		tiltRight = Vector3.xAxis
+	else
+		tiltRight = tiltRight.Unit
+	end
+	local rollAmount = averageNormal:Dot(tiltRight)
+	local tiltTarget = (averageNormal - tiltRight * rollAmount * (1 - conformity)).Unit
 	-- Spring-damper tilt: rotational inertia with overshoot-and-settle
 	local tiltError = tiltTarget - currentUp
 	local springForce = tiltError * state.config.tiltStiffness
@@ -1180,11 +1440,19 @@ local function stepSingleVehicle(
 	local speedFraction = math.clamp(horizontalSpeed / math.max(1, state.config.maxSpeed), 0, 1)
 	local bankSpeedFraction = if state.inputLean ~= 0 then math.max(0.15, speedFraction) else speedFraction
 	local targetBankAngle = state.inputLean * math.rad(state.config.leanBankAngle) * bankSpeedFraction
+	-- Counter-steer visual: briefly tip opposite before committing to lean bank
+	if counterSteerActive then
+		local elapsed = state.config.leanEntryDuration - state.leanEntryTimer
+		local csDur = state.config.leanCounterSteerDuration
+		local t = elapsed / math.max(0.001, csDur)
+		targetBankAngle += -state.inputLean * math.rad(state.config.leanCounterSteerBankDeg) * (1 - t) * bankSpeedFraction
+	end
 	-- Exit counter-bank: overshoot past level in the opposite direction
 	if exitFraction > 0 then
 		targetBankAngle += state.leanExitSign * math.rad(state.config.leanExitCounterBankDeg) * exitFraction
 	end
-	local bankLerp = math.clamp(12 * dt, 0, 1)
+	local bankLerpRate = if counterSteerActive then 30 else 12
+	local bankLerp = math.clamp(bankLerpRate * dt, 0, 1)
 	state.currentBankAngle += (targetBankAngle - state.currentBankAngle) * bankLerp
 	local visualYawAngle = -state.currentBankAngle * LEAN_VISUAL_YAW_RATIO
 	nextCFrame = nextCFrame * CFrame.Angles(0, visualYawAngle, 0)
@@ -1308,7 +1576,12 @@ function VehicleServer.registerVehicle(
 		VehicleServer.onEntityDestroyed(entityId)
 	end
 
-	local vehicleConfig = getVehicleConfig(vehicleConfigId)
+	-- Resolve config from base + model attribute modifiers
+	local vehicleConfig = resolveVehicleConfig(instance)
+	if vehicleConfig == nil then
+		-- Fallback to raw config lookup (backward compat)
+		vehicleConfig = getVehicleConfig(vehicleConfigId)
+	end
 	if vehicleConfig == nil then
 		return
 	end
@@ -1339,25 +1612,32 @@ function VehicleServer.registerVehicle(
 		instance:SetPrimaryPartCFrame(primaryPart.CFrame + Vector3.new(0, liftDelta, 0))
 	end
 
-	-- Read forward axis from string attribute: "X", "-X", "Z", "-Z"
-	local forwardAxisRaw = instance:GetAttribute("ForwardAxis")
+	-- Read forward direction from model attributes.
+	-- ForwardYawOffset (number, degrees from local -Z) takes priority over ForwardAxis string.
 	local forwardAxisLocal: Vector3
-	if forwardAxisRaw == "X" then
-		forwardAxisLocal = Vector3.new(1, 0, 0)
-	elseif forwardAxisRaw == "-X" then
-		forwardAxisLocal = Vector3.new(-1, 0, 0)
-	elseif forwardAxisRaw == "Z" then
-		forwardAxisLocal = Vector3.new(0, 0, 1)
-	elseif forwardAxisRaw == "-Z" then
-		forwardAxisLocal = Vector3.new(0, 0, -1)
+	local forwardYawOffset = instance:GetAttribute("ForwardYawOffset")
+	if type(forwardYawOffset) == "number" then
+		local rad = math.rad(forwardYawOffset)
+		forwardAxisLocal = Vector3.new(math.sin(rad), 0, -math.cos(rad))
 	else
-		forwardAxisLocal = Vector3.new(0, 0, -1)
-		warn("[VEHICLE] No/invalid ForwardAxis on " .. instance.Name .. ', expected "X", "-X", "Z", or "-Z"')
+		local forwardAxisRaw = instance:GetAttribute("ForwardAxis")
+		if forwardAxisRaw == "X" then
+			forwardAxisLocal = Vector3.new(1, 0, 0)
+		elseif forwardAxisRaw == "-X" then
+			forwardAxisLocal = Vector3.new(-1, 0, 0)
+		elseif forwardAxisRaw == "Z" then
+			forwardAxisLocal = Vector3.new(0, 0, 1)
+		elseif forwardAxisRaw == "-Z" then
+			forwardAxisLocal = Vector3.new(0, 0, -1)
+		else
+			forwardAxisLocal = Vector3.new(0, 0, -1)
+			warn("[VEHICLE] No/invalid ForwardAxis or ForwardYawOffset on " .. instance.Name)
+		end
 	end
 
 	local worldForward: Vector3 = primaryPart.CFrame:VectorToWorldSpace(forwardAxisLocal)
 	local attachmentYawOffset = 0
-	local attachmentRollAxisLocal = forwardAxisLocal
+	local attachmentRollAxisLocal = Vector3.new(0, 0, -1)
 
 	local partForwardHorizontal = Vector3.new(primaryPart.CFrame.LookVector.X, 0, primaryPart.CFrame.LookVector.Z)
 	local forwardHorizontal = Vector3.new(worldForward.X, 0, worldForward.Z)
@@ -1398,6 +1678,7 @@ function VehicleServer.registerVehicle(
 		attachmentYawOffset = attachmentYawOffset,
 		attachmentRollAxisLocal = attachmentRollAxisLocal,
 		crestReleaseUntil = 0,
+		crestLaunchUntil = 0,
 		currentBankAngle = 0,
 		leanEntryTimer = 0,
 		leanExitTimer = 0,
@@ -1408,6 +1689,7 @@ function VehicleServer.registerVehicle(
 		waterBounceTimer = 0,
 		waterBounceTriggered = false,
 		airborneStartedAt = tick(),
+		landingDampUntil = 0,
 		lastLandingShakeAt = 0,
 		driverEnterStabilizeUntil = 0,
 		driverEnterBaseY = primaryPart.Position.Y,
@@ -1484,8 +1766,8 @@ function VehicleServer.init(remotesFolder: Folder): ()
 			state.inputThrottle = math.clamp(math.round(throttle), -1, 1)
 			state.inputSteerX = math.clamp(steerX, -1, 1)
 			state.inputBoost = payload.boost == true
-			-- Block lean during active boost
-			if state.boostActive then
+			-- Block lean if disabled or during active boost
+			if not state.config.leanEnabled or state.boostActive then
 				state.inputLean = 0
 			else
 				state.inputLean = math.clamp(math.round(lean), -1, 1)

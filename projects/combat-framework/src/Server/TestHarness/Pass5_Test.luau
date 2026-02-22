@@ -200,7 +200,9 @@ local function resetVehicleState(model: Model, state: VehicleRuntimeState, cfram
 	state.inputSteerX = 0
 	state.heading = math.atan2(-cframe.LookVector.X, -cframe.LookVector.Z)
 	state.isAirborne = false
-	state.lastVerticalSpeed = 0
+	state.lastVerticalSpeed = 0;
+	-- Force vehicle out of Dormant/Settling so physics run without a driver
+	(state :: any).replicationState = "Active"
 	model:SetAttribute("VehicleSpeed", 0)
 	task.wait(0.5)
 end
@@ -253,8 +255,8 @@ function Pass5Test.setup()
 	table.insert(staticParts, wall)
 	table.insert(staticParts, fallPlatform)
 
-	speedersByName.hover = createSpeeder(folder, "P5_Speeder_Hover", CFrame.new(HARNESS_ORIGIN_X, 5, 0))
-	speedersByName.collision = createSpeeder(folder, "P5_Speeder_Collision", CFrame.new(HARNESS_ORIGIN_X + 200, 5, -220))
+	speedersByName.hover = createSpeeder(folder, "P5_Speeder_Hover", CFrame.new(HARNESS_ORIGIN_X + 100, 5, 0))
+	speedersByName.collision = createSpeeder(folder, "P5_Speeder_Collision", CFrame.new(HARNESS_ORIGIN_X, 5, -220))
 	speedersByName.fall = createSpeeder(folder, "P5_Speeder_Fall", CFrame.new(HARNESS_ORIGIN_X, 60, -510))
 
 	didSetup = true
@@ -268,7 +270,7 @@ local function runDriveHoverTest(model: Model): boolean
 		return false
 	end
 
-	resetVehicleState(model, state, CFrame.new(HARNESS_ORIGIN_X, 5, 0))
+	resetVehicleState(model, state, CFrame.new(HARNESS_ORIGIN_X + 100, 5, 0))
 
 	local elapsed = 0
 	local printAccumulator = 0
@@ -277,20 +279,21 @@ local function runDriveHoverTest(model: Model): boolean
 	while elapsed < 3.1 do
 		task.wait(0.1)
 		elapsed += 0.1
-		printAccumulator += 0.1
+		printAccumulator += 0.1;
+		(state :: any).replicationState = "Active"
 		if printAccumulator >= 0.5 then
 			printAccumulator = 0
 			local speed = Vector3.new(state.velocity.X, 0, state.velocity.Z).Magnitude
 			local height, grounded = measureHover(model)
 			print(string.format("[P5_SPEED] vehicleId=%s speed=%.1f", entityId, speed))
-			print(string.format("[P5_HOVER] vehicleId=%s height=%.2f target=4.00 grounded=%d", entityId, height, grounded))
+			print(string.format("[P5_HOVER] vehicleId=%s height=%.2f target=1.00 grounded=%d", entityId, height, grounded))
 		end
 	end
 	state.inputThrottle = 0
 
 	local finalSpeed = Vector3.new(state.velocity.X, 0, state.velocity.Z).Magnitude
 	local finalHeight, finalGrounded = measureHover(model)
-	local hoverError = math.abs(finalHeight - 4)
+	local hoverError = math.abs(finalHeight - 1)
 	local passed = finalSpeed > 100 and hoverError < 1 and finalGrounded >= 3
 	print(
 		string.format(
@@ -312,17 +315,29 @@ local function runCollisionTest(model: Model): boolean
 
 	resetVehicleState(model, state, CFrame.new(HARNESS_ORIGIN_X, 5, -220))
 	local hpStart = getHullHP(model)
+	print(string.format("[P5_COLLISION] start hpStart=%d pos=%.0f,%.0f,%.0f", hpStart, model.PrimaryPart.Position.X, model.PrimaryPart.Position.Y, model.PrimaryPart.Position.Z))
 	local collided = false
 	local elapsed = 0
+	local printAccumulator = 0
 	state.inputThrottle = 1
 	state.inputSteerX = 0
 	while elapsed < 7.5 do
 		task.wait(0.1)
 		elapsed += 0.1
+		printAccumulator += 0.1;
+		-- Keep vehicle active (no driver → would go Dormant)
+		(state :: any).replicationState = "Active"
 		local speed = Vector3.new(state.velocity.X, 0, state.velocity.Z).Magnitude
 		local hpNow = getHullHP(model)
-		if hpNow < hpStart then
+		local pos = model.PrimaryPart.Position
+		if printAccumulator >= 0.5 then
+			printAccumulator = 0
+			print(string.format("[P5_COLLISION] t=%.1f speed=%.1f hp=%d pos=%.0f,%.0f,%.0f velY=%.1f", elapsed, speed, hpNow, pos.X, pos.Y, pos.Z, state.velocity.Y))
+		end
+		if hpNow < hpStart and not collided then
 			collided = true
+			local damage = math.max(0, hpStart - hpNow)
+			print(string.format("[P5_COLLISION] HIT! speed=%.1f damage=%d hp=%d pos=%.0f,%.0f,%.0f", speed, damage, hpNow, pos.X, pos.Y, pos.Z))
 		end
 		if collided and speed < 5 then
 			break
@@ -336,8 +351,11 @@ local function runCollisionTest(model: Model): boolean
 	local passed = collided and damage > 0 and finalSpeed < 5
 	print(
 		string.format(
-			"[P5_SUMMARY] test=collision finalSpeed=%d hoverError=0 collisions=%d fallDamage=0 result=%s",
+			"[P5_SUMMARY] test=collision finalSpeed=%d hpStart=%d hpEnd=%d damage=%d collisions=%d result=%s",
 			math.floor(finalSpeed + 0.5),
+			hpStart,
+			hpEnd,
+			damage,
 			if collided then 1 else 0,
 			if passed then "PASS" else "FAIL"
 		)
@@ -363,7 +381,8 @@ local function runFallDamageTest(model: Model): boolean
 	state.inputSteerX = 0
 	while elapsed < 9.5 do
 		task.wait(0.05)
-		elapsed += 0.05
+		elapsed += 0.05;
+		(state :: any).replicationState = "Active"
 
 		if state.isAirborne and not airborneSeen then
 			airborneSeen = true

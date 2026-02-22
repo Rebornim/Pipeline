@@ -8,6 +8,7 @@ CombatEnums.DamageType = {
 	Ion = "ion",
 	ProtonTorpedo = "proton_torpedo",
 	ConcussionMissile = "concussion_missile",
+	ArtilleryShell = "artillery_shell",
 	Explosion = "explosion",
 	Impact = "impact",
 }
@@ -31,8 +32,8 @@ CombatEnums.ImpactType = {
 }
 
 CombatEnums.VehicleClass = {
-	LightSpeeder = "light_speeder",
-	HeavySpeeder = "heavy_speeder",
+	Light = "light",
+	Heavy = "heavy",
 	BipedWalker = "biped_walker",
 	QuadWalker = "quad_walker",
 }

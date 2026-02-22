@@ -4,11 +4,6 @@ local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
-if not RunService:IsStudio() then
-	return
-end
-
--- Enabled by default in Studio.
 -- Optional global kill switch:
 --   workspace:SetAttribute("MovingTargetControllerEnabled", false)
 local didWarnControllerDisabled = false
@@ -56,7 +51,7 @@ local MODE_SIDE = "side"
 local MODE_CIRCLE = "circle"
 local MODE_RANDOM = "random"
 
-local DEFAULT_SPEED = 1.6
+local DEFAULT_SPEED = 25
 local DEFAULT_AMPLITUDE = 16
 local DEFAULT_RADIUS = 18
 local DEFAULT_HEIGHT = 10
@@ -133,20 +128,59 @@ local function parseAxis(raw: any): Vector3
 	return Vector3.new(1, 0, 0)
 end
 
-local function randomUnitDirection(): Vector3
+local function randomUnitDirection2D(): Vector3
 	for _ = 1, 8 do
 		local x = rng:NextNumber(-1, 1)
-		local y = rng:NextNumber(-1, 1)
 		local z = rng:NextNumber(-1, 1)
-		local vec = Vector3.new(x, y, z)
-		if vec.Magnitude > 1e-4 then
-			return vec.Unit
+		local flat = Vector2.new(x, z)
+		if flat.Magnitude > 1e-4 then
+			local unit = flat.Unit
+			local y = rng:NextNumber(-0.3, 0.3)
+			return Vector3.new(unit.X, y, unit.Y).Unit
 		end
 	end
 	return Vector3.new(1, 0, 0)
 end
 
+local function ensureAttributes(model: Model)
+	if model:GetAttribute(MODE_ATTR) == nil then
+		model:SetAttribute(MODE_ATTR, MODE_SIDE)
+	end
+	if model:GetAttribute(SPEED_ATTR) == nil then
+		model:SetAttribute(SPEED_ATTR, DEFAULT_SPEED)
+	end
+	if model:GetAttribute(AMPLITUDE_ATTR) == nil then
+		model:SetAttribute(AMPLITUDE_ATTR, DEFAULT_AMPLITUDE)
+	end
+	if model:GetAttribute(RADIUS_ATTR) == nil then
+		model:SetAttribute(RADIUS_ATTR, DEFAULT_RADIUS)
+	end
+	if model:GetAttribute(HEIGHT_ATTR) == nil then
+		model:SetAttribute(HEIGHT_ATTR, DEFAULT_HEIGHT)
+	end
+	if model:GetAttribute(INTERVAL_ATTR) == nil then
+		model:SetAttribute(INTERVAL_ATTR, DEFAULT_INTERVAL)
+	end
+	if model:GetAttribute(AXIS_ATTR) == nil then
+		model:SetAttribute(AXIS_ATTR, "X")
+	end
+end
+
+local attributesInitialized: { [Model]: boolean } = {}
+
 local function getOrCreateState(model: Model, now: number): TargetState
+	if not attributesInitialized[model] then
+		ensureAttributes(model)
+		attributesInitialized[model] = true
+		print(string.format(
+			"[P4_MOVE] Initialized %s: mode=%s speed=%.1f radius=%.0f",
+			model.Name,
+			tostring(model:GetAttribute(MODE_ATTR)),
+			readNumberAttribute(model, SPEED_ATTR, DEFAULT_SPEED),
+			readNumberAttribute(model, RADIUS_ATTR, DEFAULT_RADIUS)
+		))
+	end
+
 	local state = statesByModel[model]
 	if state ~= nil then
 		return state
@@ -157,7 +191,7 @@ local function getOrCreateState(model: Model, now: number): TargetState
 		lastRandomSwap = now,
 		lastUpdateTime = now,
 		currentOffset = Vector3.zero,
-		randomDirection = randomUnitDirection(),
+		randomDirection = randomUnitDirection2D(),
 		travelSign = if rng:NextNumber() >= 0.5 then 1 else -1,
 		orbitAngle = rng:NextNumber(0, math.pi * 2),
 		activeMode = "",
@@ -172,21 +206,12 @@ local function resetState(model: Model, now: number)
 		lastRandomSwap = now,
 		lastUpdateTime = now,
 		currentOffset = Vector3.zero,
-		randomDirection = randomUnitDirection(),
+		randomDirection = randomUnitDirection2D(),
 		travelSign = if rng:NextNumber() >= 0.5 then 1 else -1,
 		orbitAngle = rng:NextNumber(0, math.pi * 2),
 		activeMode = "",
 	}
 	model:SetAttribute(RESET_ATTR, nil)
-end
-
-local function nextRandomTravelDirection(currentOffset: Vector3): Vector3
-	local direction = randomUnitDirection()
-	local toCenter = -currentOffset
-	if toCenter.Magnitude > 1e-3 then
-		direction = (direction * 0.45 + toCenter.Unit * 0.55).Unit
-	end
-	return direction
 end
 
 local function stepIntervalSwaps(state: TargetState, now: number, interval: number, onSwap: () -> ())
@@ -223,9 +248,8 @@ local function getMotionOffset(model: Model, state: TargetState, now: number): V
 		state.lastRandomSwap = now
 		state.lastUpdateTime = now
 		state.currentOffset = Vector3.zero
-		if mode == MODE_RANDOM then
-			state.randomDirection = nextRandomTravelDirection(state.currentOffset)
-		elseif mode == MODE_CIRCLE then
+		state.randomDirection = randomUnitDirection2D()
+		if mode == MODE_CIRCLE then
 			state.orbitAngle = rng:NextNumber(0, math.pi * 2)
 		end
 	end
@@ -281,37 +305,18 @@ local function getMotionOffset(model: Model, state: TargetState, now: number): V
 		return state.currentOffset
 	end
 
-	local radius = math.max(0, readNumberAttribute(model, RADIUS_ATTR, DEFAULT_RADIUS))
-	local height = math.max(0, readNumberAttribute(model, HEIGHT_ATTR, DEFAULT_HEIGHT))
+	-- Random mode: identical to side mode but on a random axis.
+	-- At each interval: flips travel direction AND picks a new random axis.
 	stepIntervalSwaps(state, now, interval, function()
-		state.randomDirection = nextRandomTravelDirection(state.currentOffset)
+		state.randomDirection = randomUnitDirection2D()
+		state.travelSign *= -1
 	end)
 
 	if speed <= 0 or dt <= 0 then
 		return state.currentOffset
 	end
 
-	local nextOffset = state.currentOffset + state.randomDirection * (speed * dt)
-
-	if radius <= 0 then
-		nextOffset = Vector3.new(0, nextOffset.Y, 0)
-	else
-		local horizontal = Vector2.new(nextOffset.X, nextOffset.Z)
-		if horizontal.Magnitude > radius then
-			local boundaryNormal2d = horizontal.Unit
-			nextOffset = Vector3.new(boundaryNormal2d.X * radius, nextOffset.Y, boundaryNormal2d.Y * radius)
-		end
-	end
-
-	if height <= 0 then
-		nextOffset = Vector3.new(nextOffset.X, 0, nextOffset.Z)
-	else
-		if math.abs(nextOffset.Y) > height then
-			nextOffset = Vector3.new(nextOffset.X, math.clamp(nextOffset.Y, -height, height), nextOffset.Z)
-		end
-	end
-
-	state.currentOffset = nextOffset
+	state.currentOffset += state.randomDirection * (state.travelSign * speed * dt)
 	return state.currentOffset
 end
 
@@ -360,6 +365,7 @@ RunService.Heartbeat:Connect(function()
 		if model.Parent == nil or model:GetAttribute(ENABLED_ATTR) ~= true then
 			statesByModel[model] = nil
 			warnedInvalidModeByModel[model] = nil
+			attributesInitialized[model] = nil
 		end
 	end
 end)

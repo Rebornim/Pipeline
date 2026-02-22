@@ -77,6 +77,7 @@ CombatConfig.Weapons = {
 		lockRange = 1000,
 		autoAimSpread = 0.65,
 		requiresLock = true,
+		homingTurnRate = 25,
 		ammoCapacity = 6,
 		boltColor = Color3.fromRGB(255, 200, 60),
 	},
@@ -94,6 +95,23 @@ CombatConfig.Weapons = {
 		homingTurnRate = 45,
 		ammoCapacity = 12,
 		boltColor = Color3.fromRGB(255, 120, 40),
+	},
+	artillery_emplacement = {
+		weaponClass = "artillery",
+		damageType = "artillery_shell",
+		damage = 150,
+		fireRate = 0.2,
+		projectileSpeed = 800,
+		maxRange = 2000,
+		splashRadius = 25,
+		ammoCapacity = 8,
+		artilleryGravity = 320,
+		artilleryMinElevation = 5,
+		artilleryMaxElevation = 85,
+		artilleryAdjustSpeed = 30,
+		artilleryFineAdjustSpeed = 5,
+		artilleryMinRange = 100,
+		boltColor = Color3.fromRGB(255, 160, 40),
 	},
 }
 
@@ -151,6 +169,19 @@ CombatConfig.Entities = {
 		weaponId = nil,
 		respawnTime = nil,
 	},
+	light_vehicle = {
+		hullHP = 150,
+		weaponId = nil,
+		respawnTime = 20,
+	},
+	heavy_vehicle = {
+		hullHP = 500,
+		shieldHP = 200,
+		shieldRegenRate = 15,
+		shieldRegenDelay = 5,
+		weaponId = nil,
+		respawnTime = 30,
+	},
 	target_dummy = {
 		hullHP = 200,
 		weaponId = nil,
@@ -201,6 +232,12 @@ CombatConfig.Entities = {
 		weaponId = nil,
 		respawnTime = 999,
 	},
+	artillery_emplacement = {
+		hullHP = 200,
+		weaponId = "artillery_emplacement",
+		turretExposed = true,
+		respawnTime = 30,
+	},
 }
 
 CombatConfig.DamageTypeMultipliers = {
@@ -211,12 +248,13 @@ CombatConfig.DamageTypeMultipliers = {
 	concussion_missile = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
 	explosion = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
 	impact = { shieldMult = 1.0, hullMult = 1.0, bypass = 0 },
+	artillery_shell = { shieldMult = 1.5, hullMult = 2.0, bypass = 0 },
 }
 
 CombatConfig.Vehicles = {
-	light_speeder = {
-		vehicleClass = "light_speeder",
-		entityConfigId = "light_speeder",
+	light = {
+		vehicleClass = "light",
+		entityConfigId = "light_vehicle",
 		maxSpeed = 120,
 		acceleration = 80,
 		deceleration = 30,
@@ -224,6 +262,7 @@ CombatConfig.Vehicles = {
 		reverseMaxSpeed = 30,
 		turnSpeedLow = 120,
 		turnSpeedHigh = 45,
+		leanEnabled = true,
 		leanTurnRate = 50,
 		leanBankAngle = 15,
 		leanSpeedPenalty = 0.01,
@@ -232,14 +271,17 @@ CombatConfig.Vehicles = {
 		leanEntrySpeedBoost = 20,
 		leanExitDuration = 0.18,
 		leanExitCounterBankDeg = 3.5,
+		leanCounterSteerDuration = 0,
+		leanCounterSteerRate = 0,
+		leanCounterSteerBankDeg = 0,
 		leanCameraOffset = 1.5,
 		leanShakeAmplitude = 0.2,
 		leanShakeDuration = 0.12,
 		leanDustEmitCount = 8,
 		lateralGripLow = 10,
 		lateralGripHigh = 4.5,
-		accelerationTaper = 0.0,
-		accelerationMinFactor = 1.0,
+		accelerationTaper = 0.5,
+		accelerationMinFactor = 0.3,
 		tiltStiffness = 100,
 		tiltDamping = 14,
 		terrainConformity = 0.15,
@@ -259,11 +301,71 @@ CombatConfig.Vehicles = {
 		cameraDistance = 15,
 		cameraHeight = 6,
 		cameraLerpSpeed = 0.15,
+		boostEnabled = true,
 		boostSpeedMultiplier = 1.5,
 		boostDuration = 5,
 		boostCooldown = 6,
+		canCrossWater = true,
+	},
+	heavy = {
+		vehicleClass = "heavy",
+		entityConfigId = "heavy_vehicle",
+		maxSpeed = 55,
+		acceleration = 40,
+		deceleration = 20,
+		brakingDeceleration = 45,
+		reverseMaxSpeed = 15,
+		turnSpeedLow = 70,
+		turnSpeedHigh = 25,
+		leanEnabled = false,
+		leanTurnRate = 0,
+		leanBankAngle = 0,
+		leanSpeedPenalty = 0,
+		leanEntryDuration = 0,
+		leanEntryYawBoost = 0,
+		leanEntrySpeedBoost = 0,
+		leanExitDuration = 0,
+		leanExitCounterBankDeg = 0,
+		leanCounterSteerDuration = 0,
+		leanCounterSteerRate = 0,
+		leanCounterSteerBankDeg = 0,
+		leanCameraOffset = 0,
+		leanShakeAmplitude = 0,
+		leanShakeDuration = 0,
+		leanDustEmitCount = 0,
+		lateralGripLow = 20,
+		lateralGripHigh = 12,
+		accelerationTaper = 0.6,
+		accelerationMinFactor = 0.25,
+		tiltStiffness = 80,
+		tiltDamping = 16,
+		terrainConformity = 1.0,
+		landingShakeThreshold = 30,
+		landingShakeIntensity = 0.25,
+		hoverHeight = 1.5,
+		springStiffness = 300,
+		springDamping = 30,
+		gravity = 150,
+		maxClimbSlope = 50,
+		fallDamageThreshold = 120,
+		fallDamageScale = 0.4,
+		collisionDamageThreshold = 80,
+		collisionDamageScale = 0.8,
+		collisionBounce = 0.1,
+		collisionRadius = 6,
+		cameraDistance = 22,
+		cameraHeight = 8,
+		cameraLerpSpeed = 0.12,
+		boostEnabled = false,
+		boostSpeedMultiplier = 1.0,
+		boostDuration = 0,
+		boostCooldown = 0,
+		canCrossWater = false,
 	},
 }
+
+-- Alias for backward compatibility (test harnesses, old models)
+CombatConfig.Vehicles.light_speeder = CombatConfig.Vehicles.light
 
 CombatConfig.ProjectileRayRadius = 0.5
 CombatConfig.DefaultShieldRegenDelay = 3
@@ -277,7 +379,7 @@ CombatConfig.VehicleCollisionLookahead = 2.0
 CombatConfig.VehicleMaxTiltLerp = 8.0
 CombatConfig.VehicleMouseSensitivity = 0.7
 CombatConfig.VehicleMouseRangeX = 0.22
-CombatConfig.VehicleMouseRangeY = 0.06
+CombatConfig.VehicleMouseRangeY = 0.25
 CombatConfig.VehicleMouseCenteringRate = 1.5
 CombatConfig.VehicleReplicationRateActive = 20
 CombatConfig.VehicleReplicationRateSettling = 5

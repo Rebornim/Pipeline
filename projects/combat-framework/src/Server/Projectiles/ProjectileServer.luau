@@ -10,6 +10,7 @@ local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatEnums = require(sharedRoot:WaitForChild("CombatEnums"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
+local LeadSolver = require(sharedRoot:WaitForChild("LeadSolver"))
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local serverRoot = ServerScriptService:WaitForChild("CombatFramework")
@@ -34,6 +35,9 @@ local overlapParams = OverlapParams.new()
 local projectileIdsToRemove: { string } = {}
 local homingLogTimeByProjectileId: { [string]: number } = {}
 local homingLostLoggedByProjectileId: { [string]: boolean } = {}
+local homingPrevTargetPosByProjectileId: { [string]: Vector3 } = {}
+local homingTargetVelocityByProjectileId: { [string]: Vector3 } = {}
+local HOMING_VELOCITY_SMOOTH_ALPHA = 0.35
 
 local function distancePointToPartBounds(point: Vector3, part: BasePart): number
 	local localPoint = part.CFrame:PointToObjectSpace(point)
@@ -81,7 +85,7 @@ local function applyDamageToHumanoidTarget(
 	end
 
 	local seatPart = humanoid.SeatPart
-	if seatPart ~= nil and CollectionService:HasTag(seatPart, "TurretSeat") then
+	if seatPart ~= nil and (CollectionService:HasTag(seatPart, "TurretSeat") or CollectionService:HasTag(seatPart, "ArtillerySeat")) then
 		local seatedTurret = seatPart:FindFirstAncestorWhichIsA("Model")
 		if seatedTurret ~= nil and seatedTurret:GetAttribute("TurretExposed") ~= true then
 			local turretEntityId = seatedTurret:GetAttribute("EntityId")
@@ -296,7 +300,42 @@ local function rotateDirectionToward(currentDirection: Vector3, targetDirection:
 	return (currentUnit:Lerp(targetUnit, alpha)).Unit
 end
 
+local PLAYER_TARGET_PREFIX = "player_"
+
+local function getModelAimPosition(model: Model): Vector3
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid ~= nil then
+		local rootPart = humanoid.RootPart
+		if rootPart ~= nil then
+			return rootPart.Position
+		end
+	end
+	return model:GetPivot().Position
+end
+
 local function getTargetPositionForHoming(targetEntityId: string): Vector3?
+	if string.sub(targetEntityId, 1, #PLAYER_TARGET_PREFIX) == PLAYER_TARGET_PREFIX then
+		local userIdStr = string.sub(targetEntityId, #PLAYER_TARGET_PREFIX + 1)
+		local userId = tonumber(userIdStr)
+		if userId == nil then
+			return nil
+		end
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.UserId == userId then
+				local character = player.Character
+				if character == nil then
+					return nil
+				end
+				local humanoid = character:FindFirstChildOfClass("Humanoid")
+				if humanoid == nil or humanoid.Health <= 0 then
+					return nil
+				end
+				return getModelAimPosition(character)
+			end
+		end
+		return nil
+	end
+
 	if not HealthManager.isAlive(targetEntityId) then
 		return nil
 	end
@@ -306,7 +345,7 @@ local function getTargetPositionForHoming(targetEntityId: string): Vector3?
 		return nil
 	end
 
-	return targetState.instance:GetPivot().Position
+	return getModelAimPosition(targetState.instance)
 end
 
 local function stepProjectiles(dt: number)
@@ -324,11 +363,31 @@ local function stepProjectiles(dt: number)
 			previousPosition = projectile.currentPosition or projectile.origin
 			local targetPosition = getTargetPositionForHoming(projectile.targetEntityId :: string)
 			if targetPosition ~= nil then
-				local toTarget = targetPosition - previousPosition
-				if toTarget.Magnitude > 1e-4 then
+				-- Estimate target velocity from position changes for lead pursuit
+				local targetVelocity = Vector3.zero
+				local prevTargetPos = homingPrevTargetPosByProjectileId[projectileId]
+				if prevTargetPos ~= nil and dt > 1e-6 then
+					local rawVelocity = (targetPosition - prevTargetPos) / dt
+					local prevVelocity = homingTargetVelocityByProjectileId[projectileId] or Vector3.zero
+					targetVelocity = prevVelocity:Lerp(rawVelocity, HOMING_VELOCITY_SMOOTH_ALPHA)
+				end
+				homingPrevTargetPosByProjectileId[projectileId] = targetPosition
+				homingTargetVelocityByProjectileId[projectileId] = targetVelocity
+
+				-- Lead pursuit: steer toward predicted intercept point instead of current position
+				local aimPoint = targetPosition
+				local interceptPoint, _interceptTime = LeadSolver.solveInterceptPoint(
+					previousPosition, targetPosition, targetVelocity, projectile.speed
+				)
+				if interceptPoint ~= nil then
+					aimPoint = interceptPoint
+				end
+
+				local toAim = aimPoint - previousPosition
+				if toAim.Magnitude > 1e-4 then
 					local currentDirection = projectile.direction.Unit
 					local maxTurnRadians = math.rad(projectile.homingTurnRate :: number) * dt
-					local rotatedDirection = rotateDirectionToward(currentDirection, toTarget.Unit, maxTurnRadians)
+					local rotatedDirection = rotateDirectionToward(currentDirection, toAim.Unit, maxTurnRadians)
 					projectile.direction = rotatedDirection
 
 					local logGate = homingLogTimeByProjectileId[projectileId]
@@ -355,6 +414,23 @@ local function stepProjectiles(dt: number)
 
 			currentPosition = previousPosition + projectile.direction.Unit * projectile.speed * dt
 			projectile.currentPosition = currentPosition
+		elseif type(projectile.artilleryGravity) == "number" and (projectile.artilleryGravity :: number) > 0 then
+			previousPosition = projectile.currentPosition or projectile.origin
+			local velocity = projectile.currentVelocity
+			if velocity == nil then
+				velocity = projectile.direction * projectile.speed
+				projectile.currentVelocity = velocity
+			end
+
+			velocity = velocity + Vector3.new(0, -(projectile.artilleryGravity :: number) * dt, 0)
+			projectile.currentVelocity = velocity
+
+			currentPosition = previousPosition + velocity * dt
+			projectile.currentPosition = currentPosition
+
+			if velocity.Magnitude > 1e-4 then
+				projectile.direction = velocity.Unit
+			end
 		else
 			local elapsed = now - projectile.createdAt
 			local previousElapsed = math.max(0, elapsed - dt)
@@ -440,6 +516,8 @@ local function stepProjectiles(dt: number)
 		activeProjectiles[projectileId] = nil
 		homingLogTimeByProjectileId[projectileId] = nil
 		homingLostLoggedByProjectileId[projectileId] = nil
+		homingPrevTargetPosByProjectileId[projectileId] = nil
+		homingTargetVelocityByProjectileId[projectileId] = nil
 	end
 end
 
@@ -473,6 +551,7 @@ function ProjectileServer.fireProjectile(data: ProjectileData)
 		targetEntityId = data.targetEntityId,
 		homingTurnRate = data.homingTurnRate,
 		boltColor = data.boltColor,
+		artilleryGravity = data.artilleryGravity,
 	})
 
 	print(string.format(
@@ -482,6 +561,18 @@ function ProjectileServer.fireProjectile(data: ProjectileData)
 		tostring(data.direction),
 		data.speed
 	))
+
+	if type(data.artilleryGravity) == "number" and (data.artilleryGravity :: number) > 0 then
+		local initVel = data.direction * data.speed
+		print(string.format(
+			"[P7_ARC] projectile=%s gravity=%d velocity=%.1f,%.1f,%.1f",
+			data.projectileId,
+			data.artilleryGravity :: number,
+			initVel.X,
+			initVel.Y,
+			initVel.Z
+		))
+	end
 end
 
 function ProjectileServer.getActiveCount(): number

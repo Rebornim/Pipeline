@@ -29,6 +29,12 @@ export type WeaponConfig = {
 	heatDecayPerSecond: number?,
 	heatRecoverThreshold: number?,
 	ammoCapacity: number?,
+	artilleryGravity: number?,
+	artilleryMinElevation: number?,
+	artilleryMaxElevation: number?,
+	artilleryAdjustSpeed: number?,
+	artilleryFineAdjustSpeed: number?,
+	artilleryMinRange: number?,
 }
 
 export type EntityConfig = {
@@ -78,6 +84,8 @@ export type ProjectileData = {
 	homingTurnRate: number?,
 	currentPosition: Vector3?,
 	createdAt: number,
+	artilleryGravity: number?,
+	currentVelocity: Vector3?,
 }
 
 export type ValidatedEntity = {
@@ -99,6 +107,7 @@ export type ProjectileFiredPayload = {
 	targetEntityId: string?,
 	homingTurnRate: number?,
 	boltColor: Color3?,
+	artilleryGravity: number?,
 }
 
 export type ProjectileImpactPayload = {
@@ -146,6 +155,7 @@ export type VehicleConfig = {
 	reverseMaxSpeed: number,
 	turnSpeedLow: number,
 	turnSpeedHigh: number,
+	leanEnabled: boolean,
 	leanTurnRate: number,
 	leanBankAngle: number,
 	leanSpeedPenalty: number,
@@ -154,6 +164,9 @@ export type VehicleConfig = {
 	leanEntrySpeedBoost: number,
 	leanExitDuration: number,
 	leanExitCounterBankDeg: number,
+	leanCounterSteerDuration: number,
+	leanCounterSteerRate: number,
+	leanCounterSteerBankDeg: number,
 	leanCameraOffset: number,
 	leanShakeAmplitude: number,
 	leanShakeDuration: number,
@@ -181,9 +194,11 @@ export type VehicleConfig = {
 	cameraDistance: number,
 	cameraHeight: number,
 	cameraLerpSpeed: number,
+	boostEnabled: boolean,
 	boostSpeedMultiplier: number,
 	boostDuration: number,
 	boostCooldown: number,
+	canCrossWater: boolean,
 }
 
 export type VehicleInputPayload = {
