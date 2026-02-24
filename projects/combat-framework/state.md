@@ -1,7 +1,29 @@
 # Combat Framework — State
 
-## Current Stage: Pass 5 Complete + Stabilized
-## Status: Movement system stable. Emergency builder fixes applied. Ready for Pass 6 (Speeder Combat).
+## Current Stage: Pass 9 Design Complete — Ready to Build
+## Status: Pass 9 (Walker Combat) designed. Walker gets chin blaster weapon, head CFrame tracking for muzzle origin, client fire input + HUD. Reuses existing vehicle weapon pipeline — no changes to WeaponServer, HealthManager, ProjectileServer.
+
+### Pass 9 Build Delta
+**Built as designed:**
+- Walker combat is active on `walker_biped` with driver-fired chin weapon through existing `FireWeapon`/`UpdateTurretAim` remotes.
+- Walker head/chin weapon rig follows the moving head transform correctly and supports lock-on and weapon HUD/crosshair flow while piloting.
+- Walker model authoring now includes physical chin turret geometry with two muzzle-capable barrel mounts under the head.
+
+**Deviations from design:**
+- Walker weapon was tuned to a click-fired 2-shot burst pair (`burst_projectile`) with configurable intra-burst delay and cooldown behavior.
+- AT-ST weapon tuning expanded beyond baseline: red bolts, splash radius added/increased, louder walker fire audio, and shield layer removed from walker entity config.
+- Added RMB aim behavior on walkers (zoom vignette + FOV push-in) and additional smoothing passes for zoom/FOV and crosshair movement to remove jitter/choppiness.
+- Multiple iterative UX/combat polish fixes were applied during live playtest feedback (horizontal-only cursor recentering, overlapping burst audio timing, turret/head local follow fixes).
+
+**New runtime contracts:**
+- `walker_chin_blaster` now uses burst + splash parameters (`weaponClass = "burst_projectile"`, `burstCount`, `burstInterval`, `splashRadius`, `boltColor`).
+- `WeaponSounds.walker.fireVolume` is now explicitly authored and used for walker fire loudness tuning.
+- `VehicleCamera` now supports `setExternalFOVOffset(offset)` for feature-specific camera FOV offsets without direct camera-write contention.
+- `walker_biped` entity config no longer includes shield stats; walkers are hull-only.
+
+**Non-blocking follow-ups:**
+- Pass 9.5 should focus on bugfix stabilization for walker edge cases and remaining regressions across adjacent passes.
+- Validate final walker combat feel in multi-user scenarios (crosshair smoothness under latency, burst audio perception, splash balance).
 
 ### Pass 5 Stabilization Build Delta (2026-02-22, emergency builder mode)
 
@@ -32,6 +54,102 @@
 - `src/Server/Authoring/StartupValidator.luau` — ForwardYawOffset validation
 - `src/Shared/CombatConfig.luau` — heavy terrainConformity = 1.0
 
+### Sound System + Artillery Polish Build Delta (2026-02-23, emergency builder mode)
+
+**Weapon sound system expanded:**
+- Added 4 new weapon sound groups to `CombatConfig.WeaponSounds`: `eweb` (4 fire variations), `torpedo` (2 fire + whiz), `missile` (fire + whiz), `turret` (fire)
+- Impact sounds added to ALL groups: ion, turbolaser, artillery (vehicle explosion sound), eweb (2 old blaster hit sounds, layered), torpedo, missile, turret
+- `fireVolume` per-group override (artillery = 1)
+- Rotating sound pool: 6 pre-created Sound instances per variation, random selection (`math.random`). Eliminates per-fire `Instance.new` latency while supporting overlap.
+- Burst-class-aware scheduling: only `EffectiveWeaponClass == "burst_projectile"` gets burst sound scheduling (was incorrectly applying to all weapons due to `DEFAULT_BURST_COUNT = 3`)
+- `resolveAllGroupSounds()`: returns ALL entries in a list for impact sound layering (eweb plays both hit sounds together). `resolveGroupSound()` still picks one randomly for fire variation.
+- Bolt metadata retention: `destroyBolt` keeps `activeBolts` entry alive for 2 seconds via `task.delay` so impact handler can read `fireSound` after visual destruction.
+
+**Sound rolloff and reverb tuning:**
+- Whiz: `Looped = true`, `InverseTapered` rolloff min 100/max 1200, reverb removed (moving sound makes static reverb wrong)
+- Fire: `InverseTapered` rolloff min 60/max 1000
+- Impact/explosion: `InverseTapered` rolloff min 10/max 2100 (fast drop + long tail so artillery shooter can hear distant impacts faintly)
+- Reverb range: start 100, max 900
+
+**Impact VFX + sound merged:**
+- `spawnImpactEffect` returns the effectPart. `playImpactSoundAt` accepts optional parentPart to share the Part and avoid creating duplicate instances.
+
+**Vehicle gunner sound activation:**
+- `RemoteVehicleSmoother.luau`: added `hasAnyOccupant()` that checks all seats INCLUDING local player. Previously `findSeatedCharacters()` excluded local player, so a lone gunner (no driver) got no engine sound.
+
+**Artillery improvements:**
+- Ammo/overheat checks added to `onFireAction` — no more firing sound when empty or overheated
+- Freelook changed from hold-based (ALT held) to toggle-based (ALT press toggles). WASD still adjusts aim during freelook. HUD updates, driven parts, and aim server sync all function during freelook.
+
+**Studio cleanup (via MCP):**
+- Deleted `ReplicatedStorage.CombatAssets.Audio.Impact` (old, replaced by config-driven system)
+- Deleted `ReplicatedStorage.CombatAssets.Audio.ShieldImpact` (old, replaced by config-driven system)
+- Deleted `ReplicatedStorage.CombatAssets.Audio.Fire` (old, replaced by config-driven system)
+- Deleted `ProjectileTemplate.Bolt.Whiz` (old baked-in whiz, replaced by config-driven system)
+
+**Files modified:**
+- `src/Client/Vehicles/RemoteVehicleSmoother.luau` — hasAnyOccupant for gunner sound activation
+- `src/Shared/CombatConfig.luau` — 4 new sound groups, impact sounds on all groups, fireVolume
+- `src/Client/Projectiles/ProjectileVisuals.luau` — rotating pool, resolveAllGroupSounds, bolt metadata retention, rolloff/reverb tuning, impact VFX+sound merge
+- `src/Client/Weapons/WeaponClient.luau` — rotating pool, random selection, burst-class-aware scheduling
+- `src/Client/Vehicles/VehicleClient.luau` — rotating pool, random selection
+- `src/Client/Weapons/ArtilleryClient.luau` — rotating pool, random selection, ammo/overheat checks, freelook toggle
+
+### Pass 8 Build Delta (2026-02-24, emergency builder mode)
+
+**Built as designed:**
+- Separate WalkerServer.luau with WASD+mouse body movement, gravity, slope blocking, fall damage, replication state machine (Active/Settling/Dormant)
+- WalkerClient.luau with input gathering, activation/deactivation, camera, head rotation
+- WalkerIK.luau as pure computation module — foot placement, step animation, 2-bone IK solver, body secondary motion
+- RemoteVehicleSmoother integration for remote walker IK
+- StartupValidator walker-specific checks (WalkerHead, WalkerHip, leg structure)
+- CombatInit routing for walker registration, destroy/respawn callbacks
+- VehicleClient walker class routing
+- Config + types (walker_biped vehicle config, WalkerRuntimeState type, VehicleInputPayload extensions)
+
+**Major deviations from design:**
+- **3-segment legs with strut suspension:** Design specified simple hip-to-foot 2-bone IK. Build added pivoting strut system (Strut1 rigid from body at configurable pitch/spread, Strut2 pivoting to hip constrained at strutLength). Much more realistic AT-ST leg geometry.
+- **Server-side gait oscillator:** Design specified client-side distance-based step triggers only. Build added server gait oscillator (sinusoidal speed profile, halfCycleDuration, gaitSide alternation) replicated via attributes. Client uses gait side changes as primary step trigger, with distance-based fallback for idle/no-driver.
+- **Sprint system:** Not in design. Added sprint with separate config values for speed (62.5), stride lead (12), bob (3), sway (10), step height (7), half-cycle (0.42s), forward lean (12°), gait min speed fraction (0.6). Sprint step fraction 92% (brief ground contact vs walk's 70%).
+- **Extensive body secondary motion:** Design had basic bob/sway/lean/jolt. Build added: sway as spring-damper with impulse (not lerp), figure-8 lobe push, sway-induced torso roll, servo vibration (Perlin noise), idle breathing, sprint forward lean, terrain tilt from foot height difference.
+- **Sound profile:** Engine loops (interior short rolloff + exterior long rolloff, both Looped=true with LoopRegion), 4 random footstomps on plant, head turn loop/stop sounds, startup/shutdown, wall collision stuck sound. Uses `walker_biped.luau` sound profile loaded by SoundProfileLoader.
+- **Config values heavily retuned:** walkHeight 15 (vs 12), leg lengths 9/9 (vs 6/6), sway 14.0 (vs 0.4), bob 4 (vs 0.3), stride lead 10/12 (vs design baseline), camera 37.5/18 (vs 25/12), maxSpeed 22 (vs 25), plus ~30 additional config keys for struts, sprint, and secondary motion.
+
+**Polish and fixes applied during build:**
+- **Gait-based home offset:** Foot homes zero when idle, full when walking. Prevents feet resting too far forward when stopped.
+- **First-step trigger system:** Two-layer trigger (pre-gait velocity detection + gait activation transition) with `forceFirstStep()` helper that uses half-stride lead.
+- **Two-shot idle pose:** On exit, IK runs once immediately (fresh state, no residual motion), then again 3 seconds later after server settles. Eliminates permanent head tilt after dismount.
+- **Client character smoothing:** HRP anchored while seated, CFrame applied from smoothed torsoCF each render frame via stored offset. Prevents 60Hz character replication bandwidth and ensures smooth rider movement.
+- **Network optimization:** Removed per-frame individual child part CFrame writes during active walking. PrimaryPart cascade (20Hz) handles cockpit children, client IK handles legs. Saves ~25 KB/s recv.
+- **Engine loop fix:** Changed from manual crossfade (Looped=false) to Looped=true with LoopRegion trim. Eliminates sound gaps from missed crossfade windows during lag.
+- **Hip absorption for IK overextension:** When body bob raises hip beyond IK chain reach, hip is pulled DOWN toward foot (simulating strut compression). Prevents leg stretching without causing ground-level bobbing.
+
+**New runtime contracts:**
+- Walker attributes: `WalkerGaitPhase` (number), `WalkerGaitSide` (string "left"/"right"), `WalkerGaitActive` (boolean), `WalkerAimYaw` (number radians), `WalkerSprintFrac` (number 0-1). Written by server on discrete changes.
+- Walker tags: `WalkerHead` (BasePart), `WalkerHip` (Attachment x2), `DriverSeat` (Seat), leg folders with `UpperLeg`/`LowerLeg`/`Foot` parts. Leg parts reparented to Workspace Folder at runtime (freed from PrimaryPart cascade).
+- Strut tags: `WalkerStrut1Left`/`WalkerStrut1Right`/`WalkerStrut2Left`/`WalkerStrut2Right` (BaseParts for visual strut segments).
+- Sound profile: `SoundProfiles/walker_biped.luau` exports `createController(sourceModel, targetPart, maxSpeed, isLocal)`.
+
+**Known issues (deferred):**
+- Water interaction: walker entering water causes ejection + flatten + despawn. Ground detection raycasts through water surface. Needs water detection or swim-mode for future pass.
+- Intermittent leg stretch during terrain loading / lag spikes (IK chain limit reached briefly). Cosmetic, resolves within 1-2 step cycles.
+
+**Files created:**
+- `src/Server/Vehicles/WalkerServer.luau`
+- `src/Client/Vehicles/WalkerClient.luau`
+- `src/Client/Vehicles/WalkerIK.luau`
+- `src/Client/Vehicles/SoundProfiles/walker_biped.luau`
+
+**Files modified:**
+- `src/Shared/CombatConfig.luau` — walker_biped vehicle + entity config, WalkerSounds
+- `src/Shared/CombatTypes.luau` — WalkerRuntimeState, VehicleInputPayload extensions
+- `src/Server/CombatInit.server.luau` — walker registration, destroy/respawn routing
+- `src/Server/Authoring/StartupValidator.luau` — walker validation (skip HoverPoint, require walker tags)
+- `src/Client/Vehicles/RemoteVehicleSmoother.luau` — remote walker IK, two-shot idle pose, head rotation
+- `src/Client/Vehicles/VehicleClient.luau` — walker class routing to WalkerClient
+- `src/Client/Vehicles/VehicleCamera.luau` — walker camera support
+- `src/Client/HUD/CombatHUD.luau` — speed display for walkers
+
 ## History
 - **Idea:** Locked 2026-02-18. Full system defined in idea-locked.md.
 - **Roadmap:** Locked 2026-02-18. Originally 23 passes. Revised 2026-02-19 (see below).
@@ -49,6 +167,14 @@
 - **Pass 5 Design:** Complete 2026-02-19. Speeder movement — CFrame velocity system, hover physics (4-spring raycasts), mouse steering, collision detection + damage, fall damage, 3rd person camera, VehicleEntity/DriverSeat/HoverPoint tagging, placeholder speeder, speed HUD. No combat.
 - **Pass 5 Build:** Failed 2026-02-19. 6 coupled failures: inverted steering, camera side-rotation/jitter, random airborne launches, harness grounded=0. Root causes: heading sign convention, camera tracking tilted model frame, hover physics averaging only over grounded rays. Fix plan archived at `archive/pass-5/pass-5-fix-plan.md`.
 - **Pass 5 Recovery/Debug:** Iterated 2026-02-20. Post-fix baseline accepted by user for continued testing; remaining work is polish/tuning and deferred hull-damage model follow-up.
+- **Pass 5 Build (emergency):** Complete 2026-02-22. Speeder movement stabilized. Slope physics, crest launches, sound, camera, collisions all working. See pass-5 stabilization build delta above.
+- **Pass 6 Design:** Complete 2026-02-21. Speeder combat — weapon mounts on vehicles, driver-fired weapons, vehicle HP/shields, destruction, dismount, vehicle theft, splash damage, driver HUD.
+- **Pass 6 Build (emergency):** Complete 2026-02-23. Speeder combat + weapon sound system expansion. See sound system build delta above.
+- **Pass 7 Design:** Complete 2026-02-21. Artillery emplacement — parabolic projectile, WASD aiming, elevation/heading HUD, ammo-based, splash damage.
+- **Pass 7 Build (emergency):** Complete 2026-02-23. Artillery built + freelook toggle + ammo/overheat checks. See sound system build delta above.
+- **Pass 8 Design:** Complete 2026-02-23. Biped walker movement — separate WalkerServer, WASD+mouse, IK procedural legs, body secondary motion, head rotation, remote IK.
+- **Pass 8 Build (emergency):** Complete 2026-02-24. Walker movement built + extensive polish. See pass-8 build delta below.
+- **Pass 9 Design:** Complete 2026-02-24. Walker combat — chin blaster weapon, head CFrame for muzzle origin, client fire input + HUD, model authoring (WeaponMount on head).
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `vehicle-idea-locked.md`, `attribute-reference.md`, `golden-tests.md`, `state.md`

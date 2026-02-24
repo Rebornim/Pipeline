@@ -317,8 +317,8 @@ local function findEntityIdFromInstance(instance: Instance): string?
 	return nil
 end
 
-local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat: Seat?, operatorHumanoid: Humanoid?)
-	if turretSeat == nil then
+local function applyTurretDeathExplosion(state: HealthStateInternal, explosionSeat: Seat?, occupantHumanoids: { Humanoid })
+	if explosionSeat == nil then
 		return
 	end
 
@@ -332,7 +332,7 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 		return
 	end
 
-	local center = turretSeat.Position
+	local center = explosionSeat.Position
 	local explosionVisual = Instance.new("Explosion")
 	explosionVisual.Position = center
 	explosionVisual.BlastRadius = visualRadius
@@ -340,9 +340,11 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, turretSeat:
 	explosionVisual.DestroyJointRadiusPercent = 0
 	explosionVisual.Parent = Workspace
 
-	-- The turret operator always dies when their turret is destroyed.
-	if operatorHumanoid ~= nil and operatorHumanoid.Health > 0 then
-		operatorHumanoid:TakeDamage(1_000_000)
+	-- All occupants die when their vehicle/turret is destroyed.
+	for _, humanoid in ipairs(occupantHumanoids) do
+		if humanoid.Health > 0 then
+			humanoid:TakeDamage(1_000_000)
+		end
 	end
 
 	explosionOverlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -422,13 +424,22 @@ local function destroyEntity(state: HealthStateInternal)
 		end
 	end
 
-	local seat = state.instance:FindFirstChildWhichIsA("Seat", true)
-	local operatorHumanoid: Humanoid? = nil
-	if seat ~= nil and seat.Occupant ~= nil then
-		operatorHumanoid = seat.Occupant
-		seat.Occupant.Sit = false
+	-- Collect all seated occupants before unseat/cleanup
+	local allOccupantHumanoids: { Humanoid } = {}
+	local explosionSeat: Seat? = nil
+	for _, descendant in ipairs(state.instance:GetDescendants()) do
+		if (descendant:IsA("Seat") or descendant:IsA("VehicleSeat")) and descendant.Occupant ~= nil then
+			table.insert(allOccupantHumanoids, descendant.Occupant)
+			if explosionSeat == nil then
+				explosionSeat = descendant :: Seat
+			end
+		end
 	end
-	applyTurretDeathExplosion(state, seat, operatorHumanoid)
+	-- Unseat all occupants
+	for _, humanoid in ipairs(allOccupantHumanoids) do
+		humanoid.Sit = false
+	end
+	applyTurretDeathExplosion(state, explosionSeat, allOccupantHumanoids)
 
 	state.partStates = collectAndHideParts(state.instance)
 	state.promptStates = collectAndDisablePrompts(state.instance)
@@ -436,7 +447,7 @@ local function destroyEntity(state: HealthStateInternal)
 	local _, destroyedRemote = getRemotes()
 	local destroyPayload: EntityDestroyedPayload = {
 		entityId = state.entityId,
-		explosionPosition = if seat ~= nil then seat.Position else state.instance:GetPivot().Position,
+		explosionPosition = if explosionSeat ~= nil then explosionSeat.Position else state.instance:GetPivot().Position,
 		explosionRadius = readConfigNumber("TurretDeathExplosionRadius", 22),
 	}
 	destroyedRemote:FireAllClients(destroyPayload)

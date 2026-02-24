@@ -2,7 +2,6 @@
 
 local CollectionService = game:GetService("CollectionService")
 local ContextActionService = game:GetService("ContextActionService")
-local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -18,16 +17,20 @@ local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
 
 local CombatHUD = require(clientRoot:WaitForChild("HUD"):WaitForChild("CombatHUD"))
+local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChild("TargetingClient"))
 local VehicleCamera = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleCamera"))
 local VehicleVisualSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleVisualSmoother"))
+local WalkerClient = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("WalkerClient"))
 local RemoteVehicleSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("RemoteVehicleSmoother"))
-local VehicleSoundManager = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleSoundManager"))
+local SoundProfileLoader = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("SoundProfiles"):WaitForChild("SoundProfileLoader"))
+local SoundProfileTypes = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("SoundProfiles"):WaitForChild("SoundProfileTypes"))
 type VehicleConfig = CombatTypes.VehicleConfig
 type VehicleInputPayload = CombatTypes.VehicleInputPayload
 
 local VehicleClient = {}
 
 local EXIT_ACTION_NAME = "CombatExitVehicle"
+local LOCK_ACTION_NAME = "CombatVehicleLock"
 
 local vehicleInputRemote: RemoteEvent? = nil
 local vehicleExitRemote: RemoteEvent? = nil
@@ -55,48 +58,99 @@ local lastSentLean: number = 0
 local lastSentTick: number = 0
 local INPUT_REFRESH_INTERVAL = 1.0
 local INPUT_STEER_DEADBAND = 0.02
-local hoverDustEmitters: { { part: BasePart, emitter: ParticleEmitter } } = {}
-local dustRayParams: RaycastParams? = nil
-local currentDustColor: Color3? = nil
-local DUST_MAX_LIFETIME = 1.6
+-- Sound/VFX profile controller
+local activeProfileController: SoundProfileTypes.ProfileController? = nil
+local previousBoostActive: boolean = false
+local previousHpFraction: number = 1
 
--- Boost visuals
+-- Vehicle weapon state
+local activeVehicleHasWeapon: boolean = false
+local fireWeaponRemote: RemoteEvent? = nil
+local updateTurretAimRemote: RemoteEvent? = nil
+local lastVehicleHeatRecoverCueId: number = 0
+local nextVehicleFireSoundTime: number = 0
+
+-- Boost tracking (for camera FOV, kept here since profile handles sound/VFX)
 local boostActive: boolean = false
 local boostConnection: RBXScriptConnection? = nil
-local boostShakeAccumulator: number = 0
 
--- Damage smoke
-local damageSmokeEmitter: ParticleEmitter? = nil
-local DAMAGE_SMOKE_START = 0.6 -- HP fraction where smoke begins
-local DAMAGE_SMOKE_FULL = 0.2 -- HP fraction where smoke is at max
+local VEHICLE_POOL_COPIES = 6
+local vehicleFireSoundPool: { Sound } = {}
+local vehicleFireSoundPoolIndex: number = 0
 
+local function buildVehicleFireSoundPool()
+	for _, s in ipairs(vehicleFireSoundPool) do s:Destroy() end
+	table.clear(vehicleFireSoundPool)
+	vehicleFireSoundPoolIndex = 0
 
-local TERRAIN_DUST_COLORS: { [Enum.Material]: Color3 } = {
-	[Enum.Material.Grass] = Color3.fromRGB(120, 140, 80),
-	[Enum.Material.LeafyGrass] = Color3.fromRGB(100, 130, 60),
-	[Enum.Material.Sand] = Color3.fromRGB(194, 178, 128),
-	[Enum.Material.Sandstone] = Color3.fromRGB(180, 160, 120),
-	[Enum.Material.Ground] = Color3.fromRGB(140, 120, 90),
-	[Enum.Material.Mud] = Color3.fromRGB(90, 70, 50),
-	[Enum.Material.Rock] = Color3.fromRGB(140, 135, 130),
-	[Enum.Material.Slate] = Color3.fromRGB(130, 130, 135),
-	[Enum.Material.Basalt] = Color3.fromRGB(80, 80, 85),
-	[Enum.Material.Snow] = Color3.fromRGB(220, 225, 230),
-	[Enum.Material.Ice] = Color3.fromRGB(200, 215, 230),
-	[Enum.Material.Glacier] = Color3.fromRGB(190, 210, 225),
-	[Enum.Material.Salt] = Color3.fromRGB(230, 230, 225),
-	[Enum.Material.Concrete] = Color3.fromRGB(165, 160, 155),
-	[Enum.Material.Pavement] = Color3.fromRGB(155, 150, 145),
-	[Enum.Material.Asphalt] = Color3.fromRGB(100, 100, 100),
-	[Enum.Material.Limestone] = Color3.fromRGB(190, 185, 170),
-	[Enum.Material.CrackedLava] = Color3.fromRGB(60, 40, 35),
-	[Enum.Material.Metal] = Color3.fromRGB(160, 155, 150),
-	[Enum.Material.DiamondPlate] = Color3.fromRGB(160, 155, 150),
-	[Enum.Material.WoodPlanks] = Color3.fromRGB(130, 100, 65),
-	[Enum.Material.Wood] = Color3.fromRGB(130, 100, 65),
-	[Enum.Material.Brick] = Color3.fromRGB(150, 100, 80),
-}
-local DEFAULT_DUST_COLOR = Color3.fromRGB(180, 160, 130)
+	local model = activeVehicleModel
+	if model == nil then return end
+	local groupKey: string? = nil
+	local raw = model:GetAttribute("FireSound")
+	if type(raw) == "string" and raw ~= "" then
+		groupKey = raw
+	end
+	if groupKey == nil then return end
+
+	local group = CombatConfig.WeaponSounds[groupKey]
+	if type(group) ~= "table" then return end
+	local entry = (group :: any).fire
+	local rawVolume = (group :: any).fireVolume
+	local volume: number = if type(rawVolume) == "number" then rawVolume else 1
+	local ids: { string } = {}
+	if type(entry) == "string" and entry ~= "" then
+		table.insert(ids, entry)
+	elseif type(entry) == "table" then
+		for _, id in ipairs(entry) do
+			if type(id) == "string" and id ~= "" then
+				table.insert(ids, id)
+			end
+		end
+	end
+	if #ids == 0 then return end
+
+	local parent: Instance = if model.PrimaryPart ~= nil then model.PrimaryPart else (model :: Instance)
+	for _ = 1, VEHICLE_POOL_COPIES do
+		for _, id in ipairs(ids) do
+			local sound = Instance.new("Sound")
+			sound.SoundId = id
+			sound.Volume = volume
+			sound.Looped = false
+			sound.Parent = parent
+			table.insert(vehicleFireSoundPool, sound)
+		end
+	end
+end
+
+local function destroyVehicleFireSoundPool()
+	for _, s in ipairs(vehicleFireSoundPool) do s:Destroy() end
+	table.clear(vehicleFireSoundPool)
+	vehicleFireSoundPoolIndex = 0
+end
+
+local function playVehicleInstantFireSound()
+	local now = tick()
+	if now < nextVehicleFireSoundTime then return end
+	if #vehicleFireSoundPool == 0 then return end
+
+	local model = activeVehicleModel
+	if model ~= nil then
+		local configId = model:GetAttribute("ConfigId")
+		if type(configId) == "string" then
+			local entityConfig = CombatConfig.Entities[configId]
+			if entityConfig ~= nil and entityConfig.weaponId ~= nil then
+				local weaponConfig = CombatConfig.Weapons[entityConfig.weaponId]
+				if weaponConfig ~= nil and weaponConfig.fireRate > 0 then
+					nextVehicleFireSoundTime = now + (1 / weaponConfig.fireRate)
+				end
+			end
+		end
+	end
+
+	local sound = vehicleFireSoundPool[math.random(1, #vehicleFireSoundPool)]
+	sound.TimePosition = 0
+	sound:Play()
+end
 
 local function getVehicleInputRate(): number
 	local raw = CombatConfig.VehicleInputRate
@@ -368,82 +422,18 @@ local function updateVirtualCursor(dt: number)
 	end
 end
 
-local function setupDamageSmoke(renderModel: Model)
-	local primary = renderModel.PrimaryPart
-	if primary == nil then
-		return
-	end
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Texture = "rbxassetid://716847870"
-	emitter.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 40, 40)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 20, 20)),
-	})
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.4),
-		NumberSequenceKeypoint.new(0.4, 0.6),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.5),
-		NumberSequenceKeypoint.new(0.3, 2.0),
-		NumberSequenceKeypoint.new(1, 4.0),
-	})
-	emitter.Lifetime = NumberRange.new(1.0, 2.0)
-	emitter.Speed = NumberRange.new(2, 6)
-	emitter.SpreadAngle = Vector2.new(30, 30)
-	emitter.Drag = 1
-	emitter.Rate = 0
-	emitter.EmissionDirection = Enum.NormalId.Top
-	emitter.LightEmission = 0
-	emitter.Parent = primary
-	damageSmokeEmitter = emitter
-end
-
-local function cleanupDamageSmoke()
-	if damageSmokeEmitter ~= nil then
-		damageSmokeEmitter:Destroy()
-		damageSmokeEmitter = nil
-	end
-end
-
-local function updateDamageSmoke()
-	local emitter = damageSmokeEmitter
-	if emitter == nil then
-		return
-	end
-	local model = activeVehicleModel
-	if model == nil then
-		emitter.Rate = 0
-		return
-	end
-	local hullHP = model:GetAttribute("HullHP")
-	local maxHP = model:GetAttribute("MaxHullHP")
-	if type(hullHP) ~= "number" or type(maxHP) ~= "number" or maxHP <= 0 then
-		emitter.Rate = 0
-		return
-	end
-	local fraction = hullHP / maxHP
-	if fraction >= DAMAGE_SMOKE_START then
-		emitter.Rate = 0
-		return
-	end
-	-- Scale from 0 at DAMAGE_SMOKE_START to 1 at DAMAGE_SMOKE_FULL
-	local intensity = math.clamp((DAMAGE_SMOKE_START - fraction) / (DAMAGE_SMOKE_START - DAMAGE_SMOKE_FULL), 0, 1)
-	emitter.Rate = intensity * 15
-end
-
 local function onBoostChanged(model: Model)
 	local isBoosting = model:GetAttribute("VehicleBoosting") == true
 	if isBoosting and not boostActive then
 		boostActive = true
-		boostShakeAccumulator = 0
-		-- Initial impact shake
-		VehicleCamera.pushShake(0.5, 0.25)
-		VehicleCamera.setBoostFOV(true)
+		if activeProfileController ~= nil then
+			activeProfileController:onEvent("boost_start")
+		end
 	elseif not isBoosting and boostActive then
 		boostActive = false
-		VehicleCamera.setBoostFOV(false)
+		if activeProfileController ~= nil then
+			activeProfileController:onEvent("boost_end")
+		end
 	end
 end
 
@@ -462,42 +452,28 @@ local function cleanupBoostConnection()
 		boostConnection:Disconnect()
 		boostConnection = nil
 	end
-	if boostActive then
-		boostActive = false
-		VehicleCamera.setBoostFOV(false)
-	end
-end
-
-local function updateBoostVisuals(dt: number)
-	if not boostActive then
-		return
-	end
-	-- Sustained light shake during boost
-	boostShakeAccumulator += dt
-	if boostShakeAccumulator >= 0.15 then
-		boostShakeAccumulator -= 0.15
-		VehicleCamera.pushShake(0.08, 0.1)
-	end
-	-- Extra dust during boost
-	for _, entry in ipairs(hoverDustEmitters) do
-		if entry.emitter.Parent ~= nil then
-			entry.emitter.Rate = math.max(entry.emitter.Rate, 25)
-		end
-	end
+	boostActive = false
 end
 
 local function exitVehicleMode()
+	destroyVehicleFireSoundPool()
 	if inputConnection ~= nil then
 		inputConnection:Disconnect()
 		inputConnection = nil
 	end
 	ContextActionService:UnbindAction(EXIT_ACTION_NAME)
+	ContextActionService:UnbindAction(LOCK_ACTION_NAME)
 	if scrollConnection ~= nil then
 		scrollConnection:Disconnect()
 		scrollConnection = nil
 	end
 
-	VehicleSoundManager.deactivate()
+	if activeProfileController ~= nil then
+		activeProfileController:destroy()
+		activeProfileController = nil
+	end
+	previousBoostActive = false
+	previousHpFraction = 1
 	cleanupBoostConnection()
 	VehicleVisualSmoother.deactivate()
 	RemoteVehicleSmoother.setLocalVehicle(nil)
@@ -512,10 +488,15 @@ local function exitVehicleMode()
 		misfireVisualConnection = nil
 	end
 	CombatHUD.showVehicleCursor(false)
-	cleanupDamageSmoke()
 
 	CombatHUD.hideHP()
 	CombatHUD.showSpeed(false)
+	CombatHUD.showCrosshair(false)
+	CombatHUD.showHeat(false)
+	CombatHUD.showAmmo(false)
+	CombatHUD.showShield(false)
+	activeVehicleHasWeapon = false
+	lastVehicleHeatRecoverCueId = 0
 
 	activeVehicleEntityId = nil
 	activeVehicleModel = nil
@@ -528,120 +509,146 @@ local function exitVehicleMode()
 	lastSentSteerX = 0
 	lastSentLean = 0
 	lastSentTick = 0
-	hoverDustEmitters = {}
-	currentDustColor = nil
 end
 
-local function createDustEmitter(parent: BasePart, color: Color3): ParticleEmitter
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Texture = "rbxassetid://716847870"
-	emitter.Color = ColorSequence.new(color)
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.6),
-		NumberSequenceKeypoint.new(0.3, 0.7),
-		NumberSequenceKeypoint.new(0.7, 0.85),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1.0),
-		NumberSequenceKeypoint.new(0.3, 3.0),
-		NumberSequenceKeypoint.new(0.7, 4.5),
-		NumberSequenceKeypoint.new(1, 3.0),
-	})
-	emitter.Lifetime = NumberRange.new(0.8, 1.6)
-	emitter.Speed = NumberRange.new(3, 8)
-	emitter.SpreadAngle = Vector2.new(50, 50)
-	emitter.Drag = 3
-	emitter.Rate = 0
-	emitter.EmissionDirection = Enum.NormalId.Top
-	emitter.LightEmission = 0.1
-	emitter.Parent = parent
-	return emitter
-end
 
-local function setupHoverDustEmitters(renderModel: Model)
-	hoverDustEmitters = {}
-	currentDustColor = DEFAULT_DUST_COLOR
-	for _, descendant in ipairs(renderModel:GetDescendants()) do
-		if descendant:IsA("BasePart") and CollectionService:HasTag(descendant, "HoverPoint") then
-			local emitter = createDustEmitter(descendant, DEFAULT_DUST_COLOR)
-			table.insert(hoverDustEmitters, { part = descendant, emitter = emitter })
-		end
+local VEHICLE_AIM_MAX_ELEVATION = 15 -- degrees up/down from horizontal
+
+local vehicleAimRayParams: RaycastParams? = nil
+
+local function getVehicleWorldForward(): Vector3?
+	local model = activeVehicleRenderModel or activeVehicleModel
+	if model == nil or model.PrimaryPart == nil then
+		return nil
 	end
+	local forwardAxisRaw = (activeVehicleModel :: Model):GetAttribute("ForwardAxis")
+	local forwardAxisLocal: Vector3
+	if forwardAxisRaw == "X" then
+		forwardAxisLocal = Vector3.new(1, 0, 0)
+	elseif forwardAxisRaw == "-X" then
+		forwardAxisLocal = Vector3.new(-1, 0, 0)
+	elseif forwardAxisRaw == "Z" then
+		forwardAxisLocal = Vector3.new(0, 0, 1)
+	else
+		forwardAxisLocal = Vector3.new(0, 0, -1)
+	end
+	local worldForward = model.PrimaryPart.CFrame:VectorToWorldSpace(forwardAxisLocal)
+	return Vector3.new(worldForward.X, 0, worldForward.Z).Unit
 end
 
-local function fireDustKick(leanDirection: number, emitCount: number)
-	local renderModel = activeVehicleRenderModel
-	if renderModel == nil or #hoverDustEmitters == 0 then
+local function computeVehicleAimDirection(): Vector3?
+	local forward = getVehicleWorldForward()
+	if forward == nil then
+		return nil
+	end
+	-- Mouse Y controls elevation: cursor above center = aim up, below = aim down.
+	local camera = Workspace.CurrentCamera
+	if camera == nil then
+		return forward
+	end
+	local rangeY = CombatConfig.VehicleMouseRangeY
+	if type(rangeY) ~= "number" or rangeY <= 0 then
+		rangeY = 0.06
+	end
+	local maxY = camera.ViewportSize.Y * rangeY
+	local yFraction = if maxY > 0 then math.clamp(-virtualCursorY / maxY, -1, 1) else 0
+	local elevationRad = math.rad(yFraction * VEHICLE_AIM_MAX_ELEVATION)
+	-- Tilt the forward vector up/down by the elevation angle
+	local cosE = math.cos(elevationRad)
+	local sinE = math.sin(elevationRad)
+	return Vector3.new(forward.X * cosE, sinE, forward.Z * cosE).Unit
+end
+
+local function updateVehicleCrosshairPosition()
+	local camera = Workspace.CurrentCamera
+	if camera == nil then
 		return
 	end
-	local modelCFrame = renderModel:GetPivot()
-	for _, entry in ipairs(hoverDustEmitters) do
-		if entry.part.Parent == nil then
-			continue
-		end
-		local localPos = modelCFrame:PointToObjectSpace(entry.part.Position)
-		-- Outer points: lean right (1) = left side (-X) is outer, lean left (-1) = right side (+X) is outer
-		local isOuter = (leanDirection > 0 and localPos.X < -0.3) or (leanDirection < 0 and localPos.X > 0.3)
-		if isOuter then
-			entry.emitter:Emit(emitCount)
-		end
-	end
-end
-
-local function updateHoverDust()
-	local renderModel = activeVehicleRenderModel
-	if renderModel == nil or #hoverDustEmitters == 0 then
+	local model = activeVehicleRenderModel or activeVehicleModel
+	if model == nil then
 		return
 	end
-
-	local speedAttr = renderModel:GetAttribute("VehicleSpeed")
-	local speed = if type(speedAttr) == "number" then speedAttr else 0
-
-	if dustRayParams == nil then
-		dustRayParams = RaycastParams.new()
-		dustRayParams.FilterType = Enum.RaycastFilterType.Exclude
+	local aimDir = computeVehicleAimDirection()
+	if aimDir == nil then
+		return
 	end
-	local filter: { Instance } = { renderModel }
-	local srcModel = activeVehicleModel
-	if srcModel ~= nil then
-		table.insert(filter, srcModel)
+	-- Start raycast ahead of the vehicle to avoid hitting the vehicle body or seated character
+	local forward = getVehicleWorldForward()
+	if forward == nil then
+		return
 	end
+	local vehiclePos = model:GetPivot().Position
+	local origin = vehiclePos + forward * 8
+	-- Raycast from ahead of vehicle along aim direction to find where bullet hits
+	if vehicleAimRayParams == nil then
+		vehicleAimRayParams = RaycastParams.new()
+		vehicleAimRayParams.FilterType = Enum.RaycastFilterType.Exclude
+		vehicleAimRayParams.IgnoreWater = true
+	end
+	local filterList: { Instance } = {
+		model,
+		activeVehicleModel :: Instance,
+	}
 	local character = localPlayer.Character
 	if character ~= nil then
-		table.insert(filter, character)
+		table.insert(filterList, character)
 	end
-	dustRayParams.FilterDescendantsInstances = filter
+	vehicleAimRayParams.FilterDescendantsInstances = filterList
+	local maxDist = 1000
+	local result = Workspace:Raycast(origin, aimDir * maxDist, vehicleAimRayParams)
+	local hitPoint = if result then result.Position else origin + aimDir * maxDist
+	local screenPos, onScreen = camera:WorldToViewportPoint(hitPoint)
+	if onScreen then
+		CombatHUD.setCrosshairPosition(Vector2.new(screenPos.X, screenPos.Y))
+	end
+end
 
-	local origin = renderModel:GetPivot().Position
-	local result = Workspace:Raycast(origin, Vector3.new(0, -20, 0), dustRayParams)
-	local material = if result ~= nil then result.Material else nil
-	local dustColor = if material ~= nil then (TERRAIN_DUST_COLORS[material] or DEFAULT_DUST_COLOR) else DEFAULT_DUST_COLOR
+local function updateVehicleWeaponHUD()
+	local model = activeVehicleModel
+	if model == nil then
+		return
+	end
 
-	local colorChanged = currentDustColor == nil or dustColor.R ~= currentDustColor.R or dustColor.G ~= currentDustColor.G or dustColor.B ~= currentDustColor.B
-
-	local rate = math.clamp(speed / 6, 0, 20)
-	if colorChanged then
-		currentDustColor = dustColor
-		for _, entry in ipairs(hoverDustEmitters) do
-			if entry.part.Parent == nil then
-				continue
-			end
-			-- Retire old emitter: stop emitting, let existing particles die
-			local oldEmitter = entry.emitter
-			oldEmitter.Rate = 0
-			Debris:AddItem(oldEmitter, DUST_MAX_LIFETIME)
-			-- Spawn fresh emitter with new color
-			local newEmitter = createDustEmitter(entry.part, dustColor)
-			newEmitter.Rate = rate
-			entry.emitter = newEmitter
+	-- Heat
+	local heatValue = model:GetAttribute("WeaponHeat")
+	local heatMax = model:GetAttribute("WeaponHeatMax")
+	local maxHeat = if type(heatMax) == "number" and heatMax > 0 then heatMax else 100
+	if type(heatValue) == "number" then
+		local heatDecayPerSecond = model:GetAttribute("WeaponHeatDecayPerSecond")
+		local heatUpdatedAt = model:GetAttribute("WeaponHeatUpdatedAt")
+		local overheated = model:GetAttribute("WeaponOverheated") == true
+		local displayHeat = math.clamp(heatValue, 0, maxHeat)
+		if type(heatDecayPerSecond) == "number" and heatDecayPerSecond > 0 and type(heatUpdatedAt) == "number" then
+			local elapsed = math.max(0, Workspace:GetServerTimeNow() - heatUpdatedAt)
+			local coolingRate = heatDecayPerSecond / maxHeat
+			displayHeat = math.max(0, displayHeat * math.exp(-coolingRate * elapsed))
 		end
-	else
-		for _, entry in ipairs(hoverDustEmitters) do
-			if entry.emitter.Parent ~= nil then
-				entry.emitter.Rate = rate
+		CombatHUD.setWeaponHeat(displayHeat, maxHeat, overheated)
+
+		local cueId = model:GetAttribute("WeaponHeatRecoverCueId")
+		if type(cueId) == "number" then
+			local cueCounter = math.floor(cueId)
+			if cueCounter > lastVehicleHeatRecoverCueId then
+				lastVehicleHeatRecoverCueId = cueCounter
+				CombatHUD.onWeaponRecoveredCue()
 			end
 		end
+	end
+
+	-- Ammo
+	local ammoMaxRaw = model:GetAttribute("WeaponAmmoMax")
+	if type(ammoMaxRaw) == "number" and ammoMaxRaw > 0 then
+		local ammoRaw = model:GetAttribute("WeaponAmmo")
+		local ammoCurrent = if type(ammoRaw) == "number" then ammoRaw else ammoMaxRaw
+		CombatHUD.setAmmo(ammoCurrent, ammoMaxRaw)
+	end
+
+	-- Shield
+	local maxShieldRaw = model:GetAttribute("MaxShieldHP")
+	if type(maxShieldRaw) == "number" and maxShieldRaw > 0 then
+		local shieldRaw = model:GetAttribute("ShieldHP")
+		local shieldCurrent = if type(shieldRaw) == "number" then shieldRaw else maxShieldRaw
+		CombatHUD.setShield(shieldCurrent, maxShieldRaw)
 	end
 end
 
@@ -661,33 +668,31 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 	activateVehicleMouse()
 	setupBoostConnection(vehicleModel)
 	if activeVehicleRenderModel ~= nil then
-		setupHoverDustEmitters(activeVehicleRenderModel)
-		setupDamageSmoke(activeVehicleRenderModel)
-		VehicleSoundManager.activate(vehicleModel, activeVehicleRenderModel, config)
+		local rp = activeVehicleRenderModel.PrimaryPart
+		if rp ~= nil then
+			activeProfileController = SoundProfileLoader.createController(vehicleModel, rp, config.maxSpeed, true)
+		end
 	end
+	previousBoostActive = false
+	previousHpFraction = 1
 	local shakeModel = activeVehicleRenderModel or vehicleModel
 	landingShakeConnection = shakeModel:GetAttributeChangedSignal("VehicleLandingImpact"):Connect(function()
+		if activeProfileController == nil then
+			return
+		end
 		local impactSpeed = shakeModel:GetAttribute("VehicleLandingImpact")
 		if type(impactSpeed) ~= "number" or impactSpeed <= 0 then
 			return
 		end
-		local cfg = activeVehicleConfig
-		if cfg == nil then
-			return
-		end
-		local threshold = cfg.landingShakeThreshold
-		local intensity = cfg.landingShakeIntensity
-		local fraction = math.clamp((impactSpeed - threshold) / math.max(1, cfg.fallDamageThreshold - threshold), 0, 1)
-		local amplitude = fraction * intensity
-		if amplitude > 0.01 then
-			VehicleCamera.pushShake(amplitude, 0.2)
-		end
+		activeProfileController:onEvent("landing", {
+			impactSpeed = impactSpeed,
+		} :: SoundProfileTypes.LandingData)
 	end)
 
-	-- Misfire visual burst (synced with sound/camera from VehicleSoundManager)
+	-- Misfire event → forward to profile
 	misfireVisualConnection = vehicleModel:GetAttributeChangedSignal("VehicleMisfire"):Connect(function()
-		if vehicleModel:GetAttribute("VehicleMisfire") == true and damageSmokeEmitter ~= nil then
-			damageSmokeEmitter:Emit(8)
+		if vehicleModel:GetAttribute("VehicleMisfire") == true and activeProfileController ~= nil then
+			activeProfileController:onEvent("misfire")
 		end
 	end)
 
@@ -734,10 +739,58 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 			updateVirtualCursor(dt)
 		end
 		updateSpeedHud()
-		updateHoverDust()
-		updateDamageSmoke()
-		updateBoostVisuals(dt)
-		VehicleSoundManager.update(dt)
+
+		-- Build frame state and update profile controller
+		if activeProfileController ~= nil and activeVehicleConfig ~= nil then
+			local speedAttrP = model:GetAttribute("VehicleSpeed")
+			local speedP: number = if type(speedAttrP) == "number" then speedAttrP else 0
+			local msP = activeVehicleConfig.maxSpeed
+			local hullHP = model:GetAttribute("HullHP")
+			local maxHP = model:GetAttribute("MaxHullHP")
+			local hpFracP: number = 1
+			if type(hullHP) == "number" and type(maxHP) == "number" and maxHP > 0 then
+				hpFracP = math.clamp(hullHP / maxHP, 0, 1)
+			end
+			-- Detect damage taken
+			if hpFracP < previousHpFraction then
+				activeProfileController:onEvent("damage_taken", {
+					amount = (previousHpFraction - hpFracP) * (if type(maxHP) == "number" then maxHP else 100),
+					newHpFraction = hpFracP,
+				})
+			end
+			previousHpFraction = hpFracP
+
+			local frameState: SoundProfileTypes.VehicleFrameState = {
+				speed = speedP,
+				maxSpeed = msP,
+				speedFraction = if msP > 0 then math.clamp(speedP / msP, 0, 1) else 0,
+				hpFraction = hpFracP,
+				isBoosting = boostActive,
+				isGrounded = true,
+				throttle = lastSentThrottle,
+				steerInput = lastSentSteerX,
+				isLocal = true,
+				dt = dt,
+			}
+			activeProfileController:update(dt, frameState)
+		end
+
+		-- Vehicle weapon: aim, fire, HUD update
+		if activeVehicleHasWeapon and not freelookActive then
+			updateVehicleWeaponHUD()
+			updateVehicleCrosshairPosition()
+			local aimDirection = computeVehicleAimDirection()
+			if aimDirection ~= nil and updateTurretAimRemote ~= nil then
+				updateTurretAimRemote:FireServer(aimDirection)
+			end
+			if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+				if aimDirection ~= nil and fireWeaponRemote ~= nil then
+					fireWeaponRemote:FireServer(aimDirection)
+					playVehicleInstantFireSound()
+				end
+			end
+		end
+
 		local payload = readInputPayload()
 		-- Steer banking: pass mouse steer + speed fraction to visual smoother
 		local steerSpeedAttr = activeVehicleRenderModel and activeVehicleRenderModel:GetAttribute("VehicleSpeed")
@@ -751,10 +804,11 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 		if previousClientLean == 0 and payload.lean ~= 0 then
 			local speedAttr = activeVehicleRenderModel and activeVehicleRenderModel:GetAttribute("VehicleSpeed")
 			local currentSpeed = if type(speedAttr) == "number" then speedAttr else 0
-			if currentSpeed > 15 and activeVehicleConfig ~= nil then
-				VehicleCamera.pushShake(activeVehicleConfig.leanShakeAmplitude, activeVehicleConfig.leanShakeDuration)
-				fireDustKick(payload.lean, activeVehicleConfig.leanDustEmitCount)
-				VehicleSoundManager.onLeanStarted(currentSpeed / activeVehicleConfig.maxSpeed)
+			if currentSpeed > 15 and activeVehicleConfig ~= nil and activeProfileController ~= nil then
+				activeProfileController:onEvent("lean_start", {
+					speedFraction = currentSpeed / activeVehicleConfig.maxSpeed,
+					direction = payload.lean,
+				} :: SoundProfileTypes.LeanStartData)
 			end
 		end
 		previousClientLean = payload.lean
@@ -797,15 +851,63 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 	end)
 	local renderModel = activeVehicleRenderModel or vehicleModel
 	VehicleCamera.activate(renderModel, config)
+	VehicleCamera.setEffectsEnabled(activeProfileController ~= nil)
 
 	CombatHUD.showHP(entityId)
 	CombatHUD.showSpeed(true)
-	CombatHUD.showCrosshair(false)
 	CombatHUD.showVehicleCursor(true)
-	CombatHUD.showHeat(false)
-	CombatHUD.showAmmo(false)
-	CombatHUD.showShield(false)
 	updateSpeedHud()
+
+	-- Check if vehicle has a weapon
+	local weaponClassAttr = vehicleModel:GetAttribute("EffectiveWeaponClass")
+	if type(weaponClassAttr) ~= "string" or weaponClassAttr == "" then
+		-- Fallback: check entity config
+		local configIdAttr = vehicleModel:GetAttribute("ConfigId")
+		if type(configIdAttr) == "string" then
+			local entityConfig = CombatConfig.Entities[configIdAttr]
+			if entityConfig ~= nil and entityConfig.weaponId ~= nil then
+				weaponClassAttr = entityConfig.weaponId
+			end
+		end
+	end
+	activeVehicleHasWeapon = type(weaponClassAttr) == "string" and weaponClassAttr ~= ""
+	if activeVehicleHasWeapon then
+		CombatHUD.showCrosshair(true)
+		local ammoMax = vehicleModel:GetAttribute("WeaponAmmoMax")
+		if type(ammoMax) == "number" and ammoMax > 0 then
+			CombatHUD.showAmmo(true)
+			CombatHUD.showHeat(false)
+		else
+			CombatHUD.showHeat(true)
+			CombatHUD.showAmmo(false)
+		end
+		local maxShield = vehicleModel:GetAttribute("MaxShieldHP")
+		if type(maxShield) == "number" and maxShield > 0 then
+			CombatHUD.showShield(true)
+		else
+			CombatHUD.showShield(false)
+		end
+		lastVehicleHeatRecoverCueId = 0
+		ContextActionService:BindAction(LOCK_ACTION_NAME, function(_name: string, inputState: Enum.UserInputState)
+			if inputState ~= Enum.UserInputState.Begin then
+				return Enum.ContextActionResult.Pass
+			end
+			if TargetingClient.isLocked() then
+				TargetingClient.requestClearLock()
+			else
+				TargetingClient.requestLock()
+			end
+			return Enum.ContextActionResult.Sink
+		end, false, Enum.KeyCode.T)
+	else
+		CombatHUD.showCrosshair(false)
+		CombatHUD.showHeat(false)
+		CombatHUD.showAmmo(false)
+		CombatHUD.showShield(false)
+		-- showCrosshair(false) also hides cursorDot; restore it for vehicle steering
+		CombatHUD.showVehicleCursor(true)
+	end
+	buildVehicleFireSoundPool()
 end
 
 local function onSeatChanged(humanoid: Humanoid)
@@ -817,11 +919,24 @@ local function onSeatChanged(humanoid: Humanoid)
 			if type(entityId) == "string" then
 				local config = resolveVehicleConfig(vehicleModel)
 				if config ~= nil then
+					-- Route walkers to WalkerClient
+					if config.vehicleClass == "walker_biped" then
+						if activeVehicleEntityId ~= nil then
+							exitVehicleMode()
+						end
+						WalkerClient.activate(vehicleModel, entityId, config)
+						return
+					end
 					enterVehicleMode(entityId, vehicleModel, config)
 					return
 				end
 			end
 		end
+	end
+
+	-- Deactivate walker if active
+	if WalkerClient.isActive() then
+		WalkerClient.deactivate()
 	end
 
 	if activeVehicleEntityId ~= nil then
@@ -847,6 +962,9 @@ end
 function VehicleClient.init(remotesFolder: Folder): ()
 	vehicleInputRemote = remotesFolder:WaitForChild("VehicleInput") :: RemoteEvent
 	vehicleExitRemote = remotesFolder:WaitForChild("VehicleExitRequest") :: RemoteEvent
+	fireWeaponRemote = remotesFolder:WaitForChild("FireWeapon") :: RemoteEvent
+	updateTurretAimRemote = remotesFolder:WaitForChild("UpdateTurretAim") :: RemoteEvent
+	WalkerClient.init(remotesFolder)
 
 	if characterAddedConnection == nil then
 		characterAddedConnection = localPlayer.CharacterAdded:Connect(bindCharacter)

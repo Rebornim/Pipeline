@@ -17,6 +17,7 @@ local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChil
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
+local RemoteVehicleSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("RemoteVehicleSmoother"))
 
 local WeaponClient = {}
 
@@ -112,6 +113,14 @@ local heatVfxLight: PointLight? = nil
 local heatVfxSmoke: ParticleEmitter? = nil
 local heatVfxBurstAccumulator = 0
 local activeDrivenParts: { DrivenPartState } = {}
+local activeVehicleModel: Model? = nil
+local activeTurretVisualModel: Model? = nil
+local activeStationFolder: Instance? = nil
+local vehicleChaseCamDistance: number = 20
+local vehicleChaseCamHeight: number = 8
+local vehicleChaseCamAnchor: Vector3? = nil
+local vehicleChaseCamHeading: number? = nil
+local vehicleMountNeutralOffset: CFrame? = nil
 local ensureWeaponMount: (() -> ())? = nil
 local updateDrivenParts: ((Vector3) -> ())? = nil
 
@@ -120,6 +129,89 @@ local characterAddedConnection: RBXScriptConnection? = nil
 local turretStepConnection: RBXScriptConnection? = nil
 local aimRaycastParams = RaycastParams.new()
 local aimRaycastExcludeList: { Instance } = {}
+
+local POOL_COPIES = 6
+local fireSoundPool: { Sound } = {}
+local fireSoundPoolIndex: number = 0
+
+local function buildFireSoundPool()
+	for _, s in ipairs(fireSoundPool) do s:Destroy() end
+	table.clear(fireSoundPool)
+	fireSoundPoolIndex = 0
+
+	local groupKey: string? = nil
+	if activeStationFolder ~= nil then
+		local raw = (activeStationFolder :: Instance):GetAttribute("FireSound")
+		if type(raw) == "string" and raw ~= "" then
+			groupKey = raw
+		end
+	end
+	if groupKey == nil and activeTurretModel ~= nil then
+		local raw = (activeTurretModel :: Model):GetAttribute("FireSound")
+		if type(raw) == "string" and raw ~= "" then
+			groupKey = raw
+		end
+	end
+	if groupKey == nil then return end
+
+	local group = CombatConfig.WeaponSounds[groupKey]
+	if type(group) ~= "table" then return end
+	local entry = (group :: any).fire
+	local rawVolume = (group :: any).fireVolume
+	local volume: number = if type(rawVolume) == "number" then rawVolume else 1
+	local ids: { string } = {}
+	if type(entry) == "string" and entry ~= "" then
+		table.insert(ids, entry)
+	elseif type(entry) == "table" then
+		for _, id in ipairs(entry) do
+			if type(id) == "string" and id ~= "" then
+				table.insert(ids, id)
+			end
+		end
+	end
+	if #ids == 0 then return end
+
+	local mount = activeWeaponMount
+	local parent: Instance = if mount ~= nil then mount else (if activeTurretModel ~= nil then (activeTurretModel :: Instance) else nil :: any)
+	if parent == nil then return end
+	for _ = 1, POOL_COPIES do
+		for _, id in ipairs(ids) do
+			local sound = Instance.new("Sound")
+			sound.SoundId = id
+			sound.Volume = volume
+			sound.Looped = false
+			sound.Parent = parent
+			table.insert(fireSoundPool, sound)
+		end
+	end
+end
+
+local function destroyFireSoundPool()
+	for _, s in ipairs(fireSoundPool) do s:Destroy() end
+	table.clear(fireSoundPool)
+	fireSoundPoolIndex = 0
+end
+
+local function playOneShotFireSound()
+	if #fireSoundPool == 0 then return end
+	local sound = fireSoundPool[math.random(1, #fireSoundPool)]
+	sound.TimePosition = 0
+	sound:Play()
+end
+
+local function playInstantFireSound()
+	playOneShotFireSound()
+	if activeTurretModel == nil then return end
+	local weaponClass = activeTurretModel:GetAttribute("EffectiveWeaponClass")
+	if weaponClass ~= "burst_projectile" then return end
+	local burstCount = activeTurretModel:GetAttribute("EffectiveWeaponBurstCount")
+	local burstInterval = activeTurretModel:GetAttribute("EffectiveWeaponBurstInterval")
+	if type(burstCount) ~= "number" or burstCount <= 1 then return end
+	if type(burstInterval) ~= "number" or burstInterval <= 0 then return end
+	for i = 2, burstCount do
+		task.delay((i - 1) * burstInterval, playOneShotFireSound)
+	end
+end
 
 local function triggerFireCameraFeedback()
 	local shakeImpulse = SHOT_SHAKE_IMPULSE
@@ -285,6 +377,7 @@ local function tryFireCurrentWeapon(): boolean
 	end
 
 	fireWeaponRemote:FireServer(aimDirection.Unit)
+	playInstantFireSound()
 	triggerFireCameraFeedback()
 	if cooldown > 0 then
 		nextClientFireTime = now + cooldown
@@ -308,10 +401,24 @@ local function sendAimUpdate(aimDirection: Vector3)
 	updateTurretAimRemote:FireServer(aimDirection.Unit)
 end
 
-local function findTaggedDescendant(model: Model, tagName: string, className: string?): Instance?
+local function findTaggedDescendant(model: Model, tagName: string, className: string?, excludeInsideFolders: boolean?): Instance?
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if CollectionService:HasTag(descendant, tagName) then
 			if className == nil or descendant:IsA(className) then
+				if excludeInsideFolders then
+					local insideFolder = false
+					local current = descendant.Parent
+					while current ~= nil and current ~= model do
+						if current:IsA("Folder") then
+							insideFolder = true
+							break
+						end
+						current = current.Parent
+					end
+					if insideFolder then
+						continue
+					end
+				end
 				return descendant
 			end
 		end
@@ -438,7 +545,10 @@ local function updateAimReticle(camera: Camera, aimDirection: Vector3)
 
 	table.clear(aimRaycastExcludeList)
 	if activeTurretModel ~= nil then
-		aimRaycastExcludeList[1] = activeTurretModel
+		aimRaycastExcludeList[#aimRaycastExcludeList + 1] = activeTurretModel
+	end
+	if activeTurretVisualModel ~= nil and activeTurretVisualModel ~= activeTurretModel then
+		aimRaycastExcludeList[#aimRaycastExcludeList + 1] = activeTurretVisualModel
 	end
 	aimRaycastParams.FilterDescendantsInstances = aimRaycastExcludeList
 
@@ -525,7 +635,21 @@ ensureWeaponMount = function()
 		return
 	end
 
-	local mount = findTaggedDescendant(activeTurretModel, "WeaponMount", "BasePart")
+	local searchScope: Instance = activeTurretVisualModel or activeTurretModel
+	if activeStationFolder ~= nil then
+		-- When in a gunner station, find the matching folder in the visual clone
+		if activeTurretVisualModel ~= nil and activeTurretVisualModel ~= activeTurretModel then
+			local visualStation = activeTurretVisualModel:FindFirstChild(activeStationFolder.Name)
+			if visualStation ~= nil then
+				searchScope = visualStation
+			end
+		else
+			searchScope = activeStationFolder
+		end
+	end
+	-- Driver on a vehicle: skip mounts inside station folders (those belong to gunners)
+	local excludeStationMounts = activeVehicleModel ~= nil and activeStationFolder == nil
+	local mount = findTaggedDescendant(searchScope :: Model, "WeaponMount", "BasePart", excludeStationMounts)
 	if mount ~= nil then
 		activeWeaponMount = mount :: BasePart
 		activeNeutralAimFrame = WeaponRig.getNeutralAimFrame(activeWeaponMount)
@@ -659,7 +783,7 @@ end
 rebuildDrivenParts = function()
 	clearDrivenParts()
 
-	local turretModel = activeTurretModel
+	local turretModel = activeTurretVisualModel or activeTurretModel
 	if turretModel == nil then
 		return
 	end
@@ -669,7 +793,23 @@ rebuildDrivenParts = function()
 		seen[activeWeaponMount] = true
 	end
 
-	local rigFolder = turretModel:FindFirstChild("TurretRig")
+	-- Search for TurretRig within the station folder first, then fall back to model root
+	local rigSearchScope: Instance = turretModel
+	if activeStationFolder ~= nil then
+		if activeTurretVisualModel ~= nil and activeTurretVisualModel ~= activeTurretModel then
+			local visualStation = activeTurretVisualModel:FindFirstChild(activeStationFolder.Name)
+			if visualStation ~= nil then
+				rigSearchScope = visualStation
+			end
+		else
+			rigSearchScope = activeStationFolder
+		end
+	end
+	local rigFolder = rigSearchScope:FindFirstChild("TurretRig")
+	if rigFolder == nil and rigSearchScope ~= turretModel then
+		-- Fall back to model-level TurretRig if none in station
+		rigFolder = turretModel:FindFirstChild("TurretRig")
+	end
 	if rigFolder == nil then
 		return
 	end
@@ -926,7 +1066,14 @@ local function updateTurretAndCamera(dt: number)
 	cameraPitch = math.clamp(cameraPitch - mouseDelta.Y * CAMERA_MOUSE_SENSITIVITY, MIN_VERTICAL_ANGLE, MAX_VERTICAL_ANGLE)
 	local cameraLookDirection = yawPitchToDirection(cameraYaw, cameraPitch)
 
-	if activeNeutralAimFrame == nil then
+	if activeVehicleModel ~= nil and vehicleMountNeutralOffset ~= nil then
+		-- Recompute neutral aim frame from vehicle's current orientation so yaw limits rotate with it
+		local visualModel = activeTurretVisualModel or activeVehicleModel
+		local vehPrimary = visualModel.PrimaryPart or activeVehicleModel.PrimaryPart
+		if vehPrimary ~= nil then
+			activeNeutralAimFrame = vehPrimary.CFrame * vehicleMountNeutralOffset
+		end
+	elseif activeNeutralAimFrame == nil then
 		activeNeutralAimFrame = WeaponRig.getNeutralAimFrame(weaponMount)
 	end
 
@@ -993,6 +1140,8 @@ local function updateTurretAndCamera(dt: number)
 	end
 	if activeNeutralAimFrame ~= nil then
 		targetDirection = WeaponRig.clampDirectionToMountLimits(weaponMount, activeNeutralAimFrame, targetDirection)
+		-- Vehicle gunner: camera stays free, gun is clamped by mount limits (same as turrets).
+		-- No camera yaw/pitch sync — player can look around independently of gun arc.
 	end
 	desiredAimDirection = targetDirection
 
@@ -1026,7 +1175,37 @@ local function updateTurretAndCamera(dt: number)
 		updateDrivenParts(aimDirection)
 	end
 
-	local baseCameraPosition = getCameraAnchorWorldPosition(activeCameraPoint, activeSeat, weaponMount)
+	local baseCameraPosition: Vector3? = nil
+	if activeVehicleModel ~= nil then
+		-- Vehicle gunner: use third-person chase camera (same perspective as driver)
+		local visualModel = activeTurretVisualModel or activeVehicleModel
+		local vehiclePrimary = visualModel.PrimaryPart
+		if vehiclePrimary == nil then
+			vehiclePrimary = activeVehicleModel.PrimaryPart
+		end
+		if vehiclePrimary ~= nil then
+			local headingAttr = activeVehicleModel:GetAttribute("VehicleHeading")
+			local headingTarget = if type(headingAttr) == "number" then headingAttr else (vehicleChaseCamHeading or 0)
+			if vehicleChaseCamHeading == nil then
+				vehicleChaseCamHeading = headingTarget
+			else
+				-- Smooth angular interpolation to avoid 20Hz heading snaps
+				local delta = ((headingTarget - vehicleChaseCamHeading + math.pi) % (2 * math.pi)) - math.pi
+				vehicleChaseCamHeading += delta * math.min(1, dt * 8.5)
+			end
+			local forward = Vector3.new(-math.sin(vehicleChaseCamHeading), 0, -math.cos(vehicleChaseCamHeading))
+			local desiredPos = vehiclePrimary.Position - forward * vehicleChaseCamDistance + Vector3.new(0, vehicleChaseCamHeight, 0)
+			if vehicleChaseCamAnchor == nil then
+				vehicleChaseCamAnchor = desiredPos
+			else
+				vehicleChaseCamAnchor = vehicleChaseCamAnchor:Lerp(desiredPos, math.min(1, dt * 12))
+			end
+			baseCameraPosition = vehicleChaseCamAnchor
+		end
+	end
+	if baseCameraPosition == nil then
+		baseCameraPosition = getCameraAnchorWorldPosition(activeCameraPoint, activeSeat, weaponMount)
+	end
 	if baseCameraPosition == nil then
 		baseCameraPosition = camera.CFrame.Position
 	end
@@ -1127,6 +1306,7 @@ local function activateTurretCameraAndMouse()
 end
 
 local function deactivateTurretMode()
+	destroyFireSoundPool()
 	local wasTurretModeActive = activeTurretModel ~= nil or activeSeat ~= nil or turretStepConnection ~= nil
 
 	ContextActionService:UnbindAction(FIRE_ACTION_NAME)
@@ -1154,6 +1334,12 @@ local function deactivateTurretMode()
 
 	activeTurretModel = nil
 	activeSeat = nil
+	activeVehicleModel = nil
+	activeTurretVisualModel = nil
+	activeStationFolder = nil
+	vehicleChaseCamAnchor = nil
+	vehicleChaseCamHeading = nil
+	vehicleMountNeutralOffset = nil
 	activeWeaponMount = nil
 	activeNeutralAimFrame = nil
 	clearDrivenParts()
@@ -1261,12 +1447,95 @@ local function activateTurretMode(turretSeat: BasePart)
 
 	activeTurretModel = turretModel
 	activeSeat = turretSeat
-	activeWeaponMount = findTaggedDescendant(turretModel, "WeaponMount", "BasePart") :: BasePart?
-	activeCameraPoint = findCameraPoint(turretModel)
+
+	-- Detect gunner station folder: seat's parent is a Folder inside the entity model
+	activeStationFolder = nil
+	local seatParent = turretSeat.Parent
+	if seatParent ~= nil and seatParent:IsA("Folder") and seatParent ~= turretModel then
+		activeStationFolder = seatParent
+	end
+
+	activeVehicleModel = nil
+	activeTurretVisualModel = turretModel
+	if CollectionService:HasTag(turretModel, "VehicleEntity") then
+		activeVehicleModel = turretModel
+		local visualClone = RemoteVehicleSmoother.getVisualClone(turretModel)
+		if visualClone ~= nil then
+			activeTurretVisualModel = visualClone
+		end
+	end
+
+	-- When in a gunner station, find weapon mount within the station folder only
+	local mountSearchScope: Instance = activeTurretVisualModel
+	if activeStationFolder ~= nil then
+		if activeTurretVisualModel ~= activeTurretModel then
+			local visualStation = activeTurretVisualModel:FindFirstChild(activeStationFolder.Name)
+			if visualStation ~= nil then
+				mountSearchScope = visualStation
+			end
+		else
+			mountSearchScope = activeStationFolder
+		end
+	end
+	-- Driver on a vehicle: skip mounts inside station folders (those belong to gunners)
+	local excludeStationMounts = activeVehicleModel ~= nil and activeStationFolder == nil
+	activeWeaponMount = findTaggedDescendant(mountSearchScope :: Model, "WeaponMount", "BasePart", excludeStationMounts) :: BasePart?
+	if activeVehicleModel ~= nil then
+		-- Vehicle gunner: use third-person chase camera, not CameraPoint
+		activeCameraPoint = nil
+		vehicleChaseCamAnchor = nil
+		vehicleChaseCamHeading = nil
+		-- Capture mount's neutral aim orientation relative to vehicle so yaw limits
+		-- rotate with it. Read stored orientation attributes (set by VehicleServer at
+		-- registration) instead of getNeutralAimFrame(mount) which reads the mount's
+		-- current CFrame that may have residual aim rotation from a previous gunner.
+		-- Using full orientation (not just direction) ensures yaw/pitch decomposition
+		-- matches the server exactly.
+		vehicleMountNeutralOffset = nil
+		if activeWeaponMount ~= nil then
+			local vehPrimary = (activeTurretVisualModel or activeVehicleModel).PrimaryPart
+			if vehPrimary ~= nil then
+				local rx = activeWeaponMount:GetAttribute("NeutralAimRX")
+				local ry = activeWeaponMount:GetAttribute("NeutralAimRY")
+				local rz = activeWeaponMount:GetAttribute("NeutralAimRZ")
+				if type(rx) == "number" and type(ry) == "number" and type(rz) == "number" then
+					vehicleMountNeutralOffset = CFrame.fromOrientation(rx, ry, rz)
+				end
+				if vehicleMountNeutralOffset == nil then
+					-- Fallback: use current mount CFrame (may be wrong if mount has residual aim)
+					local initialNeutral = WeaponRig.getNeutralAimFrame(activeWeaponMount)
+					vehicleMountNeutralOffset = vehPrimary.CFrame:Inverse() * initialNeutral
+				end
+			end
+		end
+		local category = activeVehicleModel:GetAttribute("VehicleCategory")
+		if type(category) ~= "string" then
+			category = activeVehicleModel:GetAttribute("VehicleConfigId")
+		end
+		if type(category) == "string" then
+			local vehConfig = CombatConfig.Vehicles[category]
+			if type(vehConfig) == "table" then
+				vehicleChaseCamDistance = vehConfig.cameraDistance or 20
+				vehicleChaseCamHeight = vehConfig.cameraHeight or 8
+			end
+		end
+	else
+		activeCameraPoint = findCameraPoint(activeTurretVisualModel)
+	end
 	if rebuildDrivenParts ~= nil then
 		rebuildDrivenParts()
 	end
 	initializeAimFromCurrentRig()
+	if activeVehicleModel ~= nil then
+		local headingAttr = activeVehicleModel:GetAttribute("VehicleHeading")
+		if type(headingAttr) == "number" then
+			cameraYaw = headingAttr
+			cameraPitch = 0
+			local lookDir = yawPitchToDirection(cameraYaw, cameraPitch)
+			currentAimDirection = lookDir
+			desiredAimDirection = lookDir
+		end
+	end
 	clearHeatVfx()
 	activateTurretCameraAndMouse()
 	zoomHeld = false
@@ -1301,6 +1570,7 @@ local function activateTurretMode(turretSeat: BasePart)
 		CombatHUD.hideHP()
 	end
 	updateShieldHud()
+	buildFireSoundPool()
 end
 
 local function onHumanoidSeated(isSeated: boolean, seatPart: BasePart?)

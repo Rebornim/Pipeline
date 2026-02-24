@@ -144,11 +144,29 @@ local function getPlayerTurretContext(player: Player): (string?, HealthState?, B
 	end
 
 	local seatPart = humanoid.SeatPart
-	if seatPart == nil or not CollectionService:HasTag(seatPart, "TurretSeat") then
+	if seatPart == nil then
+		return nil, nil, nil
+	end
+	local isTurretSeat = CollectionService:HasTag(seatPart, "TurretSeat") or CollectionService:HasTag(seatPart, "ArtillerySeat")
+	local isDriverSeat = CollectionService:HasTag(seatPart, "DriverSeat")
+	if not isTurretSeat and not isDriverSeat then
 		return nil, nil, nil
 	end
 
-	local turretModel = seatPart:FindFirstAncestorWhichIsA("Model")
+	local turretModel: Model? = nil
+	if isTurretSeat then
+		turretModel = seatPart:FindFirstAncestorWhichIsA("Model")
+	else
+		-- Walk up to find VehicleEntity-tagged model
+		local current: Instance? = seatPart
+		while current ~= nil do
+			if current:IsA("Model") and CollectionService:HasTag(current, "VehicleEntity") then
+				turretModel = current
+				break
+			end
+			current = current.Parent
+		end
+	end
 	if turretModel == nil then
 		return nil, nil, nil
 	end
@@ -164,7 +182,16 @@ local function getPlayerTurretContext(player: Player): (string?, HealthState?, B
 		return nil, nil, nil
 	end
 
-	local weaponMount = findTaggedDescendant(attackerHealthState.instance, "WeaponMount", "BasePart")
+	-- Scope weapon mount search to the gunner's station folder (if in one)
+	-- to avoid finding the wrong mount on multi-station vehicles.
+	local mountSearchScope: Instance = attackerHealthState.instance
+	if isTurretSeat then
+		local seatParent = seatPart.Parent
+		if seatParent ~= nil and seatParent:IsA("Folder") and seatParent ~= turretModel then
+			mountSearchScope = seatParent
+		end
+	end
+	local weaponMount = findTaggedDescendant(mountSearchScope :: Model, "WeaponMount", "BasePart")
 	if weaponMount == nil then
 		return nil, nil, nil
 	end
@@ -246,12 +273,25 @@ local function getTargetPositionAndVelocity(targetEntityId: string, targetModel:
 	return targetPosition, sample.velocity
 end
 
+local function getRotatingNeutralFrame(mount: BasePart): CFrame
+	local rx = mount:GetAttribute("NeutralAimRX")
+	local ry = mount:GetAttribute("NeutralAimRY")
+	local rz = mount:GetAttribute("NeutralAimRZ")
+	if type(rx) == "number" and type(ry) == "number" and type(rz) == "number" then
+		local model = mount:FindFirstAncestorOfClass("Model")
+		if model ~= nil and model.PrimaryPart ~= nil then
+			return model.PrimaryPart.CFrame * CFrame.fromOrientation(rx, ry, rz)
+		end
+	end
+	return WeaponRig.getNeutralAimFrame(mount)
+end
+
 local function isDirectionWithinMountArc(weaponMount: BasePart, desiredDirection: Vector3): boolean
 	if desiredDirection.Magnitude < 1e-4 then
 		return false
 	end
 
-	local neutralAimFrame = WeaponRig.getNeutralAimFrame(weaponMount)
+	local neutralAimFrame = getRotatingNeutralFrame(weaponMount)
 	local clampedDirection = WeaponRig.clampDirectionToMountLimits(weaponMount, neutralAimFrame, desiredDirection.Unit)
 	if clampedDirection.Magnitude < 1e-4 then
 		return false

@@ -10,7 +10,7 @@ CombatConfig.Weapons = {
 		fireRate = 3,
 		projectileSpeed = 850,
 		maxRange = 900,
-		lockRange = 600,
+		lockRange = 850,
 		unlockedSpread = 2.4,
 		autoAimSpread = 0.9,
 		heatMax = 100,
@@ -113,6 +113,25 @@ CombatConfig.Weapons = {
 		artilleryMinRange = 100,
 		boltColor = Color3.fromRGB(255, 160, 40),
 	},
+	walker_chin_blaster = {
+		weaponClass = "burst_projectile",
+		damageType = "blaster",
+		damage = 20,
+		fireRate = 2,
+		burstCount = 2,
+		burstInterval = 0.12,
+		projectileSpeed = 600,
+		maxRange = 600,
+		splashRadius = 18,
+		lockRange = 500,
+		autoAimSpread = 2.0,
+		requiresLock = false,
+		heatMax = 100,
+		heatPerShot = 5,
+		heatDecayPerSecond = 20,
+		heatRecoverThreshold = 40,
+		boltColor = Color3.fromRGB(255, 40, 40),
+	},
 }
 
 CombatConfig.Entities = {
@@ -182,6 +201,30 @@ CombatConfig.Entities = {
 		weaponId = nil,
 		respawnTime = 30,
 	},
+	light_speeder_armed = {
+		hullHP = 100,
+		weaponId = "blaster_turret",
+		turretExposed = true,
+		respawnTime = 20,
+	},
+	heavy_speeder_armed = {
+		hullHP = 500,
+		shieldHP = 200,
+		shieldRegenRate = 15,
+		shieldRegenDelay = 5,
+		weaponId = "turbolaser_turret",
+		turretExposed = false,
+		respawnTime = 30,
+	},
+	heavy_speeder_gunner = {
+		hullHP = 500,
+		shieldHP = 200,
+		shieldRegenRate = 15,
+		shieldRegenDelay = 5,
+		weaponId = "blaster_turret",
+		turretExposed = false,
+		respawnTime = 30,
+	},
 	target_dummy = {
 		hullHP = 200,
 		weaponId = nil,
@@ -237,6 +280,12 @@ CombatConfig.Entities = {
 		weaponId = "artillery_emplacement",
 		turretExposed = true,
 		respawnTime = 30,
+	},
+	walker_biped = {
+		hullHP = 800,
+		weaponId = "walker_chin_blaster",
+		turretExposed = false,
+		respawnTime = 45,
 	},
 }
 
@@ -362,6 +411,135 @@ CombatConfig.Vehicles = {
 		boostCooldown = 0,
 		canCrossWater = false,
 	},
+	walker_biped = {
+		vehicleClass = "walker_biped",
+		entityConfigId = "walker_biped",
+		-- Movement
+		maxSpeed = 22,
+		reverseMaxSpeed = 7.5,
+		strafeMaxSpeed = 12,
+		acceleration = 52.5,
+		deceleration = 37.5,
+		brakingDeceleration = 60,
+		maxStepDown = 6,
+		turnSpeed = 35,
+		-- Sprint: same walk gait but faster, heavier, more urgent.
+		-- AT-ST doesn't change its gait — it just does it harder.
+		sprintMaxSpeed = 62.5,
+		sprintAcceleration = 15,
+		-- Gait timing (0.7s walk → 0.42s sprint half-cycle)
+		sprintHalfCycleDuration = 0.42,
+		sprintGaitMinSpeedFrac = 0.6,
+		-- Stride: foot lands ~12 studs ahead, giving buffer before falling behind.
+		sprintStrideLead = 12,
+		-- Step: high arc for visible kick-back behind body
+		sprintStepHeight = 7,
+		-- Bob: small upward during step (pairs with the impact dip)
+		sprintBobAmplitude = 3,
+		-- Impact jolt: heavy dip on each foot plant (body sinks into the step)
+		sprintImpactJoltAmplitude = 5.0,
+		-- Sway: LESS than walk (18). At speed the machine has forward momentum,
+		-- less time to wobble side-to-side. But still present — it's heavy.
+		sprintSwayAmplitude = 10,
+		-- Lean: more aggressive forward pitch
+		sprintLeanAngle = 12,
+		-- Turn: restricted at speed (momentum)
+		sprintTurnSpeed = 15,
+		-- Feet slightly more centered (narrower stance at speed)
+		sprintFootInwardBias = 1.5,
+		-- Head arc (degrees relative to body forward)
+		headYawMin = -55,
+		headYawMax = 55,
+		headPitchMin = -30,
+		headPitchMax = 20,
+		-- Body
+		walkHeight = 15,
+		gravity = 196,
+		maxClimbSlope = 45,
+		-- Fall damage
+		fallDamageThreshold = 80,
+		fallDamageScale = 0.3,
+		-- IK (shared config, used by client)
+		legUpperLength = 9,
+		legLowerLength = 9,
+		footLength = 2.25,
+		stepThreshold = 6,
+		stepHeight = 4.5,
+		stepDuration = 0.5,
+		stepAheadTime = 0,
+		halfCycleDuration = 0.65,
+		gaitMinSpeedFrac = 0.5,
+		strideLead = 10,
+		homeOffsetForward = 3,
+		homeOffsetLateral = 6,
+		footInwardBias = 0.9,
+		hipAttachForward = -4.5,
+		hipAttachVertical = -1.125,
+		-- Strut1: fixed-angle upper strut from torso back, down+forward+outward
+		strut1AttachForward = -3,
+		strut1AttachVertical = -0.75,
+		strut1AttachLateral = 3.75,
+		strut1Length = 6,
+		strut1PitchDeg = 25,
+		strut1SpreadDeg = 15,
+		-- Strut2: walking-pivot strut from strut1 end backward to hip
+		strutAttachForward = 4.5,
+		strutAttachVertical = -1.125,
+		strutAttachLateral = 4.5,
+		strutLength = 7.5,
+		stepToeTilt = 10,
+		-- Body secondary motion
+		bobAmplitude = 4,
+		swayAmplitude = 14.0,
+		leanMaxAngle = 3,
+		impactJoltAmplitude = 0.6,
+		impactJoltDecay = 6,
+		bodyIdleLean = 0,
+		-- Camera
+		cameraDistance = 37.5,
+		cameraHeight = 18,
+		cameraLerpSpeed = 0.1,
+		-- Zeroed speeder fields (shared code compatibility)
+		turnSpeedLow = 0,
+		turnSpeedHigh = 0,
+		leanEnabled = false,
+		leanTurnRate = 0,
+		leanBankAngle = 0,
+		leanSpeedPenalty = 0,
+		leanEntryDuration = 0,
+		leanEntryYawBoost = 0,
+		leanEntrySpeedBoost = 0,
+		leanExitDuration = 0,
+		leanExitCounterBankDeg = 0,
+		leanCounterSteerDuration = 0,
+		leanCounterSteerRate = 0,
+		leanCounterSteerBankDeg = 0,
+		leanCameraOffset = 0,
+		leanShakeAmplitude = 0,
+		leanShakeDuration = 0,
+		leanDustEmitCount = 0,
+		lateralGripLow = 0,
+		lateralGripHigh = 0,
+		accelerationTaper = 0,
+		accelerationMinFactor = 0,
+		tiltStiffness = 0,
+		tiltDamping = 0,
+		terrainConformity = 0,
+		landingShakeThreshold = 0,
+		landingShakeIntensity = 0,
+		hoverHeight = 1,
+		springStiffness = 0,
+		springDamping = 0,
+		collisionDamageThreshold = 80,
+		collisionDamageScale = 0.5,
+		collisionBounce = 0.1,
+		collisionRadius = 5,
+		boostEnabled = false,
+		boostSpeedMultiplier = 1,
+		boostDuration = 0,
+		boostCooldown = 0,
+		canCrossWater = false,
+	},
 }
 
 -- Alias for backward compatibility (test harnesses, old models)
@@ -369,7 +547,7 @@ CombatConfig.Vehicles.light_speeder = CombatConfig.Vehicles.light
 
 CombatConfig.ProjectileRayRadius = 0.5
 CombatConfig.DefaultShieldRegenDelay = 3
-CombatConfig.LockOnScanRadius = 8
+CombatConfig.LockOnScanRadius = 20
 CombatConfig.LockValidationInterval = 0.2
 CombatConfig.LockBreakRange = 1.0
 CombatConfig.VehicleInputRate = 20
@@ -381,6 +559,7 @@ CombatConfig.VehicleMouseSensitivity = 0.7
 CombatConfig.VehicleMouseRangeX = 0.22
 CombatConfig.VehicleMouseRangeY = 0.25
 CombatConfig.VehicleMouseCenteringRate = 1.5
+CombatConfig.WalkerMouseCenteringRate = 4.0
 CombatConfig.VehicleReplicationRateActive = 20
 CombatConfig.VehicleReplicationRateSettling = 5
 CombatConfig.VehicleReplicationSpeedDeadband = 1.5
@@ -410,6 +589,90 @@ CombatConfig.VehicleSounds = {
 	Misfire2 = "rbxassetid://84098429703499",
 	Broken1 = "rbxassetid://96339590628062",
 	Broken2 = "rbxassetid://71789598888160",
+	-- Heavy vehicle sounds
+	HeavyCloseLoop = "rbxassetid://111281454706755",
+	HeavyExteriorLoop = "rbxassetid://93464198465444",
+	EngineStartHeavy = "rbxassetid://105408775062483",
+	EngineStopHeavy = "rbxassetid://84289558190606",
+	HeavyBump1 = "rbxassetid://129609835950988",
+	HeavyBump2 = "rbxassetid://74101358528931",
+	HeavyBump3 = "rbxassetid://137472475085520",
+	HeavyGunOnline1 = "rbxassetid://113447063270284",
+	HeavyGunOnline2 = "rbxassetid://115523734938744",
+	HeavyGunOffline1 = "rbxassetid://110489599622009",
+	HeavyGunOffline2 = "rbxassetid://103802408448011",
+}
+
+CombatConfig.WeaponSounds = {
+	-- FireSound attribute value → sound group
+	ion = {
+		fire = {
+			"rbxassetid://95548409822347",  -- IonVariation1
+			"rbxassetid://80917486965798",  -- IonVariation2
+			"rbxassetid://96231487753854",  -- IonVariation3
+		},
+		whiz = "rbxassetid://120457123062510", -- IonBoltTravelingLoop
+		impact = "rbxassetid://108127807949441", -- IonExplosion
+	},
+	turbolaser = {
+		fire = "rbxassetid://73641797672095",  -- TurboLaser
+		whiz = "rbxassetid://96548619658793",  -- TurboLaserLoop
+		impact = "rbxassetid://98513589644368", -- TurretExplosion
+	},
+	artillery = {
+		fire = "rbxassetid://138091349196514", -- PossibleArtillery
+		fireVolume = 1,
+		impact = "rbxassetid://138210320", -- Vehicle Explosion
+	},
+	eweb = {
+		fire = {
+			"rbxassetid://75402037234962",  -- EWeb1
+			"rbxassetid://109329355375513", -- EWeb2
+			"rbxassetid://121204413755088", -- EWeb3
+			"rbxassetid://90062339482404",  -- EWeb4
+		},
+		impact = {
+			"rbxassetid://166198228",  -- HitSound (old blaster impact)
+			"rbxassetid://151130059",  -- Sound (old blaster impact)
+		},
+	},
+	torpedo = {
+		fire = {
+			"rbxassetid://96233350378598",  -- TorpedoLaunch1
+			"rbxassetid://79587639517964",  -- TorpedoLaunch2
+		},
+		whiz = "rbxassetid://101551285895899", -- TorpedoLoop
+		impact = "rbxassetid://99317126567285", -- TorpedoExplosion
+	},
+	missile = {
+		fire = "rbxassetid://118583481685197", -- MissileLaunch
+		whiz = "rbxassetid://107693356082764", -- SeekingMissileLoop
+		impact = "rbxassetid://76281306654576", -- MissileExplosion
+	},
+	turret = {
+		fire = "rbxassetid://75514182535418", -- TurretShoot
+		impact = "rbxassetid://98513589644368", -- TurretExplosion
+	},
+	walker = {
+		fire = "rbxassetid://111375553713809", -- STShoot
+		fireVolume = 2.4,
+	},
+}
+
+CombatConfig.WalkerSounds = {
+	STStartup = "rbxassetid://112557440110759",
+	STShutdown = "rbxassetid://80165102309777",
+	STInteriorEngineLoop = "rbxassetid://91978209349300",
+	STExteriorEngineLoop = "rbxassetid://137210780198637",
+	STShoot = "rbxassetid://111375553713809",
+	HeadTurnLoop = "rbxassetid://118240328653206",
+	HeadTurnStop1 = "rbxassetid://127274234943612",
+	HeadTurnStop2 = "rbxassetid://95947314422507",
+	FootStuck = "rbxassetid://77694437924374",
+	FootStomp1 = "rbxassetid://123209633938252",
+	FootStomp2 = "rbxassetid://134246852361904",
+	FootStomp3 = "rbxassetid://75686405613610",
+	FootStomp4 = "rbxassetid://73122570982203",
 }
 
 CombatConfig.TurretPromptText = "Man Turret"

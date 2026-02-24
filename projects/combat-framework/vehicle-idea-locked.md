@@ -61,13 +61,14 @@ Most speeder games break on collision because the internal speed stays constant 
 ### Walkers — IK Procedural Walk
 - Body moves via CFrame at set height above terrain
 - Legs use IK to plant feet on terrain surface via raycasts
-- Procedural walk cycle: feet lift in sequence, step forward, plant — terrain-adaptive
-- Head rotates independently from body, controlled by mouse aim (limited arc, config-driven)
+- Procedural walk cycle: feet lift in sequence, step to target, plant — terrain-adaptive
+- **Mouse aim = body turning** (with turn speed limit). Head rotates independently on top of body facing (limited arc, config-driven).
+- **WASD movement relative to body facing:** W = forward, S = reverse (slower), A/D = strafe. All directions supported.
 - Can stop and stand still (legs planted, idle pose)
 - Bipeds pivot in place freely. Quads pivot in place but slowly (config-driven turn speed).
-- **Walkers cannot reverse** — must turn 180 and walk.
 - Max slope: config per vehicle
 - **Walker off cliff edge:** falls, takes fall damage to HP based on drop height. IK legs attempt to reacquire ground.
+- **Procedural secondary motion on body:** weight shift to planted leg, bob on each step, lean into movement direction, jolt on foot impact, slight tilt on uneven terrain. Goal: looks hand-animated, not robotic.
 
 ### Dismount Behavior
 - Player dismounts a moving speeder: speeder continues forward with current velocity, decelerates naturally, stops on its own. Player exits instantly.
@@ -327,6 +328,8 @@ All percentage modifiers are `number` type. The formula is `base * (1 + value)`.
 | Speeder over water (heavy) | Massive slowdown, must reverse out |
 | Walker off cliff | Falls, takes fall damage, IK reacquires ground |
 | Walker on steep slope | Max slope config — can't climb past limit |
+| Walker strafing | A/D moves sideways relative to body facing, slower than forward speed |
+| Walker reversing | S moves backward relative to body facing, slower than forward speed |
 | Driver dies (speeder) | Speeder continues, decelerates, stops |
 | Driver dies (walker) | Walker stops in place |
 | Empty vehicle on battlefield | Anyone can take it (theft allowed) |
@@ -341,7 +344,7 @@ All percentage modifiers are `number` type. The formula is `base * (1 + value)`.
 
 - **Speeder bike:** Player hops on, mouse steers, zooms across terrain. Hits a ramp/hill, goes airborne, lands with impact. Hits a wall — stops dead, takes damage, no glitching. Drives off cliff — falls with momentum, lands hard. Rider can be shot off by enemies. Dismount at speed — bike keeps going, slows, stops.
 - **Heavy speeder/tank:** Same hover physics, slower. Cannot cross deep water. Enclosed — crew protected from direct fire.
-- **AT-ST:** WASD movement, mouse aims head (limited arc). IK legs step on terrain. Pivots in place. Fires chin guns. Crew protected. Can be destroyed.
+- **AT-ST:** WASD movement (forward, reverse, strafe), mouse turns body + aims head (limited arc). IK legs step on terrain with procedural weight/lean/bob. Pivots in place. Fires chin guns. Crew protected. Can be destroyed.
 - **AT-AT:** WASD, slow, wide turns. IK legs on 4 points. Mouse aims head (limited arc). Walkable interior with ~20 troop capacity. Full stop to deploy troops via rappel. Transported to planet via carrier ship.
 - **Vehicle transport:** Small vehicles snap to transport ship, deployed via keybind at dead stop. Large vehicles spawned at station, carried visibly, deployed to surface.
 - **Combat:** All vehicle weapons use turret framework. Damage, shields, targeting, lock-on — all identical to turrets and ships.

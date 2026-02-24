@@ -28,6 +28,7 @@ local lockOnStateConnection: RBXScriptConnection? = nil
 
 local candidateEntityId: string? = nil
 local candidateModel: Model? = nil
+
 local lockedEntityId: string? = nil
 local lockedModel: Model? = nil
 local lockedAttackerEntityId: string? = nil
@@ -70,10 +71,24 @@ local function normalizeTeamOrFaction(raw: string?): string?
 	return string.lower(trimmed)
 end
 
-local function findTaggedDescendant(model: Model, tagName: string, className: string?): Instance?
+local function findTaggedDescendant(model: Model, tagName: string, className: string?, excludeInsideFolders: boolean?): Instance?
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if CollectionService:HasTag(descendant, tagName) then
 			if className == nil or descendant:IsA(className) then
+				if excludeInsideFolders then
+					local insideFolder = false
+					local current = descendant.Parent
+					while current ~= nil and current ~= model do
+						if current:IsA("Folder") then
+							insideFolder = true
+							break
+						end
+						current = current.Parent
+					end
+					if insideFolder then
+						continue
+					end
+				end
 				return descendant
 			end
 		end
@@ -131,16 +146,45 @@ local function getCurrentTurretContext(): (Model?, BasePart?, string?, number?)
 	end
 
 	local seatPart = humanoid.SeatPart
-	if seatPart == nil or not CollectionService:HasTag(seatPart, "TurretSeat") then
+	if seatPart == nil then
+		return nil, nil, nil, nil
+	end
+	local isTurretSeat = CollectionService:HasTag(seatPart, "TurretSeat") or CollectionService:HasTag(seatPart, "ArtillerySeat")
+	local isDriverSeat = CollectionService:HasTag(seatPart, "DriverSeat")
+	if not isTurretSeat and not isDriverSeat then
 		return nil, nil, nil, nil
 	end
 
-	local turretModel = seatPart:FindFirstAncestorWhichIsA("Model")
+	local turretModel: Model? = nil
+	if isTurretSeat then
+		turretModel = seatPart:FindFirstAncestorWhichIsA("Model")
+	else
+		-- Walk up to find VehicleEntity-tagged model
+		local current: Instance? = seatPart
+		while current ~= nil do
+			if current:IsA("Model") and CollectionService:HasTag(current, "VehicleEntity") then
+				turretModel = current
+				break
+			end
+			current = current.Parent
+		end
+	end
 	if turretModel == nil then
 		return nil, nil, nil, nil
 	end
 
-	local weaponMount = findTaggedDescendant(turretModel, "WeaponMount", "BasePart")
+	-- Scope weapon mount search to the gunner's station folder (if in one)
+	-- to avoid finding the wrong mount on multi-station vehicles.
+	local mountSearchScope: Instance = turretModel
+	if isTurretSeat then
+		local seatParent = seatPart.Parent
+		if seatParent ~= nil and seatParent:IsA("Folder") and seatParent ~= turretModel then
+			mountSearchScope = seatParent
+		end
+	end
+	-- Driver on a vehicle: skip mounts inside station folders (those belong to gunners)
+	local excludeStationMounts = isDriverSeat
+	local weaponMount = findTaggedDescendant(mountSearchScope :: Model, "WeaponMount", "BasePart", excludeStationMounts)
 	if weaponMount == nil then
 		return turretModel, nil, nil, nil
 	end
@@ -154,11 +198,24 @@ local function getCurrentTurretContext(): (Model?, BasePart?, string?, number?)
 	return turretModel, weaponMount :: BasePart, if type(attackerEntityId) == "string" then attackerEntityId else nil, lockRange
 end
 
+local function getRotatingNeutralFrame(mount: BasePart): CFrame
+	local rx = mount:GetAttribute("NeutralAimRX")
+	local ry = mount:GetAttribute("NeutralAimRY")
+	local rz = mount:GetAttribute("NeutralAimRZ")
+	if type(rx) == "number" and type(ry) == "number" and type(rz) == "number" then
+		local model = mount:FindFirstAncestorOfClass("Model")
+		if model ~= nil and model.PrimaryPart ~= nil then
+			return model.PrimaryPart.CFrame * CFrame.fromOrientation(rx, ry, rz)
+		end
+	end
+	return WeaponRig.getNeutralAimFrame(mount)
+end
+
 local function isDirectionWithinMountArc(weaponMount: BasePart, desiredDirection: Vector3): boolean
 	if desiredDirection.Magnitude < 1e-4 then
 		return false
 	end
-	local neutralAimFrame = WeaponRig.getNeutralAimFrame(weaponMount)
+	local neutralAimFrame = getRotatingNeutralFrame(weaponMount)
 	local clamped = WeaponRig.clampDirectionToMountLimits(weaponMount, neutralAimFrame, desiredDirection.Unit)
 	if clamped.Magnitude < 1e-4 then
 		return false
@@ -346,9 +403,48 @@ local function hasLineOfSight(weaponMount: BasePart, turretModel: Model, targetP
 	return losResult.Instance:IsDescendantOf(targetModel)
 end
 
+local function getEntityAimDirection(turretModel: Model, weaponMount: BasePart, camera: Camera): Vector3
+	-- For VehicleEntity with driver-fired weapon: use the vehicle's forward direction.
+	-- For turrets and vehicle gunner seats: use the camera look direction.
+	if CollectionService:HasTag(turretModel, "VehicleEntity") and turretModel.PrimaryPart ~= nil then
+		-- Check if the local player is in a DriverSeat (fixed gun → vehicle forward)
+		local character = localPlayer.Character
+		local isDriverSeat = false
+		if character ~= nil then
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid ~= nil and humanoid.SeatPart ~= nil and CollectionService:HasTag(humanoid.SeatPart, "DriverSeat") then
+				isDriverSeat = true
+			end
+		end
+
+		if isDriverSeat then
+			local forwardAxisRaw = turretModel:GetAttribute("ForwardAxis")
+			local forwardAxisLocal: Vector3
+			if forwardAxisRaw == "X" then
+				forwardAxisLocal = Vector3.new(1, 0, 0)
+			elseif forwardAxisRaw == "-X" then
+				forwardAxisLocal = Vector3.new(-1, 0, 0)
+			elseif forwardAxisRaw == "Z" then
+				forwardAxisLocal = Vector3.new(0, 0, 1)
+			else
+				forwardAxisLocal = Vector3.new(0, 0, -1)
+			end
+			local worldForward = turretModel.PrimaryPart.CFrame:VectorToWorldSpace(forwardAxisLocal)
+			local horizontal = Vector3.new(worldForward.X, 0, worldForward.Z)
+			if horizontal.Magnitude > 1e-4 then
+				return horizontal.Unit
+			end
+		end
+	end
+	return camera.CFrame.LookVector
+end
+
 local function updateLockCandidate(camera: Camera, turretModel: Model, weaponMount: BasePart, lockRange: number)
-	local cameraPosition = camera.CFrame.Position
-	local cameraLook = camera.CFrame.LookVector
+	local scanOrigin = weaponMount.Position
+	-- Use camera position for the "is the player looking at this?" cone check,
+	-- since the camera may be far from the weapon mount (vehicle chase cam).
+	local cameraOrigin = camera.CFrame.Position
+	local scanDirection = getEntityAimDirection(turretModel, weaponMount, camera)
 	local turretFaction = normalizeTeamOrFaction(turretModel:GetAttribute("Faction"))
 	local maxDot = math.cos(math.rad(CombatConfig.LockOnScanRadius))
 
@@ -368,12 +464,14 @@ local function updateLockCandidate(camera: Camera, turretModel: Model, weaponMou
 						local targetFaction = normalizeTeamOrFaction(targetModel:GetAttribute("Faction"))
 						if CombatConfig.FriendlyFireEnabled or turretFaction == nil or targetFaction == nil or targetFaction ~= turretFaction then
 							local targetPosition = getModelAimPosition(targetModel)
-							local toTarget = targetPosition - cameraPosition
-							local distance = toTarget.Magnitude
-							if distance > 1e-4 and distance <= lockRange then
-								local direction = toTarget.Unit
-								local dot = cameraLook:Dot(direction)
-								if dot >= bestDot and isDirectionWithinMountArc(weaponMount, targetPosition - weaponMount.Position) then
+							local toTargetFromGun = targetPosition - scanOrigin
+							local distanceFromGun = toTargetFromGun.Magnitude
+							if distanceFromGun > 1e-4 and distanceFromGun <= lockRange then
+								local toTargetFromCam = targetPosition - cameraOrigin
+								local direction = if toTargetFromCam.Magnitude > 1e-4 then toTargetFromCam.Unit else toTargetFromGun.Unit
+								local dot = scanDirection:Dot(direction)
+								local inArc = isDirectionWithinMountArc(weaponMount, targetPosition - weaponMount.Position)
+								if dot >= bestDot and inArc then
 									if hasLineOfSight(weaponMount, turretModel, targetPosition, targetModel) then
 										bestDot = dot
 										bestEntityId = targetEntityId
@@ -403,11 +501,12 @@ local function updateLockCandidate(camera: Camera, turretModel: Model, weaponMou
 					end
 					if CombatConfig.FriendlyFireEnabled or turretFaction == nil or targetFaction == nil or targetFaction ~= turretFaction then
 						local targetPosition = getModelAimPosition(character)
-						local toTarget = targetPosition - cameraPosition
-						local distance = toTarget.Magnitude
-						if distance > 1e-4 and distance <= lockRange then
-							local direction = toTarget.Unit
-							local dot = cameraLook:Dot(direction)
+						local toTargetFromGun = targetPosition - scanOrigin
+						local distanceFromGun = toTargetFromGun.Magnitude
+						if distanceFromGun > 1e-4 and distanceFromGun <= lockRange then
+							local toTargetFromCam = targetPosition - cameraOrigin
+							local direction = if toTargetFromCam.Magnitude > 1e-4 then toTargetFromCam.Unit else toTargetFromGun.Unit
+							local dot = scanDirection:Dot(direction)
 							if dot >= bestDot and isDirectionWithinMountArc(weaponMount, targetPosition - weaponMount.Position) then
 								if hasLineOfSight(weaponMount, turretModel, targetPosition, character) then
 									bestDot = dot

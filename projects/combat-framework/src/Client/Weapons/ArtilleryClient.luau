@@ -91,6 +91,7 @@ local FREELOOK_DISTANCE = 20
 local freelookActive: boolean = false
 local freelookYaw: number = 0
 local freelookPitch: number = 0
+local freelookToggleConnection: RBXScriptConnection? = nil
 
 local GHOST_ARC_INTERVAL = 3.0
 local GHOST_ARC_MAX_TIME = 8.0
@@ -108,6 +109,69 @@ local ghostAlive: boolean = false
 local ghostTimer: number = 0
 local ghostAge: number = 0
 local ghostGravity: number = 300
+
+local ARTILLERY_POOL_COPIES = 4
+local artilleryFireSoundPool: { Sound } = {}
+local artilleryFireSoundPoolIndex: number = 0
+
+local function buildArtilleryFireSoundPool()
+	for _, s in ipairs(artilleryFireSoundPool) do s:Destroy() end
+	table.clear(artilleryFireSoundPool)
+	artilleryFireSoundPoolIndex = 0
+
+	local model = activeArtilleryModel
+	if model == nil then return end
+	local groupKey: string? = nil
+	local raw = model:GetAttribute("FireSound")
+	if type(raw) == "string" and raw ~= "" then
+		groupKey = raw
+	end
+	if groupKey == nil then return end
+
+	local group = CombatConfig.WeaponSounds[groupKey]
+	if type(group) ~= "table" then return end
+	local entry = (group :: any).fire
+	local rawVolume = (group :: any).fireVolume
+	local volume: number = if type(rawVolume) == "number" then rawVolume else 1
+	local ids: { string } = {}
+	if type(entry) == "string" and entry ~= "" then
+		table.insert(ids, entry)
+	elseif type(entry) == "table" then
+		for _, id in ipairs(entry) do
+			if type(id) == "string" and id ~= "" then
+				table.insert(ids, id)
+			end
+		end
+	end
+	if #ids == 0 then return end
+
+	local mount = activeWeaponMount
+	local parent: Instance = if mount ~= nil then mount else (if model ~= nil then (model :: Instance) else nil :: any)
+	if parent == nil then return end
+	for _ = 1, ARTILLERY_POOL_COPIES do
+		for _, id in ipairs(ids) do
+			local sound = Instance.new("Sound")
+			sound.SoundId = id
+			sound.Volume = volume
+			sound.Looped = false
+			sound.Parent = parent
+			table.insert(artilleryFireSoundPool, sound)
+		end
+	end
+end
+
+local function destroyArtilleryFireSoundPool()
+	for _, s in ipairs(artilleryFireSoundPool) do s:Destroy() end
+	table.clear(artilleryFireSoundPool)
+	artilleryFireSoundPoolIndex = 0
+end
+
+local function playInstantFireSound()
+	if #artilleryFireSoundPool == 0 then return end
+	local sound = artilleryFireSoundPool[math.random(1, #artilleryFireSoundPool)]
+	sound.TimePosition = 0
+	sound:Play()
+end
 
 local function getWeaponConfig(model: Model): any
 	local configId = model:GetAttribute("ConfigId")
@@ -533,6 +597,18 @@ local function onFireAction(_name: string, state: Enum.UserInputState, _input: I
 		return Enum.ContextActionResult.Pass
 	end
 
+	if activeArtilleryModel:GetAttribute("WeaponOverheated") == true then
+		return Enum.ContextActionResult.Sink
+	end
+
+	local ammoMaxRaw = activeArtilleryModel:GetAttribute("WeaponAmmoMax")
+	if type(ammoMaxRaw) == "number" and ammoMaxRaw > 0 then
+		local ammoRaw = activeArtilleryModel:GetAttribute("WeaponAmmo")
+		if type(ammoRaw) == "number" and ammoRaw <= 0 then
+			return Enum.ContextActionResult.Sink
+		end
+	end
+
 	local now = tick()
 	if now < nextClientFireTime then
 		return Enum.ContextActionResult.Sink
@@ -548,6 +624,7 @@ local function onFireAction(_name: string, state: Enum.UserInputState, _input: I
 
 	local aimDir = computeAimDirection()
 	fireWeaponRemote:FireServer(aimDir)
+	playInstantFireSound()
 	return Enum.ContextActionResult.Sink
 end
 
@@ -615,27 +692,31 @@ local function updateArtilleryAndCamera(dt: number)
 		return
 	end
 
-	-- Freelook toggle
-	local altHeld = UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt)
-	if altHeld and not freelookActive then
-		freelookActive = true
-		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-		UserInputService.MouseIconEnabled = true
-		-- Initialize orbit from current camera position
-		local camPos = camera.CFrame.Position
-		local pivotPos = if activeArtilleryModel ~= nil then (activeArtilleryModel :: Model):GetPivot().Position else camPos
-		local toCamera = camPos - pivotPos
-		freelookYaw = math.atan2(toCamera.X, toCamera.Z)
-		local horizontalDist = Vector3.new(toCamera.X, 0, toCamera.Z).Magnitude
-		freelookPitch = -math.atan2(toCamera.Y, horizontalDist)
-		freelookPitch = math.clamp(freelookPitch, FREELOOK_PITCH_MIN, FREELOOK_PITCH_MAX)
-	elseif not altHeld and freelookActive then
-		freelookActive = false
-		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-		UserInputService.MouseIconEnabled = false
+	-- Freelook toggle is handled by InputBegan connection (see activateArtilleryMode)
+
+	-- Read config values
+	local adjustSpeed = weaponConfig.artilleryAdjustSpeed or 30
+	local fineSpeed = weaponConfig.artilleryFineAdjustSpeed or 5
+	local minElev = math.rad(weaponConfig.artilleryMinElevation or 5)
+	local maxElev = math.rad(weaponConfig.artilleryMaxElevation or 85)
+	local speed = if shiftHeld then fineSpeed else adjustSpeed
+	local speedRad = math.rad(speed) * dt
+
+	-- Update heading/elevation from WASD (always, even during freelook)
+	if wHeld then
+		elevation = math.clamp(elevation + speedRad, minElev, maxElev)
+	end
+	if sHeld then
+		elevation = math.clamp(elevation - speedRad, minElev, maxElev)
+	end
+	if aHeld then
+		heading = heading + speedRad
+	end
+	if dHeld then
+		heading = heading - speedRad
 	end
 
-	-- While freelook is active, handle RMB orbit and skip aim/camera updates
+	-- While freelook is active, handle RMB orbit and skip normal camera updates
 	if freelookActive then
 		local rmbHeld = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 		if rmbHeld then
@@ -658,7 +739,24 @@ local function updateArtilleryAndCamera(dt: number)
 			* CFrame.new(0, 0, FREELOOK_DISTANCE)
 		camera.CFrame = CFrame.lookAt(orbitCFrame.Position, pivotPos)
 
-		-- Still step ghost arc during freelook
+		-- Still update aim, driven parts, HUD, and ghost arc during freelook
+		local aimDirection = computeAimDirection()
+		updateDrivenPartsAim(aimDirection)
+		sendAimUpdate(aimDirection)
+
+		if combatHUDModule ~= nil and activeArtilleryModel ~= nil then
+			local elevDeg = math.deg(elevation)
+			local hdgDeg = math.deg(heading) % 360
+			local rangeSt = math.max(0, computeFlatRange(weaponConfig))
+			combatHUDModule.setArtilleryAim(elevDeg, hdgDeg, rangeSt)
+
+			local ammoRaw = (activeArtilleryModel :: Model):GetAttribute("WeaponAmmo")
+			local ammoMaxRaw = (activeArtilleryModel :: Model):GetAttribute("WeaponAmmoMax")
+			if type(ammoRaw) == "number" and type(ammoMaxRaw) == "number" then
+				combatHUDModule.setAmmo(ammoRaw, ammoMaxRaw)
+			end
+		end
+
 		ghostTimer += dt
 		if ghostTimer >= GHOST_ARC_INTERVAL then
 			ghostTimer = 0
@@ -666,28 +764,6 @@ local function updateArtilleryAndCamera(dt: number)
 		end
 		stepGhostArc(dt)
 		return
-	end
-
-	-- Read config values
-	local adjustSpeed = weaponConfig.artilleryAdjustSpeed or 30
-	local fineSpeed = weaponConfig.artilleryFineAdjustSpeed or 5
-	local minElev = math.rad(weaponConfig.artilleryMinElevation or 5)
-	local maxElev = math.rad(weaponConfig.artilleryMaxElevation or 85)
-	local speed = if shiftHeld then fineSpeed else adjustSpeed
-	local speedRad = math.rad(speed) * dt
-
-	-- Update heading/elevation from WASD
-	if wHeld then
-		elevation = math.clamp(elevation + speedRad, minElev, maxElev)
-	end
-	if sHeld then
-		elevation = math.clamp(elevation - speedRad, minElev, maxElev)
-	end
-	if aHeld then
-		heading = heading + speedRad
-	end
-	if dHeld then
-		heading = heading - speedRad
 	end
 
 	local aimDirection = computeAimDirection()
@@ -821,6 +897,33 @@ local function activateArtilleryMode(seatPart: BasePart)
 	ContextActionService:BindAction(AIM_D_ACTION, makeKeyAction(function(v) dHeld = v end), false, Enum.KeyCode.D)
 	ContextActionService:BindAction(SHIFT_ACTION, makeKeyAction(function(v) shiftHeld = v end), false, Enum.KeyCode.LeftShift)
 
+	-- Freelook toggle on ALT press
+	if freelookToggleConnection ~= nil then
+		freelookToggleConnection:Disconnect()
+	end
+	freelookToggleConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+		if input.KeyCode ~= Enum.KeyCode.LeftAlt then return end
+		local camera = workspace.CurrentCamera
+		if camera == nil then return end
+		if not freelookActive then
+			freelookActive = true
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			UserInputService.MouseIconEnabled = true
+			local camPos = camera.CFrame.Position
+			local pivotPos = if activeArtilleryModel ~= nil then (activeArtilleryModel :: Model):GetPivot().Position else camPos
+			local toCamera = camPos - pivotPos
+			freelookYaw = math.atan2(toCamera.X, toCamera.Z)
+			local horizontalDist = Vector3.new(toCamera.X, 0, toCamera.Z).Magnitude
+			freelookPitch = -math.atan2(toCamera.Y, horizontalDist)
+			freelookPitch = math.clamp(freelookPitch, FREELOOK_PITCH_MIN, FREELOOK_PITCH_MAX)
+		else
+			freelookActive = false
+			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+			UserInputService.MouseIconEnabled = false
+		end
+	end)
+
 	-- Start render loop
 	if stepConnection == nil then
 		stepConnection = RunService.RenderStepped:Connect(updateArtilleryAndCamera)
@@ -840,9 +943,11 @@ local function activateArtilleryMode(seatPart: BasePart)
 	end
 
 	print(string.format("[P7_ARTILLERY] activated entity=%s", tostring(entityModel:GetAttribute("EntityId"))))
+	buildArtilleryFireSoundPool()
 end
 
 local function deactivateArtilleryMode()
+	destroyArtilleryFireSoundPool()
 	local wasActive = activeArtilleryModel ~= nil
 
 	ContextActionService:UnbindAction(FIRE_ACTION)
@@ -884,6 +989,12 @@ local function deactivateArtilleryMode()
 		end
 
 		print("[P7_ARTILLERY] deactivated")
+	end
+
+	-- Clean up freelook toggle connection
+	if freelookToggleConnection ~= nil then
+		freelookToggleConnection:Disconnect()
+		freelookToggleConnection = nil
 	end
 
 	-- Clean up ghost arc, freelook, and driven parts

@@ -157,24 +157,25 @@ A player enters an artillery emplacement, adjusts elevation and heading with WAS
 
 ---
 
-## Pass 8: Walker Movement
+## Pass 8: Biped Walker Movement
 **Depends on:** Pass 5 (CFrame velocity system proven on speeders)
 **What it includes:**
-- Walker body CFrame movement: WASD controls, terrain-height following
-- IK procedural walk cycle: legs plant feet on terrain via raycasts, step in sequence, terrain-adaptive
-- Head independent rotation controlled by mouse aim (limited arc, config-driven)
-- Biped pivot in place, quad slow pivot (config-driven turn speed)
+- **Biped only** — quad walker is a separate future effort (different gait system entirely)
+- Walker body CFrame movement: WASD controls relative to body facing (W forward, S reverse slower, A/D strafe), terrain-height following
+- Mouse aim turns body (with turn speed limit). Head rotates independently on top of body facing (limited arc, config-driven).
+- IK procedural walk cycle: two-bone IK legs, raycasts plant feet on terrain, step triggered by distance threshold, terrain-adaptive
+- Procedural secondary body motion: weight shift to planted leg, bob per step, lean into movement, jolt on foot impact, tilt on uneven terrain. Must look hand-animated, not robotic.
 - Stop and stand idle (legs planted)
-- Walkers cannot reverse — must turn 180
+- Biped pivot in place (mouse turn at standstill, feet shuffle)
 - Walker off cliff: falls, takes fall damage, IK legs reacquire ground
 - Max slope: config per vehicle
 - 3rd person camera for walkers (config-driven distance based on walker size)
-- Placeholder walker model (body + legs + head + seats)
+- Placeholder biped walker model (body + 2 two-segment legs + head + seat)
 - Walker-specific tags: IK leg attachments, joint positions, foot targets, head pivot
 - NO COMBAT — prove IK walking in isolation. This is the hardest vehicle engineering challenge.
 
 **After this pass, the system:**
-A walker moves with IK-animated legs that step on terrain. Head swivels independently with mouse aim within its arc. Legs adapt to slopes and uneven ground. Biped pivots freely, quad pivots slowly. IK walking is proven in isolation before combat complexity is added.
+A biped walker moves with WASD (forward, reverse, strafe) and turns with mouse. IK legs step on terrain with weight, lean, and bob that looks hand-animated. Head swivels independently within its arc. Legs adapt to slopes and uneven ground. Walker pivots in place. IK biped walking is proven in isolation before combat or quad walkers.
 
 ---
 

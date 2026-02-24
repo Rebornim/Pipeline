@@ -133,9 +133,11 @@ local function validateConfigContracts(): boolean
 				hasFailure = true
 			end
 
-			if type(vehicleConfig.hoverHeight) ~= "number" or vehicleConfig.hoverHeight <= 0 then
-				warn(string.format("[VALIDATE] Vehicle '%s' hoverHeight must be > 0", vehicleId))
-				hasFailure = true
+			if vehicleConfig.vehicleClass ~= "walker_biped" then
+				if type(vehicleConfig.hoverHeight) ~= "number" or vehicleConfig.hoverHeight <= 0 then
+					warn(string.format("[VALIDATE] Vehicle '%s' hoverHeight must be > 0", vehicleId))
+					hasFailure = true
+				end
 			end
 		end
 	end
@@ -231,13 +233,16 @@ function StartupValidator.validate(): { ValidatedEntity }
 				seatCandidate = findTaggedDescendant(model, "ArtillerySeat", "Seat")
 			end
 			if seatCandidate == nil then
-				fail(modelName, "has weaponId but no TurretSeat or ArtillerySeat tagged child")
-				continue
+				-- Armed vehicles use DriverSeat, not TurretSeat — skip seat requirement
+				if not CollectionService:HasTag(model, "VehicleEntity") then
+					fail(modelName, "has weaponId but no TurretSeat or ArtillerySeat tagged child")
+					continue
+				end
+			else
+				turretSeat = seatCandidate :: Seat
 			end
 
-			turretSeat = seatCandidate :: Seat
-
-			if not hasCameraPoint(model) then
+			if not hasCameraPoint(model) and not CollectionService:HasTag(model, "VehicleEntity") then
 				fail(modelName, "has weaponId but no CameraPoint part/attachment")
 				continue
 			end
@@ -251,6 +256,36 @@ function StartupValidator.validate(): { ValidatedEntity }
 			muzzlePoint = muzzlePoint,
 			turretSeat = turretSeat,
 		})
+
+		-- Validate gunner station folders (non-blocking warnings)
+		for _, child in ipairs(model:GetChildren()) do
+			if child:IsA("Folder") then
+				local stationSeat: Seat? = nil
+				local stationMount: BasePart? = nil
+				for _, desc in ipairs(child:GetDescendants()) do
+					if stationSeat == nil and desc:IsA("Seat") and (CollectionService:HasTag(desc, "TurretSeat") or CollectionService:HasTag(desc, "ArtillerySeat")) then
+						stationSeat = desc :: Seat
+					end
+					if stationMount == nil and desc:IsA("BasePart") and CollectionService:HasTag(desc, "WeaponMount") then
+						stationMount = desc :: BasePart
+					end
+				end
+				if stationSeat ~= nil then
+					if stationMount == nil then
+						fail(modelName, string.format("GunnerStation '%s' has TurretSeat but no WeaponMount", child.Name))
+					else
+						local stationAimAxis = WeaponRig.resolveAimAxis(stationMount)
+						if stationAimAxis == nil then
+							fail(modelName, string.format("GunnerStation '%s' WeaponMount has no resolved aim axis", child.Name))
+						end
+					end
+					local stationWeaponId = child:GetAttribute("WeaponConfigId")
+					if type(stationWeaponId) == "string" and CombatConfig.Weapons[stationWeaponId] == nil then
+						fail(modelName, string.format("GunnerStation '%s' WeaponConfigId '%s' not found", child.Name, stationWeaponId))
+					end
+				end
+			end
+		end
 	end
 
 	local vehicleEntities = CollectionService:GetTagged("VehicleEntity")
@@ -293,11 +328,54 @@ function StartupValidator.validate(): { ValidatedEntity }
 			continue
 		end
 
-		local hoverPoints = collectTaggedDescendants(model, "HoverPoint", "BasePart")
-		if vehicleConfig.vehicleClass == "light" or vehicleConfig.vehicleClass == "heavy" then
-			if #hoverPoints < 4 then
-				fail(modelName, string.format("Speeder needs 4 HoverPoint tagged parts, found %d", #hoverPoints))
+		local isWalker = vehicleConfig.vehicleClass == "walker_biped"
+
+		if not isWalker then
+			local hoverPoints = collectTaggedDescendants(model, "HoverPoint", "BasePart")
+			if vehicleConfig.vehicleClass == "light" or vehicleConfig.vehicleClass == "heavy" then
+				if #hoverPoints < 4 then
+					fail(modelName, string.format("Speeder needs 4 HoverPoint tagged parts, found %d", #hoverPoints))
+					invalidVehicleModels[model] = true
+					continue
+				end
+			end
+		end
+
+		if isWalker then
+			-- WalkerHead: exactly 1 tagged BasePart
+			local walkerHeads = collectTaggedDescendants(model, "WalkerHead", "BasePart")
+			if #walkerHeads ~= 1 then
+				fail(modelName, string.format("Walker needs exactly 1 WalkerHead tagged BasePart, found %d", #walkerHeads))
 				invalidVehicleModels[model] = true
+				continue
+			end
+
+			-- WalkerHip: exactly 2 tagged Attachments
+			local walkerHips = collectTaggedDescendants(model, "WalkerHip", "Attachment")
+			if #walkerHips ~= 2 then
+				fail(modelName, string.format("Walker needs exactly 2 WalkerHip tagged Attachments, found %d", #walkerHips))
+				invalidVehicleModels[model] = true
+				continue
+			end
+
+			-- LeftLeg and RightLeg folders with UpperLeg, LowerLeg, Foot parts
+			for _, legName in ipairs({ "LeftLeg", "RightLeg" }) do
+				local legFolder = model:FindFirstChild(legName)
+				if legFolder == nil or not legFolder:IsA("Folder") then
+					fail(modelName, string.format("Walker missing %s Folder", legName))
+					invalidVehicleModels[model] = true
+					break
+				end
+				for _, partName in ipairs({ "UpperLeg", "LowerLeg", "Foot" }) do
+					local part = legFolder:FindFirstChild(partName)
+					if part == nil or not part:IsA("BasePart") then
+						fail(modelName, string.format("Walker %s missing %s BasePart", legName, partName))
+						invalidVehicleModels[model] = true
+						break
+					end
+				end
+			end
+			if invalidVehicleModels[model] then
 				continue
 			end
 		end

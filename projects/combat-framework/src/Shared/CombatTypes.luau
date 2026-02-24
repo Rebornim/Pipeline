@@ -86,6 +86,7 @@ export type ProjectileData = {
 	createdAt: number,
 	artilleryGravity: number?,
 	currentVelocity: Vector3?,
+	fireSound: string?,
 }
 
 export type ValidatedEntity = {
@@ -108,6 +109,8 @@ export type ProjectileFiredPayload = {
 	homingTurnRate: number?,
 	boltColor: Color3?,
 	artilleryGravity: number?,
+	fireSound: string?,
+	shooterUserId: number?,
 }
 
 export type ProjectileImpactPayload = {
@@ -199,6 +202,50 @@ export type VehicleConfig = {
 	boostDuration: number,
 	boostCooldown: number,
 	canCrossWater: boolean,
+	-- Walker-specific (optional, only present on walker configs)
+	turnSpeed: number?,
+	headYawMin: number?,
+	headYawMax: number?,
+	headPitchMin: number?,
+	headPitchMax: number?,
+	walkHeight: number?,
+	legUpperLength: number?,
+	legLowerLength: number?,
+	footLength: number?,
+	stepThreshold: number?,
+	stepHeight: number?,
+	stepDuration: number?,
+	stepAheadTime: number?,
+	homeOffsetForward: number?,
+	homeOffsetLateral: number?,
+	bobAmplitude: number?,
+	swayAmplitude: number?,
+	impactJoltAmplitude: number?,
+	impactJoltDecay: number?,
+	strafeMaxSpeed: number?,
+	halfCycleDuration: number?,
+	gaitMinSpeedFrac: number?,
+	strutAttachLateral: number?,
+	strut1AttachForward: number?,
+	strut1AttachVertical: number?,
+	strut1AttachLateral: number?,
+	strut1Length: number?,
+	strut1PitchDeg: number?,
+	strut1SpreadDeg: number?,
+	-- Sprint
+	sprintMaxSpeed: number?,
+	sprintAcceleration: number?,
+	sprintHalfCycleDuration: number?,
+	sprintGaitMinSpeedFrac: number?,
+	sprintStrideLead: number?,
+	sprintStepHeight: number?,
+	sprintStepDuration: number?,
+	sprintBobAmplitude: number?,
+	sprintSwayAmplitude: number?,
+	sprintLeanAngle: number?,
+	sprintTurnSpeed: number?,
+	sprintFootInwardBias: number?,
+	sprintImpactJoltAmplitude: number?,
 }
 
 export type VehicleInputPayload = {
@@ -206,6 +253,8 @@ export type VehicleInputPayload = {
 	steerX: number,
 	lean: number,
 	boost: boolean,
+	strafe: number?,
+	aimYaw: number?,
 }
 
 export type VehicleRuntimeState = {
@@ -227,6 +276,53 @@ export type VehicleRuntimeState = {
 	inputLean: number,
 	connections: { RBXScriptConnection },
 	simulatedCFrame: CFrame,
+}
+
+export type WalkerRuntimeState = {
+	walkerId: string,
+	entityId: string,
+	instance: Model,
+	primaryPart: BasePart,
+	driverSeat: Seat,
+	headPart: BasePart,
+	headBaseOffset: CFrame,
+	hipAttachments: { left: Attachment, right: Attachment },
+	headFollowerParts: { BasePart },
+	lastHeadCFrame: CFrame,
+	legParts: {
+		left: { upper: BasePart, lower: BasePart, foot: BasePart },
+		right: { upper: BasePart, lower: BasePart, foot: BasePart },
+	},
+	config: VehicleConfig,
+	driver: Player?,
+	velocity: Vector3,
+	heading: number,
+	aimYaw: number,
+	isAirborne: boolean,
+	lastGroundedTick: number,
+	lastVerticalSpeed: number,
+	inputThrottle: number,
+	inputStrafe: number,
+	inputSteerX: number,
+	connections: { RBXScriptConnection },
+	childPartOffsets: { { part: BasePart, offset: CFrame } },
+	legPartSet: { [BasePart]: boolean },
+	replicationState: string,
+	settlingStartTick: number,
+	simulatedCFrame: CFrame,
+	lastCFrameWriteTick: number,
+	lastSpeedUpdateTick: number,
+	lastReplicatedSpeed: number,
+	lastReplicatedHeading: number,
+	wasStopped: boolean,
+	gaitPhase: number,
+	gaitActive: boolean,
+	gaitSide: string,
+	gaitStopRequested: boolean,
+	inputSprint: boolean,
+	sprintFrac: number,
+	promptPart: BasePart?,
+	prompt: ProximityPrompt?,
 }
 
 return CombatTypes

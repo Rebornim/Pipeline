@@ -540,6 +540,14 @@ end
 function ProjectileServer.fireProjectile(data: ProjectileData)
 	activeProjectiles[data.projectileId] = data
 
+	local shooterUserId: number? = nil
+	if data.sourceCharacter ~= nil then
+		local shooterPlayer = Players:GetPlayerFromCharacter(data.sourceCharacter)
+		if shooterPlayer ~= nil then
+			shooterUserId = shooterPlayer.UserId
+		end
+	end
+
 	local projectileRemote = getProjectileRemote()
 	projectileRemote:FireAllClients({
 		projectileId = data.projectileId,
@@ -552,6 +560,8 @@ function ProjectileServer.fireProjectile(data: ProjectileData)
 		homingTurnRate = data.homingTurnRate,
 		boltColor = data.boltColor,
 		artilleryGravity = data.artilleryGravity,
+		fireSound = data.fireSound,
+		shooterUserId = shooterUserId,
 	})
 
 	print(string.format(

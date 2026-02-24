@@ -473,7 +473,14 @@ function WeaponRig.clampDirectionToMountLimits(
 		maxYaw = math.pi
 	end
 
-	yaw = math.clamp(yaw, minYaw, maxYaw)
+	-- Handle yaw wrap-around when limits exceed ±180°
+	local yawRange = maxYaw - minYaw
+	if yawRange < 2 * math.pi then
+		local midYaw = (minYaw + maxYaw) / 2
+		local offset = yaw - midYaw
+		yaw = midYaw + math.atan2(math.sin(offset), math.cos(offset))
+		yaw = math.clamp(yaw, minYaw, maxYaw)
+	end
 	pitch = math.clamp(pitch, minPitch, maxPitch)
 
 	local clampedLocalDirection = yawPitchToDirection(yaw, pitch)

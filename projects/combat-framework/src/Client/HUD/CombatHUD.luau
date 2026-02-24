@@ -448,7 +448,7 @@ function CombatHUD.init()
 	local frame = Instance.new("Frame")
 	frame.Name = "HullFrame"
 	frame.AnchorPoint = Vector2.new(0.5, 1)
-	frame.Position = UDim2.new(0.5, 0, 1, -86)
+	frame.Position = UDim2.new(0.5, 0, 1, -110)
 	frame.Size = UDim2.fromOffset(200, 40)
 	frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 	frame.BackgroundTransparency = 0.35
@@ -531,7 +531,7 @@ function CombatHUD.init()
 	local weaponHeatFrame = Instance.new("Frame")
 	weaponHeatFrame.Name = "HeatFrame"
 	weaponHeatFrame.AnchorPoint = Vector2.new(0.5, 1)
-	weaponHeatFrame.Position = UDim2.new(0.5, 0, 1, -46)
+	weaponHeatFrame.Position = UDim2.new(0.5, 0, 1, -78)
 	weaponHeatFrame.Size = UDim2.fromOffset(220, 28)
 	weaponHeatFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 	weaponHeatFrame.BackgroundTransparency = 0.35
@@ -570,7 +570,7 @@ function CombatHUD.init()
 	local weaponAmmoFrame = Instance.new("Frame")
 	weaponAmmoFrame.Name = "AmmoFrame"
 	weaponAmmoFrame.AnchorPoint = Vector2.new(0.5, 1)
-	weaponAmmoFrame.Position = UDim2.new(0.5, 0, 1, -46)
+	weaponAmmoFrame.Position = UDim2.new(0.5, 0, 1, -78)
 	weaponAmmoFrame.Size = UDim2.fromOffset(220, 28)
 	weaponAmmoFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 	weaponAmmoFrame.BackgroundTransparency = 0.35

@@ -1,5 +1,6 @@
 --!strict
 
+local ContentProvider = game:GetService("ContentProvider")
 local Debris = game:GetService("Debris")
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -21,7 +22,6 @@ type ProjectileVisualProfile = {
 	trailWidthScale: number,
 	lightBrightnessScale: number,
 	lightRangeScale: number,
-	whizPitchScale: number,
 	impactScale: number,
 	impactEmitScale: number,
 }
@@ -41,6 +41,7 @@ type ActiveBolt = {
 	currentPosition: Vector3?,
 	artilleryGravity: number?,
 	currentVelocity: Vector3?,
+	fireSound: string?,
 }
 
 local ProjectileVisuals = {}
@@ -54,11 +55,6 @@ local impactFolder: Folder? = nil
 local warnedMissingTemplate = false
 local warnedMissingImpactTemplate = false
 local warnedMissingShieldImpactTemplate = false
-local warnedMissingFireSoundTemplate = false
-local warnedMissingFireSoundTemplateByDamageType: { [string]: boolean } = {}
-local warnedMissingImpactSoundTemplate = false
-local warnedMissingShieldImpactSoundTemplate = false
-local warnedMissingShieldBreakSoundTemplate = false
 
 local PLAYER_TARGET_PREFIX = "player_"
 local clientVisualRaycastParams = RaycastParams.new()
@@ -74,6 +70,15 @@ local IMPACT_BURST_COUNTS: { [string]: number } = {
 
 local IMPACT_AUTO_DISABLE_TIME = 0.15
 local IMPACT_CLEANUP_TIME = 5
+
+local REVERB_START_DISTANCE = 100
+local REVERB_MAX_DISTANCE = 900
+local REVERB_DRY_LEVEL_CLOSE = 0
+local REVERB_DRY_LEVEL_FAR = -6
+local REVERB_WET_LEVEL_CLOSE = -20
+local REVERB_WET_LEVEL_FAR = 0
+local REVERB_DECAY_CLOSE = 0.5
+local REVERB_DECAY_FAR = 2.5
 local DEFAULT_VISUAL_PROFILE: ProjectileVisualProfile = {
 	boltLengthScale = 1.0,
 	boltWidthScale = 1.0,
@@ -81,7 +86,6 @@ local DEFAULT_VISUAL_PROFILE: ProjectileVisualProfile = {
 	trailWidthScale = 1.0,
 	lightBrightnessScale = 1.0,
 	lightRangeScale = 1.0,
-	whizPitchScale = 1.0,
 	impactScale = 1.0,
 	impactEmitScale = 1.0,
 }
@@ -94,7 +98,6 @@ local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
 		trailWidthScale = 1.9,
 		lightBrightnessScale = 1.45,
 		lightRangeScale = 1.35,
-		whizPitchScale = 0.82,
 		impactScale = 1.25,
 		impactEmitScale = 1.35,
 	},
@@ -105,7 +108,6 @@ local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
 		trailWidthScale = 1.2,
 		lightBrightnessScale = 1.25,
 		lightRangeScale = 1.2,
-		whizPitchScale = 1.2,
 		impactScale = 1.1,
 		impactEmitScale = 1.15,
 	},
@@ -116,7 +118,6 @@ local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
 		trailWidthScale = 2.65,
 		lightBrightnessScale = 1.95,
 		lightRangeScale = 1.6,
-		whizPitchScale = 0.7,
 		impactScale = 1.85,
 		impactEmitScale = 1.85,
 	},
@@ -127,7 +128,6 @@ local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
 		trailWidthScale = 2.2,
 		lightBrightnessScale = 1.65,
 		lightRangeScale = 1.45,
-		whizPitchScale = 0.85,
 		impactScale = 1.45,
 		impactEmitScale = 1.5,
 	},
@@ -138,7 +138,6 @@ local DAMAGE_TYPE_VISUAL_PROFILES: { [string]: ProjectileVisualProfile } = {
 		trailWidthScale = 5.0,
 		lightBrightnessScale = 3.0,
 		lightRangeScale = 3.5,
-		whizPitchScale = 0.45,
 		impactScale = 4.0,
 		impactEmitScale = 4.0,
 	},
@@ -237,7 +236,13 @@ local function destroyBolt(projectileId: string)
 	if bolt.bulletPart ~= nil and bolt.bulletPart.Parent ~= nil then
 		bolt.bulletPart:Destroy()
 	end
-	activeBolts[projectileId] = nil
+	-- Keep metadata alive briefly so impact handler can read fireSound/damageType
+	-- even if the visual was destroyed before the impact event arrives
+	task.delay(2, function()
+		if activeBolts[projectileId] == bolt then
+			activeBolts[projectileId] = nil
+		end
+	end)
 end
 
 local function getProjectileTemplateFolder(): Folder?
@@ -274,104 +279,7 @@ local function getImpactTemplateFolder(impactType: string?): Folder?
 	return template
 end
 
-local function getFirstSoundDescendant(folder: Folder): Sound?
-	for _, child in ipairs(folder:GetChildren()) do
-		if child:IsA("Sound") then
-			return child
-		end
-	end
 
-	return nil
-end
-
-local function getFireSoundTemplate(damageType: string?): Sound?
-	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
-	if combatAssets == nil or not combatAssets:IsA("Folder") then
-		return nil
-	end
-
-	local audioFolder = combatAssets:FindFirstChild("Audio")
-	if audioFolder == nil or not audioFolder:IsA("Folder") then
-		return nil
-	end
-
-	local fireFolder = audioFolder:FindFirstChild("Fire")
-	if fireFolder == nil or not fireFolder:IsA("Folder") then
-		return nil
-	end
-
-	if type(damageType) == "string" and damageType ~= "" then
-		local damageTypeNode = fireFolder:FindFirstChild(damageType)
-		if damageTypeNode ~= nil then
-			if damageTypeNode:IsA("Sound") then
-				return damageTypeNode
-			end
-			if damageTypeNode:IsA("Folder") then
-				local typedSound = getFirstSoundDescendant(damageTypeNode)
-				if typedSound ~= nil then
-					return typedSound
-				end
-			end
-		end
-	end
-
-	return getFirstSoundDescendant(fireFolder)
-end
-
-local function getImpactSoundTemplates(impactType: string?): { Sound }
-	local templates: { Sound } = {}
-
-	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
-	if combatAssets == nil or not combatAssets:IsA("Folder") then
-		return templates
-	end
-
-	local audioFolder = combatAssets:FindFirstChild("Audio")
-	if audioFolder == nil or not audioFolder:IsA("Folder") then
-		return templates
-	end
-
-	local folderName = if impactType == "shield" then "ShieldImpact" else "Impact"
-	local impactFolderAudio = audioFolder:FindFirstChild(folderName)
-	if impactFolderAudio == nil or not impactFolderAudio:IsA("Folder") then
-		return templates
-	end
-
-	for _, child in ipairs(impactFolderAudio:GetChildren()) do
-		if child:IsA("Sound") then
-			table.insert(templates, child)
-		end
-	end
-
-	return templates
-end
-
-local function getShieldBreakSoundTemplates(): { Sound }
-	local templates: { Sound } = {}
-
-	local combatAssets = ReplicatedStorage:FindFirstChild("CombatAssets")
-	if combatAssets == nil or not combatAssets:IsA("Folder") then
-		return templates
-	end
-
-	local audioFolder = combatAssets:FindFirstChild("Audio")
-	if audioFolder == nil or not audioFolder:IsA("Folder") then
-		return templates
-	end
-
-	local breakFolder = audioFolder:FindFirstChild("ShieldBreak")
-	if breakFolder == nil or not breakFolder:IsA("Folder") then
-		return templates
-	end
-
-	for _, child in ipairs(breakFolder:GetChildren()) do
-		if child:IsA("Sound") then
-			table.insert(templates, child)
-		end
-	end
-
-	return templates
-end
 
 local MISSILE_DAMAGE_TYPES: { [string]: boolean } = {
 	proton_torpedo = true,
@@ -388,23 +296,78 @@ local function prepareVisualPart(part: BasePart)
 	part.CastShadow = false
 end
 
-local function playFireSoundAt(position: Vector3, damageType: string?)
-	local soundTemplate = getFireSoundTemplate(damageType)
-	if soundTemplate == nil then
-		local damageTypeKey = if type(damageType) == "string" and damageType ~= "" then damageType else "default"
-		if damageTypeKey ~= "default" then
-			if not warnedMissingFireSoundTemplateByDamageType[damageTypeKey] then
-				warn(string.format(
-					"[P3_AUDIO] Missing fire sound for damageType '%s' in ReplicatedStorage.CombatAssets.Audio.Fire.%s (or shared Audio.Fire fallback)",
-					damageTypeKey,
-					damageTypeKey
-				))
-				warnedMissingFireSoundTemplateByDamageType[damageTypeKey] = true
+local function applyDistanceReverb(sound: Sound, soundPosition: Vector3)
+	local camera = Workspace.CurrentCamera
+	if camera == nil then
+		return
+	end
+	local distance = (soundPosition - camera.CFrame.Position).Magnitude
+	if distance < REVERB_START_DISTANCE then
+		return
+	end
+	local alpha = math.clamp((distance - REVERB_START_DISTANCE) / (REVERB_MAX_DISTANCE - REVERB_START_DISTANCE), 0, 1)
+	local reverb = Instance.new("ReverbSoundEffect")
+	reverb.DryLevel = REVERB_DRY_LEVEL_CLOSE + alpha * (REVERB_DRY_LEVEL_FAR - REVERB_DRY_LEVEL_CLOSE)
+	reverb.WetLevel = REVERB_WET_LEVEL_CLOSE + alpha * (REVERB_WET_LEVEL_FAR - REVERB_WET_LEVEL_CLOSE)
+	reverb.DecayTime = REVERB_DECAY_CLOSE + alpha * (REVERB_DECAY_FAR - REVERB_DECAY_CLOSE)
+	reverb.Density = 0.5 + alpha * 0.5
+	reverb.Diffusion = 0.5 + alpha * 0.5
+	reverb.Parent = sound
+end
+
+local function resolveGroupSound(groupKey: string?, field: string): (string?, number)
+	if type(groupKey) ~= "string" or groupKey == "" then
+		return nil, 1
+	end
+	local group = CombatConfig.WeaponSounds[groupKey]
+	if type(group) ~= "table" then
+		return nil, 1
+	end
+	local volumeKey = field .. "Volume"
+	local rawVolume = (group :: any)[volumeKey]
+	local volume: number = if type(rawVolume) == "number" then rawVolume else 1
+
+	local entry = (group :: any)[field]
+	if type(entry) == "string" and entry ~= "" then
+		return entry, volume
+	end
+	if type(entry) == "table" and #entry > 0 then
+		return entry[math.random(1, #entry)], volume
+	end
+	return nil, 1
+end
+
+local function resolveAllGroupSounds(groupKey: string?, field: string): ({ string }, number)
+	if type(groupKey) ~= "string" or groupKey == "" then
+		return {}, 1
+	end
+	local group = CombatConfig.WeaponSounds[groupKey]
+	if type(group) ~= "table" then
+		return {}, 1
+	end
+	local volumeKey = field .. "Volume"
+	local rawVolume = (group :: any)[volumeKey]
+	local volume: number = if type(rawVolume) == "number" then rawVolume else 1
+
+	local entry = (group :: any)[field]
+	if type(entry) == "string" and entry ~= "" then
+		return { entry }, volume
+	end
+	if type(entry) == "table" and #entry > 0 then
+		local result: { string } = {}
+		for _, id in ipairs(entry) do
+			if type(id) == "string" and id ~= "" then
+				table.insert(result, id)
 			end
-		elseif not warnedMissingFireSoundTemplate then
-			warn("[P1_AUDIO] Missing fire sound template in ReplicatedStorage.CombatAssets.Audio.Fire")
-			warnedMissingFireSoundTemplate = true
 		end
+		return result, volume
+	end
+	return {}, 1
+end
+
+local function playFireSoundAt(position: Vector3, damageType: string?, fireSound: string?)
+	local fireAsset, volume = resolveGroupSound(fireSound, "fire")
+	if fireAsset == nil then
 		return
 	end
 
@@ -419,64 +382,60 @@ local function playFireSoundAt(position: Vector3, damageType: string?)
 	soundPart.CFrame = CFrame.new(position)
 	soundPart.Parent = ensureBoltFolder()
 
-	local shot = soundTemplate:Clone()
+	local shot = Instance.new("Sound")
+	shot.SoundId = fireAsset
+	shot.Volume = volume
 	shot.Looped = false
+	shot.RollOffMode = Enum.RollOffMode.InverseTapered
+	shot.RollOffMinDistance = 60
+	shot.RollOffMaxDistance = 1000
+	applyDistanceReverb(shot, position)
 	shot.Parent = soundPart
 	shot:Play()
 
-	local cleanupDelay = math.max(1, shot.TimeLength + 0.15)
-	Debris:AddItem(soundPart, cleanupDelay)
+	Debris:AddItem(soundPart, 5)
 end
 
-local function playImpactSoundAt(position: Vector3, impactType: string?)
-	local soundTemplates = getImpactSoundTemplates(impactType)
-	if #soundTemplates == 0 then
-		if impactType == "shield" then
-			if not warnedMissingShieldImpactSoundTemplate then
-				warn("[P2_AUDIO] Missing shield impact sound template in ReplicatedStorage.CombatAssets.Audio.ShieldImpact")
-				warnedMissingShieldImpactSoundTemplate = true
-			end
-		elseif not warnedMissingImpactSoundTemplate then
-			warn("[P1_AUDIO] Missing impact sound template in ReplicatedStorage.CombatAssets.Audio.Impact")
-			warnedMissingImpactSoundTemplate = true
-		end
+local function playImpactSoundAt(position: Vector3, impactType: string?, fireSound: string?, parentPart: BasePart?)
+	local impactAssets, volume = resolveAllGroupSounds(fireSound, "impact")
+	if #impactAssets == 0 then
 		return
 	end
 
-	local soundPart = Instance.new("Part")
-	soundPart.Name = "ImpactSound"
-	soundPart.Size = Vector3.new(0.25, 0.25, 0.25)
-	soundPart.Transparency = 1
-	soundPart.Anchored = true
-	soundPart.CanCollide = false
-	soundPart.CanQuery = false
-	soundPart.CanTouch = false
-	soundPart.CFrame = CFrame.new(position)
-	soundPart.Parent = ensureImpactFolder()
-
-	local cleanupDelay = 1
-	for _, soundTemplate in ipairs(soundTemplates) do
-		local impact = soundTemplate:Clone()
-		impact.Looped = false
-		impact.Parent = soundPart
-		impact:Play()
-		cleanupDelay = math.max(cleanupDelay, impact.TimeLength + 0.15)
+	local host: BasePart = parentPart :: any
+	if host == nil then
+		local soundPart = Instance.new("Part")
+		soundPart.Name = "ImpactSound"
+		soundPart.Size = Vector3.new(0.25, 0.25, 0.25)
+		soundPart.Transparency = 1
+		soundPart.Anchored = true
+		soundPart.CanCollide = false
+		soundPart.CanQuery = false
+		soundPart.CanTouch = false
+		soundPart.CFrame = CFrame.new(position)
+		soundPart.Parent = ensureImpactFolder()
+		Debris:AddItem(soundPart, 5)
+		host = soundPart
 	end
 
-	Debris:AddItem(soundPart, cleanupDelay)
+	for _, assetId in ipairs(impactAssets) do
+		local shot = Instance.new("Sound")
+		shot.SoundId = assetId
+		shot.Volume = volume
+		shot.Looped = false
+		shot.RollOffMode = Enum.RollOffMode.InverseTapered
+		shot.RollOffMinDistance = 10
+		shot.RollOffMaxDistance = 2100
+		applyDistanceReverb(shot, position)
+		shot.Parent = host
+		shot:Play()
+	end
 end
 
-local function playShieldBreakSoundAt(position: Vector3)
-	local soundTemplates = getShieldBreakSoundTemplates()
-	if #soundTemplates == 0 then
-		soundTemplates = getImpactSoundTemplates("shield")
-		if #soundTemplates == 0 then
-			if not warnedMissingShieldBreakSoundTemplate then
-				warn("[P2_AUDIO] Missing shield break sound template in ReplicatedStorage.CombatAssets.Audio.ShieldBreak")
-				warnedMissingShieldBreakSoundTemplate = true
-			end
-			return
-		end
+local function playShieldBreakSoundAt(position: Vector3, fireSound: string?)
+	local shieldBreakAsset, volume = resolveGroupSound(fireSound, "shieldBreak")
+	if shieldBreakAsset == nil then
+		return
 	end
 
 	local soundPart = Instance.new("Part")
@@ -490,16 +449,15 @@ local function playShieldBreakSoundAt(position: Vector3)
 	soundPart.CFrame = CFrame.new(position)
 	soundPart.Parent = ensureImpactFolder()
 
-	local cleanupDelay = 1
-	for _, soundTemplate in ipairs(soundTemplates) do
-		local breakSound = soundTemplate:Clone()
-		breakSound.Looped = false
-		breakSound.Parent = soundPart
-		breakSound:Play()
-		cleanupDelay = math.max(cleanupDelay, breakSound.TimeLength + 0.15)
-	end
+	local breakSound = Instance.new("Sound")
+	breakSound.SoundId = shieldBreakAsset
+	breakSound.Volume = volume
+	breakSound.Looped = false
+	applyDistanceReverb(breakSound, position)
+	breakSound.Parent = soundPart
+	breakSound:Play()
 
-	Debris:AddItem(soundPart, cleanupDelay)
+	Debris:AddItem(soundPart, 5)
 end
 
 local function getBurstCount(emitter: ParticleEmitter): number
@@ -516,7 +474,7 @@ local function getBurstCount(emitter: ParticleEmitter): number
 	return 12
 end
 
-local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impactType: string?, damageType: string?)
+local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impactType: string?, damageType: string?): Part?
 	local visualProfile = getVisualProfileForDamageType(damageType)
 	local impactTemplate = getImpactTemplateFolder(impactType)
 	if impactTemplate == nil then
@@ -529,7 +487,7 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 			warn("[P1_IMPACT] Missing ReplicatedStorage.CombatAssets.ImpactParticles.bulletHit template folder.")
 			warnedMissingImpactTemplate = true
 		end
-		return
+		return nil
 	end
 
 	local normal = hitNormal
@@ -562,7 +520,7 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 
 	local spawnedEffects: { Instance } = {}
 	for _, descendant in ipairs(impactTemplate:GetDescendants()) do
-		if descendant:IsA("ParticleEmitter") or descendant:IsA("Sound") or descendant:IsA("PointLight") then
+		if descendant:IsA("ParticleEmitter") or descendant:IsA("PointLight") then
 			local effectClone = descendant:Clone()
 			local targetParent: Instance = effectPart
 			local templateParent = descendant.Parent
@@ -582,8 +540,6 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 		if effect:IsA("ParticleEmitter") then
 			effect.Size = scaleNumberSequence(effect.Size, visualProfile.impactScale)
 			effect:Emit(math.max(0, math.floor(getBurstCount(effect) * visualProfile.impactEmitScale + 0.5)))
-		elseif effect:IsA("Sound") then
-			effect:Play()
 		elseif effect:IsA("PointLight") then
 			effect.Range *= visualProfile.impactScale
 			effect.Brightness *= visualProfile.lightBrightnessScale
@@ -604,14 +560,25 @@ local function spawnImpactEffect(hitPosition: Vector3, hitNormal: Vector3, impac
 	end)
 
 	Debris:AddItem(effectPart, IMPACT_CLEANUP_TIME)
+	return effectPart
 end
 
-local function playWhizSound(part: BasePart, profile: ProjectileVisualProfile)
-	local whiz = part:FindFirstChild("Whiz", true)
-	if whiz ~= nil and whiz:IsA("Sound") then
-		whiz.PlaybackSpeed *= profile.whizPitchScale
-		whiz:Play()
+local function playWhizSound(part: BasePart, fireSound: string?)
+	local whizAsset, volume = resolveGroupSound(fireSound, "whiz")
+	if whizAsset == nil then
+		return
 	end
+
+	local whizSound = Instance.new("Sound")
+	whizSound.Name = "Whiz"
+	whizSound.SoundId = whizAsset
+	whizSound.Volume = volume
+	whizSound.Looped = true
+	whizSound.RollOffMode = Enum.RollOffMode.InverseTapered
+	whizSound.RollOffMinDistance = 100
+	whizSound.RollOffMaxDistance = 1200
+	whizSound.Parent = part
+	whizSound:Play()
 end
 
 local function applyBoltVisualColor(boltPart: BasePart, boltColor: Color3?)
@@ -679,7 +646,8 @@ end
 local function createVisualPartsFromTemplate(
 	projectileId: string,
 	boltColor: Color3?,
-	damageType: string?
+	damageType: string?,
+	fireSound: string?
 ): (BasePart, BasePart?)
 	local visualProfile = getVisualProfileForDamageType(damageType)
 	local templateFolder = getProjectileTemplateFolder()
@@ -706,7 +674,7 @@ local function createVisualPartsFromTemplate(
 	applyProjectilePartVisualProfile(boltPart, visualProfile, true)
 	boltPart.Parent = ensureBoltFolder()
 	applyBoltVisualColor(boltPart, boltColor)
-	playWhizSound(boltPart, visualProfile)
+	playWhizSound(boltPart, fireSound)
 
 	local bulletPart: BasePart? = nil
 	local bulletTemplate = templateFolder:FindFirstChild("Bullet")
@@ -795,6 +763,10 @@ local function onRenderStepped()
 	clientVisualRaycastParams.FilterDescendantsInstances = excludeList
 
 	for projectileId, bolt in pairs(activeBolts) do
+		-- Skip metadata-only entries (visual destroyed, waiting for impact event)
+		if bolt.boltPart.Parent == nil then
+			continue
+		end
 		local dt = math.max(0, now - bolt.lastUpdatedAt)
 		bolt.lastUpdatedAt = now
 		local position: Vector3
@@ -887,10 +859,17 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 
 	destroyBolt(payload.projectileId)
 	local damageType = if type(payload.damageType) == "string" then payload.damageType else nil
-	playFireSoundAt(payload.origin, damageType)
+	local fireSound = if type(payload.fireSound) == "string" then payload.fireSound else nil
+	-- Skip fire sound for local player (already played instantly on click)
+	local isLocalShot = type(payload.shooterUserId) == "number"
+		and Players.LocalPlayer ~= nil
+		and payload.shooterUserId == Players.LocalPlayer.UserId
+	if not isLocalShot then
+		playFireSoundAt(payload.origin, damageType, fireSound)
+	end
 	local boltColor = if typeof(payload.boltColor) == "Color3" then (payload.boltColor :: Color3) else nil
 
-	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor, damageType)
+	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor, damageType, fireSound)
 	attachSmokeTrail(boltPart, damageType)
 
 	activeBolts[payload.projectileId] = {
@@ -908,6 +887,7 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 		currentPosition = payload.origin,
 		artilleryGravity = if type(payload.artilleryGravity) == "number" then payload.artilleryGravity else nil,
 		currentVelocity = if type(payload.artilleryGravity) == "number" then payload.direction * payload.speed else nil,
+		fireSound = fireSound,
 	}
 
 	if type(payload.artilleryGravity) == "number" then
@@ -934,6 +914,7 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 	local bolt = activeBolts[payload.projectileId]
 	local impactType = if type(payload.impactType) == "string" then payload.impactType else nil
 	local damageType = if bolt ~= nil then bolt.damageType else nil
+	local boltFireSound = if bolt ~= nil then bolt.fireSound else nil
 	local shieldBroken = payload.shieldBroken == true
 	local impactDelay = 0
 	if bolt ~= nil then
@@ -946,24 +927,51 @@ local function onProjectileImpact(payload: ProjectileImpactPayload)
 	if impactDelay > 0 then
 		task.delay(impactDelay, function()
 			destroyBolt(payload.projectileId)
-			playImpactSoundAt(payload.hitPosition, impactType)
+			local effectPart = spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType, damageType)
+			playImpactSoundAt(payload.hitPosition, impactType, boltFireSound, effectPart)
 			if impactType == "shield" and shieldBroken then
-				playShieldBreakSoundAt(payload.hitPosition)
+				playShieldBreakSoundAt(payload.hitPosition, boltFireSound)
 			end
-			spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType, damageType)
 		end)
 		return
 	end
 
 	destroyBolt(payload.projectileId)
-	playImpactSoundAt(payload.hitPosition, impactType)
+	local effectPart = spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType, damageType)
+	playImpactSoundAt(payload.hitPosition, impactType, boltFireSound, effectPart)
 	if impactType == "shield" and shieldBroken then
-		playShieldBreakSoundAt(payload.hitPosition)
+		playShieldBreakSoundAt(payload.hitPosition, boltFireSound)
 	end
-	spawnImpactEffect(payload.hitPosition, payload.hitNormal, impactType, damageType)
 end
 
 function ProjectileVisuals.init(remotes: Folder)
+	-- Preload all weapon sound assets so they're cached before first shot
+	local preloadIds: { [string]: boolean } = {}
+	for _, group in pairs(CombatConfig.WeaponSounds) do
+		if type(group) == "table" then
+			for _, entry in pairs(group) do
+				if type(entry) == "string" and entry ~= "" then
+					preloadIds[entry] = true
+				elseif type(entry) == "table" then
+					for _, id in ipairs(entry) do
+						if type(id) == "string" and id ~= "" then
+							preloadIds[id] = true
+						end
+					end
+				end
+			end
+		end
+	end
+	local toPreload: { any } = {}
+	for id in pairs(preloadIds) do
+		table.insert(toPreload, id)
+	end
+	if #toPreload > 0 then
+		task.spawn(function()
+			ContentProvider:PreloadAsync(toPreload)
+		end)
+	end
+
 	if renderConnection == nil then
 		renderConnection = RunService.RenderStepped:Connect(onRenderStepped)
 	end

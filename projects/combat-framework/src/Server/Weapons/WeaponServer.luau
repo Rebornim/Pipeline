@@ -213,8 +213,36 @@ end
 
 local function collectFireNodes(entityModel: Model): { FireNode }
 	local nodes: { FireNode } = {}
+
+	-- Pre-collect gunner station folders (folders containing TurretSeat/ArtillerySeat)
+	local stationFolders: { [Instance]: boolean } = {}
+	for _, child in ipairs(entityModel:GetChildren()) do
+		if child:IsA("Folder") then
+			for _, desc in ipairs(child:GetDescendants()) do
+				if desc:IsA("Seat") and (CollectionService:HasTag(desc, "TurretSeat") or CollectionService:HasTag(desc, "ArtillerySeat")) then
+					stationFolders[child] = true
+					break
+				end
+			end
+		end
+	end
+
 	local mounts = findTaggedDescendants(entityModel, "WeaponMount", "BasePart")
 	for _, mountInstance in ipairs(mounts) do
+		-- Skip mounts inside gunner station folders (those belong to gunners, not the driver)
+		local insideStation = false
+		local current: Instance? = mountInstance.Parent
+		while current ~= nil and current ~= entityModel do
+			if stationFolders[current] then
+				insideStation = true
+				break
+			end
+			current = current.Parent
+		end
+		if insideStation then
+			continue
+		end
+
 		local mount = mountInstance :: BasePart
 		for _, offset in ipairs(getMuzzleLocalOffsets(mount)) do
 			table.insert(nodes, {
@@ -226,13 +254,33 @@ local function collectFireNodes(entityModel: Model): { FireNode }
 	return nodes
 end
 
-local function getOrRefreshFireNodeState(entityId: string, entityModel: Model): FireNodeState?
-	local state = fireNodeStateByEntityId[entityId]
+local function collectFireNodesFromScope(scope: Instance): { FireNode }
+	local nodes: { FireNode } = {}
+	local mounts: { Instance } = {}
+	for _, descendant in ipairs(scope:GetDescendants()) do
+		if CollectionService:HasTag(descendant, "WeaponMount") and descendant:IsA("BasePart") then
+			table.insert(mounts, descendant)
+		end
+	end
+	table.sort(mounts, function(a: Instance, b: Instance)
+		return a:GetFullName() < b:GetFullName()
+	end)
+	for _, mountInstance in ipairs(mounts) do
+		local mount = mountInstance :: BasePart
+		for _, offset in ipairs(getMuzzleLocalOffsets(mount)) do
+			table.insert(nodes, { mount = mount, muzzleLocalOffset = offset })
+		end
+	end
+	return nodes
+end
+
+local function getOrRefreshFireNodeState(stationKey: string, scope: Instance): FireNodeState?
+	local state = fireNodeStateByEntityId[stationKey]
 	local needsRebuild = state == nil or #state.nodes == 0
 
 	if not needsRebuild then
 		for _, node in ipairs(state.nodes) do
-			if node.mount.Parent == nil or not node.mount:IsDescendantOf(entityModel) then
+			if node.mount.Parent == nil then
 				needsRebuild = true
 				break
 			end
@@ -240,23 +288,23 @@ local function getOrRefreshFireNodeState(entityId: string, entityModel: Model): 
 	end
 
 	if needsRebuild then
-		local nodes = collectFireNodes(entityModel)
+		local nodes = if scope:IsA("Model") then collectFireNodes(scope :: Model) else collectFireNodesFromScope(scope)
 		if #nodes == 0 then
-			fireNodeStateByEntityId[entityId] = nil
+			fireNodeStateByEntityId[stationKey] = nil
 			return nil
 		end
 		state = {
 			nodes = nodes,
 			nextIndex = 1,
 		}
-		fireNodeStateByEntityId[entityId] = state
+		fireNodeStateByEntityId[stationKey] = state
 	end
 
 	return state
 end
 
-local function getNextFireNode(entityId: string, entityModel: Model): FireNode?
-	local state = getOrRefreshFireNodeState(entityId, entityModel)
+local function getNextFireNode(stationKey: string, scope: Instance): FireNode?
+	local state = getOrRefreshFireNodeState(stationKey, scope)
 	if state == nil then
 		return nil
 	end
@@ -566,8 +614,32 @@ local function collectDrivenPartsFromContainer(
 	end
 end
 
-local function collectDrivenRigState(entityModel: Model): DrivenRigState?
-	local mountCandidates = findTaggedDescendants(entityModel, "WeaponMount", "BasePart")
+local function collectDrivenRigState(scope: Instance): DrivenRigState?
+	local mountCandidates: { Instance } = {}
+	local isModelScope = scope:IsA("Model")
+	for _, descendant in ipairs(scope:GetDescendants()) do
+		if CollectionService:HasTag(descendant, "WeaponMount") and descendant:IsA("BasePart") then
+			-- When scope is the entity model (driver), skip mounts inside station folders
+			if isModelScope then
+				local insideFolder = false
+				local current: Instance? = descendant.Parent
+				while current ~= nil and current ~= scope do
+					if current:IsA("Folder") then
+						insideFolder = true
+						break
+					end
+					current = current.Parent
+				end
+				if insideFolder then
+					continue
+				end
+			end
+			table.insert(mountCandidates, descendant)
+		end
+	end
+	table.sort(mountCandidates, function(a: Instance, b: Instance)
+		return a:GetFullName() < b:GetFullName()
+	end)
 	local mountInstance = mountCandidates[1]
 	if mountInstance == nil then
 		return nil
@@ -577,7 +649,7 @@ local function collectDrivenRigState(entityModel: Model): DrivenRigState?
 	local drivenParts: { DrivenPartState } = {}
 	local seen: { [BasePart]: boolean } = { [mount] = true }
 
-	local rigFolder = entityModel:FindFirstChild("TurretRig")
+	local rigFolder = scope:FindFirstChild("TurretRig")
 	if rigFolder ~= nil then
 		local drivenPartsFolder = rigFolder:FindFirstChild("DrivenParts")
 		if drivenPartsFolder ~= nil then
@@ -603,12 +675,12 @@ local function collectDrivenRigState(entityModel: Model): DrivenRigState?
 	}
 end
 
-local function getOrRefreshDrivenRigState(entityId: string, entityModel: Model): DrivenRigState?
-	local state = drivenRigStateByEntityId[entityId]
+local function getOrRefreshDrivenRigState(stationKey: string, scope: Instance): DrivenRigState?
+	local state = drivenRigStateByEntityId[stationKey]
 	local needsRebuild = state == nil
 
 	if not needsRebuild then
-		if state.mount.Parent == nil or not state.mount:IsDescendantOf(entityModel) then
+		if state.mount.Parent == nil then
 			needsRebuild = true
 		else
 			for _, driven in ipairs(state.drivenParts) do
@@ -621,26 +693,44 @@ local function getOrRefreshDrivenRigState(entityId: string, entityModel: Model):
 	end
 
 	if needsRebuild then
-		state = collectDrivenRigState(entityModel)
-		drivenRigStateByEntityId[entityId] = state
+		state = collectDrivenRigState(scope)
+		drivenRigStateByEntityId[stationKey] = state
 	end
 
 	return state
 end
 
-local function applyAimToRig(entityId: string, entityModel: Model, desiredDirection: Vector3): Vector3?
+-- Returns a vehicle-aware neutral aim frame that rotates with the vehicle.
+-- For mounts with NeutralAimR attributes (set by VehicleServer), reconstructs
+-- the neutral frame from the vehicle primary part's current CFrame.
+-- For static turrets (no attributes), falls back to WeaponRig.getNeutralAimFrame.
+local function getRotatingNeutralFrame(mount: BasePart): CFrame
+	local rx = mount:GetAttribute("NeutralAimRX")
+	local ry = mount:GetAttribute("NeutralAimRY")
+	local rz = mount:GetAttribute("NeutralAimRZ")
+	if type(rx) == "number" and type(ry) == "number" and type(rz) == "number" then
+		local model = mount:FindFirstAncestorOfClass("Model")
+		if model ~= nil and model.PrimaryPart ~= nil then
+			return model.PrimaryPart.CFrame * CFrame.fromOrientation(rx, ry, rz)
+		end
+	end
+	return WeaponRig.getNeutralAimFrame(mount)
+end
+
+local function applyAimToRig(stationKey: string, scope: Instance, desiredDirection: Vector3): Vector3?
 	if desiredDirection.Magnitude < 1e-4 then
 		return nil
 	end
 
-	local drivenState = getOrRefreshDrivenRigState(entityId, entityModel)
+	local drivenState = getOrRefreshDrivenRigState(stationKey, scope)
 	if drivenState == nil then
 		return nil
 	end
 
 	local mount = drivenState.mount
+	local neutralFrame = getRotatingNeutralFrame(mount)
 	local clampedDirection =
-		WeaponRig.clampDirectionToMountLimits(mount, drivenState.mountNeutralAimFrame, desiredDirection.Unit)
+		WeaponRig.clampDirectionToMountLimits(mount, neutralFrame, desiredDirection.Unit)
 	if clampedDirection.Magnitude <= 1e-4 then
 		return nil
 	end
@@ -916,11 +1006,14 @@ local function setHeatAttributes(
 	entityModel:SetAttribute("WeaponHeatRecoverCueId", state.recoverCueId)
 end
 
-local function scheduleRecoveryCue(entityId: string, weaponConfig: WeaponConfig)
-	local state = heatStateByEntityId[entityId]
+local function scheduleRecoveryCue(stationKey: string, weaponConfig: WeaponConfig)
+	local state = heatStateByEntityId[stationKey]
 	if state == nil or not state.overheated then
 		return
 	end
+
+	-- Extract entityId from stationKey (format: "entityId" or "entityId:stationName")
+	local entityId = string.match(stationKey, "^([^:]+)") or stationKey
 
 	local heatMax, _, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
 	if heatDecayPerSecond <= 0 then
@@ -939,7 +1032,7 @@ local function scheduleRecoveryCue(entityId: string, weaponConfig: WeaponConfig)
 	end
 
 	task.delay(recoverDelay + 0.02, function()
-		local liveState = heatStateByEntityId[entityId]
+		local liveState = heatStateByEntityId[stationKey]
 		if liveState == nil or liveState.recoverToken ~= token then
 			return
 		end
@@ -979,14 +1072,18 @@ local function fireSingleProjectile(
 	normalizedDirection: Vector3,
 	cooldown: number,
 	lockState: LockState?,
-	applyAimSpread: boolean
+	applyAimSpread: boolean,
+	stationKey: string?,
+	stationScope: Instance?
 ): boolean
 	if normalizedDirection.Magnitude < 1e-4 then
 		return false
 	end
 
+	local effectiveKey = stationKey or entityId
+	local effectiveScope: Instance = stationScope or entityModel
 	local nowServer = Workspace:GetServerTimeNow()
-	local ammoState = ammoStateByEntityId[entityId]
+	local ammoState = ammoStateByEntityId[effectiveKey]
 	if ammoState ~= nil and ammoState.current <= 0 then
 		print(string.format("[P3_AMMO_EMPTY] entity=%s", entityId))
 		setAmmoAttributes(entityModel, ammoState)
@@ -995,7 +1092,7 @@ local function fireSingleProjectile(
 
 	local heatMax, heatPerShot, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
 	local heatEnabled = heatMax > 0
-	local heatState = getOrCreateHeatState(entityId, nowServer)
+	local heatState = getOrCreateHeatState(effectiveKey, nowServer)
 	if heatEnabled then
 		coolHeatState(heatState, nowServer, heatDecayPerSecond, heatMax)
 
@@ -1016,12 +1113,12 @@ local function fireSingleProjectile(
 		heatState.lastShotAt = 0
 	end
 
-	local fireNode = getNextFireNode(entityId, entityModel)
+	local fireNode = getNextFireNode(effectiveKey, effectiveScope)
 	if fireNode == nil then
 		return false
 	end
 
-	local neutralAimFrame = WeaponRig.getNeutralAimFrame(fireNode.mount)
+	local neutralAimFrame = getRotatingNeutralFrame(fireNode.mount)
 	local clampedDirection = WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, normalizedDirection)
 	if clampedDirection.Magnitude < 1e-4 then
 		return false
@@ -1071,6 +1168,20 @@ local function fireSingleProjectile(
 		return false
 	end
 
+	local fireSound: string? = nil
+	if stationScope ~= nil then
+		local stationFireSound = (stationScope :: Instance):GetAttribute("FireSound")
+		if type(stationFireSound) == "string" and stationFireSound ~= "" then
+			fireSound = stationFireSound
+		end
+	end
+	if fireSound == nil then
+		local entityFireSound = entityModel:GetAttribute("FireSound")
+		if type(entityFireSound) == "string" and entityFireSound ~= "" then
+			fireSound = entityFireSound
+		end
+	end
+
 	projectileCounter += 1
 	local projectileId = "proj_" .. tostring(projectileCounter)
 	local projectileData: ProjectileData = {
@@ -1091,6 +1202,7 @@ local function fireSingleProjectile(
 			homingTurnRate = nil,
 			currentPosition = nil,
 			createdAt = tick(),
+			fireSound = fireSound,
 		}
 	if lockState ~= nil and type(weaponConfig.homingTurnRate) == "number" and weaponConfig.homingTurnRate > 0 then
 		projectileData.targetEntityId = lockState.targetEntityId
@@ -1119,7 +1231,7 @@ local function fireSingleProjectile(
 	end
 	setHeatAttributes(entityModel, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
 	if heatEnabled and not wasOverheated and heatState.overheated then
-		scheduleRecoveryCue(entityId, weaponConfig)
+		scheduleRecoveryCue(effectiveKey, weaponConfig)
 	end
 
 	ProjectileServer.fireProjectile(projectileData)
@@ -1133,25 +1245,29 @@ local function fireArtilleryProjectile(
 	weaponConfig: WeaponConfig,
 	character: Model,
 	normalizedDirection: Vector3,
-	cooldown: number
+	cooldown: number,
+	stationKey: string?,
+	stationScope: Instance?
 ): boolean
 	if normalizedDirection.Magnitude < 1e-4 then
 		return false
 	end
 
-	local ammoState = ammoStateByEntityId[entityId]
+	local effectiveKey = stationKey or entityId
+	local effectiveScope: Instance = stationScope or entityModel
+	local ammoState = ammoStateByEntityId[effectiveKey]
 	if ammoState ~= nil and ammoState.current <= 0 then
 		print(string.format("[P3_AMMO_EMPTY] entity=%s", entityId))
 		setAmmoAttributes(entityModel, ammoState)
 		return false
 	end
 
-	local fireNode = getNextFireNode(entityId, entityModel)
+	local fireNode = getNextFireNode(effectiveKey, effectiveScope)
 	if fireNode == nil then
 		return false
 	end
 
-	local neutralAimFrame = WeaponRig.getNeutralAimFrame(fireNode.mount)
+	local neutralAimFrame = getRotatingNeutralFrame(fireNode.mount)
 	local clampedDirection = WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, normalizedDirection)
 	if clampedDirection.Magnitude < 1e-4 then
 		return false
@@ -1163,6 +1279,20 @@ local function fireArtilleryProjectile(
 	local faction = HealthManager.getFaction(entityId)
 	if faction == nil then
 		return false
+	end
+
+	local fireSound: string? = nil
+	if stationScope ~= nil then
+		local stationFireSound = (stationScope :: Instance):GetAttribute("FireSound")
+		if type(stationFireSound) == "string" and stationFireSound ~= "" then
+			fireSound = stationFireSound
+		end
+	end
+	if fireSound == nil then
+		local entityFireSound = entityModel:GetAttribute("FireSound")
+		if type(entityFireSound) == "string" and entityFireSound ~= "" then
+			fireSound = entityFireSound
+		end
 	end
 
 	projectileCounter += 1
@@ -1187,6 +1317,7 @@ local function fireArtilleryProjectile(
 		createdAt = tick(),
 		artilleryGravity = weaponConfig.artilleryGravity,
 		currentVelocity = nil,
+		fireSound = fireSound,
 	}
 
 	if ammoState ~= nil then
@@ -1210,43 +1341,136 @@ local function fireArtilleryProjectile(
 	return true
 end
 
-local function resolvePlayerTurretContext(player: Player): (Model?, Model?, string?, HealthState?)
+local function getStationKey(entityId: string, stationFolder: Instance?): string
+	if stationFolder == nil then
+		return entityId
+	end
+	return entityId .. ":" .. stationFolder.Name
+end
+
+local function getStationWeaponId(stationFolder: Instance?, entityWeaponId: string?): string?
+	if stationFolder ~= nil then
+		local stationWeaponId = stationFolder:GetAttribute("WeaponConfigId")
+		if type(stationWeaponId) == "string" and CombatConfig.Weapons[stationWeaponId] ~= nil then
+			return stationWeaponId
+		end
+	end
+	return entityWeaponId
+end
+
+local function collectStationFolders(entityModel: Model): { Folder }
+	local stations: { Folder } = {}
+	for _, child in ipairs(entityModel:GetChildren()) do
+		if child:IsA("Folder") then
+			for _, desc in ipairs(child:GetDescendants()) do
+				if desc:IsA("Seat") and (CollectionService:HasTag(desc, "TurretSeat") or CollectionService:HasTag(desc, "ArtillerySeat")) then
+					table.insert(stations, child)
+					break
+				end
+			end
+		end
+	end
+	return stations
+end
+
+local function resolvePlayerTurretContext(player: Player): (Model?, Model?, string?, HealthState?, Instance?)
 	local character = player.Character
 	if character == nil then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	end
 
 	local seatPart = humanoid.SeatPart
 	if seatPart == nil or (not CollectionService:HasTag(seatPart, "TurretSeat") and not CollectionService:HasTag(seatPart, "ArtillerySeat")) then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	end
 
 	local entityModel = seatPart:FindFirstAncestorWhichIsA("Model")
 	if entityModel == nil then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	end
 
 	local entityIdAttr = entityModel:GetAttribute("EntityId")
 	if type(entityIdAttr) ~= "string" then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	end
 
 	local entityId = entityIdAttr
 	if not HealthManager.isAlive(entityId) then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
+	end
+
+	-- Detect gunner station folder
+	local stationFolder: Instance? = nil
+	local seatParent = seatPart.Parent
+	if seatParent ~= nil and seatParent:IsA("Folder") and seatParent ~= entityModel then
+		stationFolder = seatParent
+	end
+
+	local healthState: HealthState? = HealthManager.getHealth(entityId)
+	if healthState == nil then
+		return nil, nil, nil, nil, nil
+	end
+
+	-- Station can override weapon config; fall back to entity's weaponId
+	local weaponId = getStationWeaponId(stationFolder, healthState.config.weaponId)
+	if weaponId == nil then
+		return nil, nil, nil, nil, nil
+	end
+
+	return character, entityModel, entityId, healthState, stationFolder
+end
+
+local function resolvePlayerVehicleWeaponContext(player: Player): (Model?, Model?, string?, HealthState?, Instance?)
+	local character = player.Character
+	if character == nil then
+		return nil, nil, nil, nil, nil
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil then
+		return nil, nil, nil, nil, nil
+	end
+
+	local seatPart = humanoid.SeatPart
+	if seatPart == nil or not CollectionService:HasTag(seatPart, "DriverSeat") then
+		return nil, nil, nil, nil, nil
+	end
+
+	-- Walk up to find VehicleEntity model
+	local entityModel: Model? = nil
+	local current: Instance? = seatPart
+	while current ~= nil do
+		if current:IsA("Model") and CollectionService:HasTag(current, "VehicleEntity") then
+			entityModel = current
+			break
+		end
+		current = current.Parent
+	end
+	if entityModel == nil then
+		return nil, nil, nil, nil, nil
+	end
+
+	local entityIdAttr = entityModel:GetAttribute("EntityId")
+	if type(entityIdAttr) ~= "string" then
+		return nil, nil, nil, nil, nil
+	end
+
+	local entityId = entityIdAttr
+	if not HealthManager.isAlive(entityId) then
+		return nil, nil, nil, nil, nil
 	end
 
 	local healthState: HealthState? = HealthManager.getHealth(entityId)
 	if healthState == nil or healthState.config.weaponId == nil then
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	end
 
-	return character, entityModel, entityId, healthState
+	return character, entityModel, entityId, healthState, nil
 end
 
 local function onUpdateTurretAim(player: Player, aimDirection: Vector3)
@@ -1260,12 +1484,16 @@ local function onUpdateTurretAim(player: Player, aimDirection: Vector3)
 		return
 	end
 
-	local _character, entityModel, entityId, _healthState = resolvePlayerTurretContext(player)
+	local _character, entityModel, entityId, _healthState, stationFolder = resolvePlayerTurretContext(player)
+	if entityModel == nil then
+		_character, entityModel, entityId, _healthState, stationFolder = resolvePlayerVehicleWeaponContext(player)
+	end
 	if entityModel == nil or entityId == nil then
 		return
 	end
 
-	local applied = applyAimToRig(entityId, entityModel, aimDirection.Unit)
+	local stationKey = getStationKey(entityId, stationFolder)
+	local applied = applyAimToRig(stationKey, stationFolder or entityModel, aimDirection.Unit)
 	if applied ~= nil then
 		lastAimUpdateByPlayer[player] = now
 	end
@@ -1276,12 +1504,25 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 		return
 	end
 
-	local character, entityModel, entityId, healthState = resolvePlayerTurretContext(player)
+	local character, entityModel, entityId, healthState, stationFolder = resolvePlayerTurretContext(player)
+	local isVehicleFire = false
+	if character == nil then
+		character, entityModel, entityId, healthState, stationFolder = resolvePlayerVehicleWeaponContext(player)
+		if character ~= nil then
+			isVehicleFire = true
+		end
+	end
 	if character == nil or entityModel == nil or entityId == nil or healthState == nil then
 		return
 	end
 
-	local baseWeaponConfig = CombatConfig.Weapons[healthState.config.weaponId]
+	local stationKey = getStationKey(entityId, stationFolder)
+	local weaponId = getStationWeaponId(stationFolder, healthState.config.weaponId)
+	if weaponId == nil then
+		return
+	end
+
+	local baseWeaponConfig = CombatConfig.Weapons[weaponId]
 	if baseWeaponConfig == nil then
 		return
 	end
@@ -1304,7 +1545,7 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 	end
 
 	local normalizedDirection = aimDirection.Unit
-	applyAimToRig(entityId, entityModel, normalizedDirection)
+	applyAimToRig(stationKey, stationFolder or entityModel, normalizedDirection)
 	local firedAny = false
 	local weaponClass = getWeaponClass(weaponConfig)
 	local lockState = TargetingServer.getLockState(entityId)
@@ -1313,6 +1554,7 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 		return
 	end
 
+	local fireScope: Instance = stationFolder or entityModel
 	if weaponClass == "projectile" then
 		firedAny = fireSingleProjectile(
 			entityModel,
@@ -1323,7 +1565,9 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 			normalizedDirection,
 			cooldown,
 			lockState,
-			true
+			true,
+			stationKey,
+			fireScope
 		)
 	elseif weaponClass == "burst_projectile" then
 		local burstCount, burstInterval = getBurstParams(weaponConfig)
@@ -1336,7 +1580,9 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 			normalizedDirection,
 			cooldown,
 			lockState,
-			true
+			true,
+			stationKey,
+			fireScope
 		)
 		if firedAny and burstCount > 1 then
 			for shotIndex = 2, burstCount do
@@ -1347,11 +1593,12 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 					end
 
 					local liveHealthState = HealthManager.getHealth(entityId)
-					if liveHealthState == nil or liveHealthState.config.weaponId == nil then
+					if liveHealthState == nil then
 						return
 					end
 
-					local liveBaseWeaponConfig = CombatConfig.Weapons[liveHealthState.config.weaponId]
+					-- Use the station-resolved weaponId captured from outer scope
+					local liveBaseWeaponConfig = CombatConfig.Weapons[weaponId]
 					if liveBaseWeaponConfig == nil then
 						return
 					end
@@ -1372,7 +1619,9 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 						normalizedDirection,
 						cooldown,
 						liveLockState,
-						true
+						true,
+						stationKey,
+						fireScope
 					)
 				end)
 			end
@@ -1390,7 +1639,8 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 			end
 		end
 		firedAny = fireArtilleryProjectile(
-			entityModel, entityId, healthState, weaponConfig, character, normalizedDirection, cooldown
+			entityModel, entityId, healthState, weaponConfig, character, normalizedDirection, cooldown,
+			stationKey, fireScope
 		)
 	else
 		if not warnedUnknownWeaponClass[weaponClass] then
@@ -1406,12 +1656,45 @@ local function onFireWeapon(player: Player, aimDirection: Vector3)
 			normalizedDirection,
 			cooldown,
 			lockState,
-			true
+			true,
+			stationKey,
+			fireScope
 		)
 	end
 
 	if firedAny then
 		lastFireTimeByPlayer[player] = now
+	end
+end
+
+local function resetHeatAndAmmoForKey(key: string, entityModel: Model, weaponConfig: WeaponConfig)
+	local nowServer = Workspace:GetServerTimeNow()
+	local heatMax, _, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
+	local heatState = getOrCreateHeatState(key, nowServer)
+	heatState.heat = 0
+	heatState.lastUpdatedAt = nowServer
+	heatState.lastShotAt = 0
+	heatState.overheated = false
+	heatState.recoverCueId = 0
+	heatState.recoverToken += 1
+	setHeatAttributes(entityModel, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
+
+	local ammoCapacity = getAmmoCapacity(weaponConfig)
+	if ammoCapacity > 0 then
+		local ammoState = ammoStateByEntityId[key]
+		if ammoState == nil then
+			ammoState = {
+				current = ammoCapacity,
+				max = ammoCapacity,
+			}
+			ammoStateByEntityId[key] = ammoState
+		else
+			ammoState.max = ammoCapacity
+			ammoState.current = ammoCapacity
+		end
+		setAmmoAttributes(entityModel, ammoState)
+	else
+		ammoStateByEntityId[key] = nil
 	end
 end
 
@@ -1428,36 +1711,20 @@ local function resetEntityInternal(entityId: string)
 
 	local weaponConfig = resolveWeaponConfig(healthState.instance, baseWeaponConfig)
 	publishResolvedWeaponAttributes(healthState.instance, weaponConfig)
+	resetHeatAndAmmoForKey(entityId, healthState.instance, weaponConfig)
 
-	local nowServer = Workspace:GetServerTimeNow()
-	local heatMax, _, heatDecayPerSecond, heatRecoverThreshold = getHeatParams(weaponConfig)
-	local heatState = getOrCreateHeatState(entityId, nowServer)
-	heatState.heat = 0
-	heatState.lastUpdatedAt = nowServer
-	heatState.lastShotAt = 0
-	heatState.overheated = false
-	heatState.recoverCueId = 0
-	heatState.recoverToken += 1
-	setHeatAttributes(healthState.instance, heatState, heatMax, heatDecayPerSecond, heatRecoverThreshold)
-
-	local ammoCapacity = getAmmoCapacity(weaponConfig)
-	if ammoCapacity > 0 then
-		local ammoState = ammoStateByEntityId[entityId]
-		if ammoState == nil then
-			ammoState = {
-				current = ammoCapacity,
-				max = ammoCapacity,
-			}
-			ammoStateByEntityId[entityId] = ammoState
-		else
-			ammoState.max = ammoCapacity
-			ammoState.current = ammoCapacity
+	-- Also reset all station-keyed heat/ammo
+	local stations = collectStationFolders(healthState.instance)
+	for _, station in ipairs(stations) do
+		local stationKey = getStationKey(entityId, station)
+		local stationWeaponId = getStationWeaponId(station, healthState.config.weaponId)
+		if stationWeaponId ~= nil then
+			local stationBaseConfig = CombatConfig.Weapons[stationWeaponId]
+			if stationBaseConfig ~= nil then
+				local stationWeaponConfig = resolveWeaponConfig(healthState.instance, stationBaseConfig)
+				resetHeatAndAmmoForKey(stationKey, healthState.instance, stationWeaponConfig)
+			end
 		end
-		setAmmoAttributes(healthState.instance, ammoState)
-		print(string.format("[P3_AMMO_RESET] entity=%s ammo=%d", entityId, ammoState.current))
-	else
-		ammoStateByEntityId[entityId] = nil
-		setAmmoAttributes(healthState.instance, nil)
 	end
 end
 
@@ -1479,6 +1746,20 @@ function WeaponServer.registerEntity(entityId: string)
 	getOrRefreshFireNodeState(entityId, healthState.instance)
 	setFireNodeAttributes(healthState.instance, entityId)
 	getOrRefreshDrivenRigState(entityId, healthState.instance)
+
+	-- Register gunner stations (each gets its own fire nodes, rig state, heat/ammo)
+	local stations = collectStationFolders(healthState.instance)
+	for _, station in ipairs(stations) do
+		local stationKey = getStationKey(entityId, station)
+		local stationWeaponId = getStationWeaponId(station, healthState.config.weaponId)
+		if stationWeaponId ~= nil and CombatConfig.Weapons[stationWeaponId] ~= nil then
+			fireNodeStateByEntityId[stationKey] = nil
+			drivenRigStateByEntityId[stationKey] = nil
+			getOrRefreshFireNodeState(stationKey, station)
+			getOrRefreshDrivenRigState(stationKey, station)
+		end
+	end
+
 	resetEntityInternal(entityId)
 end
 

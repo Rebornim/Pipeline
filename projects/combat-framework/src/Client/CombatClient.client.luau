@@ -538,7 +538,7 @@ local function ensureOverheatWorldEffect(entityId: string, entityModel: Model)
 		local soundTemplate = getOverheatWorldSoundTemplate()
 		if soundTemplate ~= nil then
 			local sound = soundTemplate:Clone()
-			sound.Looped = true
+			sound.Looped = false
 			sound.Parent = soundPart
 			sound:Play()
 		elseif not warnedMissingOverheatWorldSound then

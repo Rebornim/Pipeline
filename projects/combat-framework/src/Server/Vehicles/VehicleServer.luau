@@ -1,5 +1,6 @@
 --!strict
 
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -9,6 +10,7 @@ local Workspace = game:GetService("Workspace")
 local sharedRoot = ReplicatedStorage:WaitForChild("CombatFramework")
 local CombatConfig = require(sharedRoot:WaitForChild("CombatConfig"))
 local CombatTypes = require(sharedRoot:WaitForChild("CombatTypes"))
+local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
 
 local serverRoot = ServerScriptService:WaitForChild("CombatFramework")
 local CollisionHandler = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("CollisionHandler"))
@@ -53,6 +55,7 @@ type VehicleRuntimeStateInternal = VehicleRuntimeState & {
 	boostCooldownUntil: number,
 	nextMisfireTick: number,
 	misfireAttributeClearTick: number,
+	childPartOffsets: { { part: BasePart, offset: CFrame } },
 }
 
 local VehicleServer = {}
@@ -60,6 +63,17 @@ local VehicleServer = {}
 local vehiclesByEntityId: { [string]: VehicleRuntimeStateInternal } = {}
 local vehiclesByVehicleId: { [string]: VehicleRuntimeStateInternal } = {}
 local driverToVehicleId: { [Player]: string } = {}
+
+-- Saved spawn data for respawn support
+type VehicleSpawnData = {
+	spawnCFrame: CFrame,
+	vehicleConfigId: string,
+	driverSeat: Seat,
+	hoverPoints: { BasePart },
+}
+local spawnDataByEntityId: { [string]: VehicleSpawnData } = {}
+
+local VOID_DESTROY_HEIGHT = -500
 
 local vehicleInputRemote: RemoteEvent? = nil
 local vehicleExitRemote: RemoteEvent? = nil
@@ -768,6 +782,13 @@ local function stepSingleVehicle(
 		return
 	end
 
+	-- Bug 3 fix: destroy vehicle if it falls into the void
+	if state.primaryPart.Position.Y < VOID_DESTROY_HEIGHT then
+		local faction = HealthManager.getFaction(state.entityId) or ""
+		HealthManager.applyDamage(state.entityId, 99999, "blaster", faction, state.primaryPart.Position, true)
+		return
+	end
+
 	-- Boost logic (tap-to-activate: runs full duration regardless of shift held)
 	local now = tick()
 	local wantsBoost = state.config.boostEnabled and state.inputBoost and state.inputThrottle > 0 and state.inputLean == 0
@@ -1470,6 +1491,12 @@ local function stepSingleVehicle(
 	local rotationDelta = 1 - state.primaryPart.CFrame.LookVector:Dot(state.simulatedCFrame.LookVector)
 	if (now - state.lastCFrameWriteTick) >= cframeWriteInterval and (currentWriteDelta >= cframePositionDeadband or rotationDelta > 0.001 or state.lastCFrameWriteTick == 0) then
 		state.primaryPart.CFrame = state.simulatedCFrame
+		-- Move all child parts to match (anchored CFrame approach, no welds)
+		for _, entry in ipairs(state.childPartOffsets) do
+			if entry.part.Parent ~= nil then
+				entry.part.CFrame = state.simulatedCFrame * entry.offset
+			end
+		end
 		state.lastCFrameWriteTick = now
 	end
 
@@ -1541,11 +1568,9 @@ local function stepVehicles(dt: number)
 
 	local obstacleRayParams = buildVehicleRayParams(activeVehicles)
 
-	-- START READ HERE (P5 VEHICLE STEP)
 	for _, state in ipairs(activeVehicles) do
 		stepSingleVehicle(state, clampedDt, activeVehicles, obstacleRayParams)
 	end
-	-- END READ HERE (P5 VEHICLE STEP)
 end
 
 function VehicleServer.getVehicleByEntityId(entityId: string): VehicleRuntimeState?
@@ -1565,6 +1590,34 @@ function VehicleServer.onEntityDestroyed(entityId: string): ()
 	cleanupVehicleState(state)
 end
 
+function VehicleServer.onEntityRespawned(entityId: string): ()
+	local spawnData = spawnDataByEntityId[entityId]
+	if spawnData == nil then
+		return
+	end
+
+	-- Already re-registered (shouldn't happen, but guard)
+	if vehiclesByEntityId[entityId] ~= nil then
+		return
+	end
+
+	-- Teleport model back to spawn position
+	local instance = spawnData.driverSeat:FindFirstAncestorOfClass("Model")
+	if instance == nil or instance.PrimaryPart == nil then
+		return
+	end
+	instance:PivotTo(spawnData.spawnCFrame)
+
+	-- Re-register the vehicle so it's drivable again
+	VehicleServer.registerVehicle(
+		entityId,
+		instance,
+		spawnData.vehicleConfigId,
+		spawnData.driverSeat,
+		spawnData.hoverPoints
+	)
+end
+
 function VehicleServer.registerVehicle(
 	entityId: string,
 	instance: Model,
@@ -1575,6 +1628,14 @@ function VehicleServer.registerVehicle(
 	if vehiclesByEntityId[entityId] ~= nil then
 		VehicleServer.onEntityDestroyed(entityId)
 	end
+
+	-- Save spawn data for respawn support
+	spawnDataByEntityId[entityId] = {
+		spawnCFrame = instance:GetPivot(),
+		vehicleConfigId = vehicleConfigId,
+		driverSeat = driverSeat,
+		hoverPoints = hoverPoints,
+	}
 
 	-- Resolve config from base + model attribute modifiers
 	local vehicleConfig = resolveVehicleConfig(instance)
@@ -1637,7 +1698,7 @@ function VehicleServer.registerVehicle(
 
 	local worldForward: Vector3 = primaryPart.CFrame:VectorToWorldSpace(forwardAxisLocal)
 	local attachmentYawOffset = 0
-	local attachmentRollAxisLocal = Vector3.new(0, 0, -1)
+	local attachmentRollAxisLocal = forwardAxisLocal
 
 	local partForwardHorizontal = Vector3.new(primaryPart.CFrame.LookVector.X, 0, primaryPart.CFrame.LookVector.Z)
 	local forwardHorizontal = Vector3.new(worldForward.X, 0, worldForward.Z)
@@ -1704,20 +1765,36 @@ function VehicleServer.registerVehicle(
 		boostCooldownUntil = 0,
 		nextMisfireTick = tick() + 5,
 		misfireAttributeClearTick = 0,
+		childPartOffsets = {},
 	}
 
-	local weldedPartCount = 0
+	-- Keep all child parts anchored and store their local offsets.
+	-- We move them manually each frame instead of using WeldConstraints,
+	-- which avoids physics-solver jitter between overlapping CanCollide parts.
+	local childPartOffsets: { { part: BasePart, offset: CFrame } } = {}
 	for _, descendant in ipairs(instance:GetDescendants()) do
 		if descendant:IsA("BasePart") and descendant ~= primaryPart then
-			local weld = Instance.new("WeldConstraint")
-			weld.Part0 = primaryPart
-			weld.Part1 = descendant
-			weld.Parent = descendant
-			descendant.Anchored = false
-			descendant.Massless = true
-			weldedPartCount += 1
+			descendant.Anchored = true
+			local offset = primaryPart.CFrame:Inverse() * descendant.CFrame
+			table.insert(childPartOffsets, { part = descendant, offset = offset })
 		end
 	end
+	state.childPartOffsets = childPartOffsets
+
+	-- Store the full neutral aim frame orientation (relative to vehicle) on WeaponMount
+	-- parts so clients can reconstruct the exact same neutral frame the server uses,
+	-- regardless of residual aim rotation on the mount's current CFrame.
+	for _, entry in ipairs(childPartOffsets) do
+		if CollectionService:HasTag(entry.part, "WeaponMount") then
+			local aimOffset = WeaponRig.getMountAimOffset(entry.part)
+			local neutralLocalFrame = entry.offset * aimOffset:Inverse()
+			local rx, ry, rz = neutralLocalFrame:ToOrientation()
+			entry.part:SetAttribute("NeutralAimRX", rx)
+			entry.part:SetAttribute("NeutralAimRY", ry)
+			entry.part:SetAttribute("NeutralAimRZ", rz)
+		end
+	end
+
 	local localOffsets: { CFrame } = {}
 	for i, hp in ipairs(sortedHoverPoints) do
 		localOffsets[i] = primaryPart.CFrame:Inverse() * hp.CFrame

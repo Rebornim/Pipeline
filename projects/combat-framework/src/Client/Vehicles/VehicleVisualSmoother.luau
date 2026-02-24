@@ -45,6 +45,8 @@ local visualCharacter: Model? = nil
 local sourceCharacterTransparency: { [BasePart]: number } = {}
 local sourceCharacterForceFieldVisible: { [ForceField]: boolean } = {}
 local characterPartPairs: { PartPair } = {}
+local characterDirty: boolean = false
+local characterWatchConnection: RBXScriptConnection? = nil
 
 local function applyCharacterVisibility(instance: Instance, hidden: boolean)
 	if instance:IsA("BasePart") then
@@ -319,6 +321,30 @@ local function stepRender(dt: number)
 
 	local srcCharacter = sourceCharacter
 	local visCharacter = visualCharacter
+
+	-- Rebuild character clone if new parts loaded (accessories, body meshes)
+	if characterDirty and srcCharacter ~= nil then
+		characterDirty = false
+		if visCharacter ~= nil and visCharacter.Parent ~= nil then
+			visCharacter:Destroy()
+		end
+		setCharacterHidden(srcCharacter, false)
+
+		local prevArch = srcCharacter.Archivable
+		srcCharacter.Archivable = true
+		local newClone = srcCharacter:Clone()
+		srcCharacter.Archivable = prevArch
+
+		if newClone ~= nil then
+			newClone.Name = srcCharacter.Name .. "_CharacterVisual"
+			stripCloneForVisuals(newClone)
+			newClone.Parent = ensureVisualsFolder()
+			visualCharacter = newClone
+			visCharacter = newClone
+			characterPartPairs = buildCharacterPartPairs(srcCharacter, newClone)
+		end
+	end
+
 	if srcCharacter ~= nil and visCharacter ~= nil and sourcePrimary.Parent ~= nil then
 		setCharacterHidden(srcCharacter, true)
 		local delta = displayCFrame * sourcePrimary.CFrame:Inverse()
@@ -344,7 +370,11 @@ function VehicleVisualSmoother.activate(model: Model): Model
 	sourceModel = model
 	setSourceHidden(model, true)
 
+	local prevArchivable = model.Archivable
+	model.Archivable = true
 	local clone = model:Clone()
+	model.Archivable = prevArchivable
+
 	clone.Name = model.Name .. "_Visual"
 	if model.PrimaryPart ~= nil then
 		local clonePrimary = clone:FindFirstChild(model.PrimaryPart.Name, true)
@@ -367,6 +397,12 @@ function VehicleVisualSmoother.activate(model: Model): Model
 	steerBankTarget = 0
 	smoothedSteerBank = 0
 
+	characterDirty = false
+	if characterWatchConnection ~= nil then
+		characterWatchConnection:Disconnect()
+		characterWatchConnection = nil
+	end
+
 	local character = LOCAL_PLAYER.Character
 	if character ~= nil then
 		sourceCharacter = character
@@ -383,6 +419,13 @@ function VehicleVisualSmoother.activate(model: Model): Model
 
 		visualCharacter = characterClone
 		characterPartPairs = buildCharacterPartPairs(character, characterClone)
+
+		-- Watch for late-loading body parts / accessories
+		characterWatchConnection = character.DescendantAdded:Connect(function(desc)
+			if desc:IsA("BasePart") then
+				characterDirty = true
+			end
+		end)
 	else
 		sourceCharacter = nil
 		visualCharacter = nil
@@ -396,6 +439,12 @@ function VehicleVisualSmoother.activate(model: Model): Model
 end
 
 function VehicleVisualSmoother.deactivate()
+	if characterWatchConnection ~= nil then
+		characterWatchConnection:Disconnect()
+		characterWatchConnection = nil
+	end
+	characterDirty = false
+
 	if renderConnection ~= nil then
 		renderConnection:Disconnect()
 		renderConnection = nil
@@ -419,11 +468,23 @@ function VehicleVisualSmoother.deactivate()
 	end
 
 	local character = sourceCharacter
-	if character ~= nil and character.Parent ~= nil then
-		setCharacterHidden(character, false)
-	else
-		table.clear(sourceCharacterTransparency)
-		table.clear(sourceCharacterForceFieldVisible)
+	if character ~= nil then
+		if character.Parent ~= nil then
+			setCharacterHidden(character, false)
+		else
+			table.clear(sourceCharacterTransparency)
+			table.clear(sourceCharacterForceFieldVisible)
+		end
+	end
+	-- Safety sweep: reset LocalTransparencyModifier on the local player's character
+	-- in case the source reference was stale or parts were missed
+	local localChar = Players.LocalPlayer.Character
+	if localChar ~= nil then
+		for _, descendant in ipairs(localChar:GetDescendants()) do
+			if descendant:IsA("BasePart") and descendant.LocalTransparencyModifier > 0.99 then
+				descendant.LocalTransparencyModifier = 0
+			end
+		end
 	end
 
 	sourceModel = nil

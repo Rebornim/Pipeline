@@ -16,6 +16,7 @@ local ProjectileServer = require(serverRoot:WaitForChild("Projectiles"):WaitForC
 local TargetingServer = require(serverRoot:WaitForChild("Targeting"):WaitForChild("TargetingServer"))
 local TestHarnessRunner = require(serverRoot:WaitForChild("TestHarness"):WaitForChild("Runner"))
 local VehicleServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("VehicleServer"))
+local WalkerServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("WalkerServer"))
 local WeaponServer = require(serverRoot:WaitForChild("Weapons"):WaitForChild("WeaponServer"))
 
 type ValidatedEntity = CombatTypes.ValidatedEntity
@@ -147,6 +148,21 @@ local function findDriverSeat(model: Model): Seat?
 	return nil
 end
 
+local function collectStationFolders(model: Model): { Folder }
+	local stations: { Folder } = {}
+	for _, child in ipairs(model:GetChildren()) do
+		if child:IsA("Folder") then
+			for _, desc in ipairs(child:GetDescendants()) do
+				if desc:IsA("Seat") and (CollectionService:HasTag(desc, "TurretSeat") or CollectionService:HasTag(desc, "ArtillerySeat")) then
+					table.insert(stations, child)
+					break
+				end
+			end
+		end
+	end
+	return stations
+end
+
 local function collectHoverPoints(model: Model): { BasePart }
 	local points: { BasePart } = {}
 	for _, descendant in ipairs(model:GetDescendants()) do
@@ -170,15 +186,19 @@ ProjectileServer.init(remotesFolder)
 TargetingServer.init(remotesFolder)
 WeaponServer.init(remotesFolder)
 VehicleServer.init(remotesFolder)
+WalkerServer.init(remotesFolder)
 if harnessEnabled then
 	TestHarnessRunner.setup()
 end
 HealthManager.setRespawnCallback(function(entityId: string)
 	TargetingServer.clearLock(entityId)
 	WeaponServer.resetEntity(entityId)
+	VehicleServer.onEntityRespawned(entityId)
+	WalkerServer.onEntityRespawned(entityId)
 end)
 HealthManager.setDestroyCallback(function(entityId: string)
 	VehicleServer.onEntityDestroyed(entityId)
+	WalkerServer.onEntityDestroyed(entityId)
 end)
 
 local validatedEntities: { ValidatedEntity } = StartupValidator.validate()
@@ -204,10 +224,17 @@ for _, validatedEntity in ipairs(validatedEntities) do
 			vehicleConfigId = validatedEntity.instance:GetAttribute("VehicleConfigId")
 		end
 		if type(vehicleConfigId) == "string" and CombatConfig.Vehicles[vehicleConfigId] ~= nil then
+			local vehicleConfig = CombatConfig.Vehicles[vehicleConfigId]
 			local driverSeat = findDriverSeat(validatedEntity.instance)
-			local hoverPoints = collectHoverPoints(validatedEntity.instance)
-			if driverSeat ~= nil and #hoverPoints >= 4 then
-				VehicleServer.registerVehicle(entityId, validatedEntity.instance, vehicleConfigId, driverSeat, hoverPoints)
+			if driverSeat ~= nil then
+				if type(vehicleConfig) == "table" and vehicleConfig.vehicleClass == "walker_biped" then
+					WalkerServer.registerWalker(entityId, validatedEntity.instance, driverSeat)
+				else
+					local hoverPoints = collectHoverPoints(validatedEntity.instance)
+					if #hoverPoints >= 4 then
+						VehicleServer.registerVehicle(entityId, validatedEntity.instance, vehicleConfigId, driverSeat, hoverPoints)
+					end
+				end
 			end
 		end
 	end
@@ -236,7 +263,33 @@ for _, validatedEntity in ipairs(validatedEntities) do
 		else
 			CollectionService:AddTag(validatedEntity.turretSeat, "TurretSeat")
 		end
-		addTurretPrompt(validatedEntity.turretSeat, entityId)
+		if not CollectionService:HasTag(validatedEntity.instance, "VehicleEntity") then
+			addTurretPrompt(validatedEntity.turretSeat, entityId)
+		end
+	end
+
+	-- Tag gunner station seats (multi-gunner support, no proximity prompts — players sit directly)
+	local stationFolders = collectStationFolders(validatedEntity.instance)
+	for _, station in ipairs(stationFolders) do
+		for _, desc in ipairs(station:GetDescendants()) do
+			if desc:IsA("Seat") and (CollectionService:HasTag(desc, "TurretSeat") or CollectionService:HasTag(desc, "ArtillerySeat")) then
+				local stationSeat = desc :: Seat
+				local stationWeaponId = station:GetAttribute("WeaponConfigId")
+				if type(stationWeaponId) ~= "string" then
+					stationWeaponId = if entityConfig ~= nil then entityConfig.weaponId else nil
+				end
+				if type(stationWeaponId) == "string" then
+					local stationWeaponConfig = CombatConfig.Weapons[stationWeaponId]
+					if stationWeaponConfig ~= nil and stationWeaponConfig.weaponClass == "artillery" then
+						CollectionService:RemoveTag(stationSeat, "TurretSeat")
+						CollectionService:AddTag(stationSeat, "ArtillerySeat")
+					else
+						CollectionService:AddTag(stationSeat, "TurretSeat")
+					end
+				end
+				break
+			end
+		end
 	end
 end
 
