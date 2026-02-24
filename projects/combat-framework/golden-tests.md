@@ -268,3 +268,38 @@ Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13,
 Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13, Pass 5 Tests 14-16, Pass 6 Tests 17-19, Pass 8 Tests 20-22. Walker combat additions must NOT affect turret, speeder, artillery, or walker movement behavior.
 
 ---
+
+## Pass 9.5: Bugfix Stabilization
+
+### Test 26: Walker Long-Distance No Ejection
+- **Added in:** Pass 9.5
+- **Setup:** Walker on flat terrain. Player seated as driver.
+- **Action:** Walk forward 200+ studs. Sprint back to start. Repeat.
+- **Expected:** Player never ejected from walker. Controls remain responsive.
+- **Pass condition:** No seat ejection after 200+ studs of travel.
+
+### Test 27: Remote Walker Full Visual
+- **Added in:** Pass 9.5
+- **Setup:** Walker with driver (Player A). Second player (Player B) observing from 30 studs.
+- **Action:** Player A walks, sprints, aims head, fires weapon.
+- **Expected:** Player B sees: legs stepping with IK, head/turret rotating, driver character in cockpit, fire visual from chin muzzles.
+- **Pass condition:** Visual inspection — all parts animate for observer.
+
+### Test 28: Lock-On Facing Break
+- **Added in:** Pass 9.5
+- **Setup:** Turret with lock-on capability (lockRange=600). Rebel target at 50 studs in front.
+- **Action:** Lock target. Turn turret/vehicle 180° away from target.
+- **Expected:** Lock breaks when target passes 90° from entity forward.
+- **Pass condition:** Lock breaks and HUD shows lock-lost cue.
+
+### Test 29: Remote Turret Rotation Visible
+- **Added in:** Pass 9.5
+- **Setup:** Turret manned by Player A. Player B observing from 20 studs.
+- **Action:** Player A aims turret left, right, up, down.
+- **Expected:** Player B sees turret barrel and body parts rotating with Player A's aim.
+- **Pass condition:** Visual inspection — driven parts rotate for observer.
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13, Pass 5 Tests 14-16, Pass 6 Tests 17-19, Pass 8 Tests 20-22, Pass 9 Tests 23-25. Stabilization fixes must NOT break existing combat, vehicle, or walker behavior.
+
+---

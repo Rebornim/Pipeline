@@ -14,6 +14,7 @@ local WeaponRig = require(sharedRoot:WaitForChild("WeaponRig"))
 
 local serverRoot = ServerScriptService:WaitForChild("CombatFramework")
 local HealthManager = require(serverRoot:WaitForChild("Health"):WaitForChild("HealthManager"))
+local WalkerIKServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("WalkerIKServer"))
 
 type VehicleConfig = CombatTypes.VehicleConfig
 type WalkerRuntimeState = CombatTypes.WalkerRuntimeState
@@ -29,7 +30,7 @@ type WalkerSpawnData = {
 	driverSeat: Seat,
 }
 local spawnDataByEntityId: { [string]: WalkerSpawnData } = {}
-local legsFolderByEntityId: { [string]: Folder } = {}
+local legsFolderByEntityId: { [string]: Instance } = {}
 
 local VOID_DESTROY_HEIGHT = -500
 
@@ -97,8 +98,92 @@ local function appendPlayerCharacters(filter: { Instance })
 	end
 end
 
+local function buildWalkerRayParams(state: WalkerRuntimeState): RaycastParams
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.IgnoreWater = true
+	local filterList: { Instance } = { state.instance }
+	local legsFolder = legsFolderByEntityId[state.entityId]
+	if legsFolder then
+		table.insert(filterList, legsFolder)
+	end
+	appendPlayerCharacters(filterList)
+	rayParams.FilterDescendantsInstances = filterList
+	return rayParams
+end
+
+local function applyIdlePose(state: WalkerRuntimeState, dt: number)
+	local config = state.config
+	local bodyCFrame = state.simulatedCFrame
+	local rayParams = buildWalkerRayParams(state)
+	local modBodyCF, lStrut1CF, lStrut2CF, lUpperCF, lLowerCF, lFootCF, rStrut1CF, rStrut2CF, rUpperCF, rLowerCF, rFootCF =
+		WalkerIKServer.update(
+			state.ikState,
+			bodyCFrame,
+			Vector3.zero,
+			config,
+			dt,
+			rayParams,
+			0,
+			state.gaitSide,
+			false,
+			0,
+			false
+		)
+
+	local aimOffset = state.aimYaw - state.heading
+	aimOffset = ((aimOffset + math.pi) % (math.pi * 2)) - math.pi
+	local headYawMin = math.rad(config.headYawMin or -120)
+	local headYawMax = math.rad(config.headYawMax or 120)
+	aimOffset = math.clamp(aimOffset, headYawMin, headYawMax)
+	local cockpitYaw = state.heading + aimOffset
+	local tiltCF = bodyCFrame:Inverse() * modBodyCF
+	local _, tiltPitch, tiltRoll = tiltCF:ToEulerAnglesYXZ()
+	local modPos = modBodyCF.Position
+	local cockpitCFrame = CFrame.new(modPos) * CFrame.Angles(0, cockpitYaw, 0) * CFrame.Angles(tiltPitch, 0, tiltRoll)
+	local nextHeadCFrame = CFrame.new(modPos) * CFrame.Angles(0, cockpitYaw, 0) * state.headBaseOffset
+
+	local previousHeadCFrame = state.lastHeadCFrame
+	local headDelta = nextHeadCFrame * previousHeadCFrame:Inverse()
+	for _, childEntry in ipairs(state.childPartOffsets) do
+		local childPart = childEntry.part
+		if childPart.Parent == nil then
+			continue
+		end
+		if state.legPartSet[childPart] then
+			continue
+		end
+		if childPart == state.headPart or childPart:IsDescendantOf(state.headPart) then
+			continue
+		end
+		childPart.CFrame = cockpitCFrame * childEntry.offset
+	end
+
+	state.primaryPart.CFrame = cockpitCFrame
+	state.headPart.CFrame = nextHeadCFrame
+	for _, followerPart in ipairs(state.headFollowerParts) do
+		if followerPart.Parent ~= nil then
+			followerPart.CFrame = headDelta * followerPart.CFrame
+		end
+	end
+
+	local legParts = state.legParts
+	if legParts.left.strut1 ~= nil then legParts.left.strut1.CFrame = lStrut1CF end
+	if legParts.left.strut2 ~= nil then legParts.left.strut2.CFrame = lStrut2CF end
+	legParts.left.upper.CFrame = lUpperCF
+	legParts.left.lower.CFrame = lLowerCF
+	legParts.left.foot.CFrame = lFootCF
+	if legParts.right.strut1 ~= nil then legParts.right.strut1.CFrame = rStrut1CF end
+	if legParts.right.strut2 ~= nil then legParts.right.strut2.CFrame = rStrut2CF end
+	legParts.right.upper.CFrame = rUpperCF
+	legParts.right.lower.CFrame = rLowerCF
+	legParts.right.foot.CFrame = rFootCF
+	state.lastHeadCFrame = nextHeadCFrame
+end
+
 local function clearDriver(state: WalkerRuntimeState)
 	local previousDriver = state.driver
+	state.instance:SetAttribute("WalkerDriverUserId", nil)
 	if previousDriver ~= nil and driverToWalkerId[previousDriver] == state.walkerId then
 		driverToWalkerId[previousDriver] = nil
 	end
@@ -118,16 +203,13 @@ local function clearDriver(state: WalkerRuntimeState)
 	state.instance:SetAttribute("WalkerGaitActive", false)
 	state.instance:SetAttribute("WalkerGaitPhase", 0)
 	state.instance:SetAttribute("WalkerSprintFrac", 0)
+	state.instance:SetAttribute("VehicleSpeed", 0)
+	state.instance:SetAttribute("VehicleHeading", state.heading)
 	-- Reset aim to heading so the cockpit snaps back to center on exit
 	state.aimYaw = state.heading
-	-- Immediately snap ALL parts (including legs) to default pose so
-	-- the client doesn't see stretched legs while the server decelerates
-	local bodyCF = state.simulatedCFrame
-	for _, entry in ipairs(state.childPartOffsets) do
-		entry.part.CFrame = bodyCF * entry.offset
-	end
-	state.primaryPart.CFrame = bodyCF
-	state.lastHeadCFrame = state.headPart.CFrame
+	-- Snap to computed idle pose immediately on exit.
+	state.ikState = WalkerIKServer.createState()
+	applyIdlePose(state, 1 / 30)
 end
 
 local function updateDriverFromSeat(state: WalkerRuntimeState)
@@ -143,6 +225,7 @@ local function updateDriverFromSeat(state: WalkerRuntimeState)
 
 			state.driver = player
 			driverToWalkerId[player] = state.walkerId
+			state.instance:SetAttribute("WalkerDriverUserId", player.UserId)
 			state.inputThrottle = 0
 			state.inputStrafe = 0
 			state.inputSteerX = 0
@@ -152,6 +235,7 @@ local function updateDriverFromSeat(state: WalkerRuntimeState)
 			state.lastSpeedUpdateTick = 0
 			state.simulatedCFrame = state.primaryPart.CFrame
 			state.lastCFrameWriteTick = 0
+			state.ikState = WalkerIKServer.createState()
 			if state.velocity.Y > 0 then
 				state.velocity = Vector3.new(state.velocity.X, 0, state.velocity.Z)
 			end
@@ -312,38 +396,25 @@ local function stepSingleWalker(state: WalkerRuntimeState, dt: number)
 			end
 		end
 
-		-- Grounded with no driver: one ground check to ensure correct walkHeight, then dormant
-		if not state.isAirborne then
-			local rayParams = RaycastParams.new()
-			rayParams.FilterType = Enum.RaycastFilterType.Exclude
-			rayParams.IgnoreWater = true
-			local filterList: { Instance } = { state.instance }
-			local legsFolder2 = legsFolderByEntityId[state.entityId]
-			if legsFolder2 then
-				table.insert(filterList, legsFolder2)
-			end
-			appendPlayerCharacters(filterList)
-			rayParams.FilterDescendantsInstances = filterList
-			local walkHeight = config.walkHeight or 12
-			local probeHeight = walkHeight * 0.5
-			local rayOrigin = pos + Vector3.new(0, probeHeight, 0)
-			local rayLength = walkHeight * 3
+			-- Grounded with no driver: one ground check to ensure correct walkHeight, then dormant
+			if not state.isAirborne then
+				local rayParams = buildWalkerRayParams(state)
+				local walkHeight = config.walkHeight or 12
+				local probeHeight = walkHeight * 0.5
+				local rayOrigin = pos + Vector3.new(0, probeHeight, 0)
+				local rayLength = walkHeight * 3
 			local result = Workspace:Raycast(rayOrigin, Vector3.new(0, -rayLength, 0), rayParams)
 			if result then
-				local targetY = result.Position.Y + walkHeight
-				pos = Vector3.new(pos.X, targetY, pos.Z)
-				state.simulatedCFrame = CFrame.new(pos) * CFrame.Angles(0, state.heading, 0)
-			end
-			-- Write final CFrames before going dormant
-			for _, entry in ipairs(state.childPartOffsets) do
-				entry.part.CFrame = state.simulatedCFrame * entry.offset
-			end
-			state.primaryPart.CFrame = state.simulatedCFrame
-			state.lastHeadCFrame = state.headPart.CFrame
-			if state.promptPart then
-				state.promptPart.CFrame = CFrame.new(pos.X, pos.Y - walkHeight, pos.Z)
-			end
-			state.replicationState = "Dormant"
+					local targetY = result.Position.Y + walkHeight
+					pos = Vector3.new(pos.X, targetY, pos.Z)
+					state.simulatedCFrame = CFrame.new(pos) * CFrame.Angles(0, state.heading, 0)
+				end
+				-- Write final idle pose before going dormant.
+				applyIdlePose(state, dt)
+				if state.promptPart then
+					state.promptPart.CFrame = CFrame.new(pos.X, pos.Y - walkHeight, pos.Z)
+				end
+				state.replicationState = "Dormant"
 			state.wasStopped = true
 			state.velocity = Vector3.zero
 		end
@@ -357,7 +428,11 @@ local function stepSingleWalker(state: WalkerRuntimeState, dt: number)
 	state.sprintFrac = state.sprintFrac + (sprintTarget - state.sprintFrac) * (1 - math.exp(-sprintRampSpeed * dt))
 	if state.sprintFrac < 0.01 then state.sprintFrac = 0 end
 	if state.sprintFrac > 0.99 then state.sprintFrac = 1 end
-	state.instance:SetAttribute("WalkerSprintFrac", state.sprintFrac)
+	local sprintReplicated = math.floor(math.clamp(state.sprintFrac, 0, 1) * 20 + 0.5) / 20
+	local previousSprintReplicated = state.instance:GetAttribute("WalkerSprintFrac")
+	if type(previousSprintReplicated) ~= "number" or math.abs(previousSprintReplicated - sprintReplicated) > 1e-4 then
+		state.instance:SetAttribute("WalkerSprintFrac", sprintReplicated)
+	end
 
 	-- 1. Heading chases aimYaw (shortest-angle, rate-limited by turnSpeed)
 	local walkTurnSpeed = math.rad(config.turnSpeed or 90)
@@ -607,18 +682,45 @@ local function stepSingleWalker(state: WalkerRuntimeState, dt: number)
 	pos = pos + state.velocity * dt
 	state.simulatedCFrame = CFrame.new(pos) * CFrame.Angles(0, state.heading, 0)
 
-	-- 9. Position child parts
-	-- AT-ST style: entire cockpit (all non-leg parts) rotates with aim
+	-- 9. Solve authoritative walker pose (body, head, legs)
+	local bodyCFrame = state.simulatedCFrame
+	local horizontalVelocity = Vector3.new(state.velocity.X, 0, state.velocity.Z)
+	local modBodyCF, lStrut1CF, lStrut2CF, lUpperCF, lLowerCF, lFootCF, rStrut1CF, rStrut2CF, rUpperCF, rLowerCF, rFootCF, lJustPlanted, rJustPlanted, lJustLifted, rJustLifted =
+		WalkerIKServer.update(
+			state.ikState,
+			bodyCFrame,
+			horizontalVelocity,
+			config,
+			dt,
+			rayParams,
+			state.gaitPhase,
+			state.gaitSide,
+			state.gaitActive,
+			state.sprintFrac,
+			state.driver ~= nil
+		)
+	local liftCount = (if lJustLifted then 1 else 0) + (if rJustLifted then 1 else 0)
+	if liftCount > 0 then
+		state.audioFootLiftSeq += liftCount
+		state.instance:SetAttribute("WalkerAudioFootLiftSeq", state.audioFootLiftSeq)
+	end
+	local plantCount = (if lJustPlanted then 1 else 0) + (if rJustPlanted then 1 else 0)
+	if plantCount > 0 then
+		state.audioFootPlantSeq += plantCount
+		state.instance:SetAttribute("WalkerAudioFootPlantSeq", state.audioFootPlantSeq)
+	end
+
 	local aimOffset = state.aimYaw - state.heading
 	aimOffset = ((aimOffset + math.pi) % (math.pi * 2)) - math.pi
 	local headYawMin = math.rad(config.headYawMin or -120)
 	local headYawMax = math.rad(config.headYawMax or 120)
 	aimOffset = math.clamp(aimOffset, headYawMin, headYawMax)
-	local cockpitCFrame = CFrame.new(pos) * CFrame.Angles(0, state.heading + aimOffset, 0)
-
-	-- Child part CFrames: PrimaryPart cascade (line 649) handles cockpit children
-	-- at 20Hz, and client IK handles legs. No per-frame individual writes needed
-	-- during active walking — they just waste bandwidth.
+	local cockpitYaw = state.heading + aimOffset
+	local tiltCF = bodyCFrame:Inverse() * modBodyCF
+	local _, tiltPitch, tiltRoll = tiltCF:ToEulerAnglesYXZ()
+	local modPos = modBodyCF.Position
+	local cockpitCFrame = CFrame.new(modPos) * CFrame.Angles(0, cockpitYaw, 0) * CFrame.Angles(tiltPitch, 0, tiltRoll)
+	local nextHeadCFrame = CFrame.new(modPos) * CFrame.Angles(0, cockpitYaw, 0) * state.headBaseOffset
 
 	-- 10. Replicate
 	local horizontalSpeed = Vector3.new(state.velocity.X, 0, state.velocity.Z).Magnitude
@@ -635,30 +737,51 @@ local function stepSingleWalker(state: WalkerRuntimeState, dt: number)
 	-- 11. Write CFrame (rate-limited)
 	local now = tick()
 	local isSettling = state.replicationState == "Settling"
-	local writeRate = if isSettling
+	local configuredWriteRate = if isSettling
 		then readConfigNumber("VehicleCFrameWriteRateSettling", 5)
 		else readConfigNumber("VehicleCFrameWriteRateActive", 20)
+	local writeRate = math.max(1, configuredWriteRate)
 	local writeInterval = 1 / math.max(1, writeRate)
-	if (now - state.lastCFrameWriteTick) >= writeInterval then
-		local previousHeadCFrame = state.lastHeadCFrame
-		local nextHeadCFrame = cockpitCFrame * state.headBaseOffset
-		local headDelta = nextHeadCFrame * previousHeadCFrame:Inverse()
+		if (now - state.lastCFrameWriteTick) >= writeInterval then
+			local previousHeadCFrame = state.lastHeadCFrame
+			local headDelta = nextHeadCFrame * previousHeadCFrame:Inverse()
 
-		state.primaryPart.CFrame = cockpitCFrame
-		state.headPart.CFrame = nextHeadCFrame
-		for _, followerPart in ipairs(state.headFollowerParts) do
+			for _, childEntry in ipairs(state.childPartOffsets) do
+				local childPart = childEntry.part
+				if childPart.Parent == nil then
+					continue
+				end
+				if state.legPartSet[childPart] then
+					continue
+				end
+				if childPart == state.headPart or childPart:IsDescendantOf(state.headPart) then
+					continue
+				end
+				childPart.CFrame = cockpitCFrame * childEntry.offset
+			end
+
+			state.primaryPart.CFrame = cockpitCFrame
+			state.headPart.CFrame = nextHeadCFrame
+			for _, followerPart in ipairs(state.headFollowerParts) do
 			if followerPart.Parent ~= nil then
 				followerPart.CFrame = headDelta * followerPart.CFrame
 			end
 		end
+		local legParts = state.legParts
+		if legParts.left.strut1 ~= nil then legParts.left.strut1.CFrame = lStrut1CF end
+		if legParts.left.strut2 ~= nil then legParts.left.strut2.CFrame = lStrut2CF end
+		legParts.left.upper.CFrame = lUpperCF
+		legParts.left.lower.CFrame = lLowerCF
+		legParts.left.foot.CFrame = lFootCF
+		if legParts.right.strut1 ~= nil then legParts.right.strut1.CFrame = rStrut1CF end
+		if legParts.right.strut2 ~= nil then legParts.right.strut2.CFrame = rStrut2CF end
+		legParts.right.upper.CFrame = rUpperCF
+		legParts.right.lower.CFrame = rLowerCF
+		legParts.right.foot.CFrame = rFootCF
 		state.lastHeadCFrame = nextHeadCFrame
 		state.lastCFrameWriteTick = now
 	end
 
-	-- Keep prompt at ground level below walker
-	if state.promptPart then
-		state.promptPart.CFrame = CFrame.new(pos.X, pos.Y - (config.walkHeight or 12), pos.Z)
-	end
 end
 
 local function stepWalkers(dt: number)
@@ -728,15 +851,23 @@ function WalkerServer.registerWalker(entityId: string, instance: Model, driverSe
 	end)
 
 	-- Resolve leg parts
-	local function getLegParts(folder: Instance?): { upper: BasePart, lower: BasePart, foot: BasePart }?
+	local function getLegParts(folder: Instance?): { strut1: BasePart?, strut2: BasePart?, upper: BasePart, lower: BasePart, foot: BasePart }?
 		if folder == nil then
 			return nil
 		end
+		local strut1 = folder:FindFirstChild("Strut1")
+		local strut2 = folder:FindFirstChild("HipStrut")
 		local upper = folder:FindFirstChild("UpperLeg")
 		local lower = folder:FindFirstChild("LowerLeg")
 		local foot = folder:FindFirstChild("Foot")
 		if upper and upper:IsA("BasePart") and lower and lower:IsA("BasePart") and foot and foot:IsA("BasePart") then
-			return { upper = upper :: BasePart, lower = lower :: BasePart, foot = foot :: BasePart }
+			return {
+				strut1 = if strut1 ~= nil and strut1:IsA("BasePart") then strut1 :: BasePart else nil,
+				strut2 = if strut2 ~= nil and strut2:IsA("BasePart") then strut2 :: BasePart else nil,
+				upper = upper :: BasePart,
+				lower = lower :: BasePart,
+				foot = foot :: BasePart,
+			}
 		end
 		return nil
 	end
@@ -803,10 +934,11 @@ function WalkerServer.registerWalker(entityId: string, instance: Model, driverSe
 		end
 	end
 
-	-- Reparent leg folders to Workspace so they're independent from
-	-- PrimaryPart.CFrame replication (Model children move when PrimaryPart moves)
-	local legPartsFolder = Instance.new("Folder")
-	legPartsFolder.Name = instance.Name .. "_Legs"
+	-- Reparent leg folders to a detached model in Workspace so they're independent from
+	-- PrimaryPart.CFrame replication and still resolve as walker hitboxes.
+	local legPartsFolder = Instance.new("Model")
+	legPartsFolder.Name = entityId .. "_Legs"
+	legPartsFolder:SetAttribute("EntityId", entityId)
 	if leftLegFolder ~= nil then
 		leftLegFolder.Parent = legPartsFolder
 	end
@@ -828,6 +960,7 @@ function WalkerServer.registerWalker(entityId: string, instance: Model, driverSe
 		lastHeadCFrame = (headPart :: BasePart).CFrame,
 		hipAttachments = { left = hipAttachments[1], right = hipAttachments[2] },
 		legParts = { left = leftLeg :: any, right = rightLeg :: any },
+		ikState = WalkerIKServer.createState(),
 		config = walkerConfig,
 		driver = nil,
 		velocity = Vector3.zero,
@@ -856,6 +989,8 @@ function WalkerServer.registerWalker(entityId: string, instance: Model, driverSe
 		gaitActive = false,
 		gaitSide = "left",
 		gaitStopRequested = false,
+		audioFootLiftSeq = 0,
+		audioFootPlantSeq = 0,
 	}
 
 	for _, descendant in ipairs((headPart :: BasePart):GetDescendants()) do
@@ -938,6 +1073,10 @@ function WalkerServer.registerWalker(entityId: string, instance: Model, driverSe
 	instance:SetAttribute("VehicleSpeed", 0)
 	instance:SetAttribute("VehicleHeading", heading)
 	instance:SetAttribute("WalkerAimYaw", heading)
+	instance:SetAttribute("WalkerDriverUserId", nil)
+	instance:SetAttribute("WalkerAudioFootLiftSeq", 0)
+	instance:SetAttribute("WalkerAudioFootPlantSeq", 0)
+	applyIdlePose(state, 1 / 30)
 end
 
 function WalkerServer.getWalkerByEntityId(entityId: string): WalkerRuntimeState?

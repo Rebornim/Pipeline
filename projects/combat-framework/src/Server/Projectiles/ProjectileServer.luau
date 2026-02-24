@@ -85,6 +85,26 @@ local function applyDamageToHumanoidTarget(
 	end
 
 	local seatPart = humanoid.SeatPart
+	if seatPart ~= nil and CollectionService:HasTag(seatPart, "DriverSeat") then
+		local current: Instance? = seatPart
+		local vehicleModel: Model? = nil
+		while current ~= nil do
+			if current:IsA("Model") and CollectionService:HasTag(current, "VehicleEntity") then
+				vehicleModel = current
+				break
+			end
+			current = current.Parent
+		end
+		if vehicleModel ~= nil then
+			local vehicleCategory = vehicleModel:GetAttribute("VehicleCategory")
+			if type(vehicleCategory) ~= "string" then
+				vehicleCategory = vehicleModel:GetAttribute("VehicleConfigId")
+			end
+			if vehicleCategory == "walker_biped" then
+				return false, false, nil, nil, false
+			end
+		end
+	end
 	if seatPart ~= nil and (CollectionService:HasTag(seatPart, "TurretSeat") or CollectionService:HasTag(seatPart, "ArtillerySeat")) then
 		local seatedTurret = seatPart:FindFirstAncestorWhichIsA("Model")
 		if seatedTurret ~= nil and seatedTurret:GetAttribute("TurretExposed") ~= true then

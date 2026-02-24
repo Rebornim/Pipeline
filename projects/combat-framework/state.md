@@ -1,7 +1,34 @@
 # Combat Framework — State
 
-## Current Stage: Pass 9 Design Complete — Ready to Build
-## Status: Pass 9 (Walker Combat) designed. Walker gets chin blaster weapon, head CFrame tracking for muzzle origin, client fire input + HUD. Reuses existing vehicle weapon pipeline — no changes to WeaponServer, HealthManager, ProjectileServer.
+## Current Stage: Pass 9.5 Build Complete — Ready for Pass 10 Design
+## Status: Pass 9.5 (Bugfix Stabilization) built and stabilized through multiplayer iteration, with network and replication polish layered on top of the original 6-bug scope.
+
+### Pass 9.5 Build Delta
+**Built as designed:**
+- Fixed walker seat ejection by removing anchored-driver behavior and stabilizing rider seat-follow while piloting.
+- Fixed remote walker visuals: deferred legs discovery, consistent remote body/head/weapon-mount sync, and remote seated character tracking.
+- Added lock facing-break validation for driver-seat lock-on flow, with config-backed angle limit.
+- Added server-side driven-part aiming so remote players see turret/barrel motion, not just local clients.
+- Suppressed local-shooter whiz audio for projectile visuals.
+- Fixed heavy-vehicle phantom driver fire by gating vehicle crosshair/fire path to actual driver-weapon context only.
+
+**Deviations from design:**
+- Replaced the original client-side smoothing-only approach with authoritative server walker pose solves (`WalkerIKServer`) and attribute-driven remote playback to eliminate persistent driver/observer divergence.
+- Did not keep the temporary pass-tagged MCP prints/harness hooks; they were removed during wrap-up cleanup.
+- Lock facing-break behavior was finalized as context-aware: enforced for driver-seat forward-screen flow, skipped for gunner/turret seats where mount arc limits already govern lock validity.
+- Additional stabilization beyond the 6 planned bugs: walker driver damage shielding while seated, walker leg hitbox consistency after respawn, heavy/speeder engine-loop continuity fixes, turret barrel lag/pivot corrections, and lock-ready HUD debounce to stop flicker.
+- Added replication/network tuning during stabilization (walker aim RPC throttling/deadband, sprint attribute quantization, reduced unnecessary CFrame writes) to lower per-walker bandwidth without removing visual parity goals.
+
+**New runtime contracts:**
+- Walker instances now replicate `WalkerDriverUserId`, `WalkerAudioFootLiftSeq`, and `WalkerAudioFootPlantSeq` for remote rider/audio correctness.
+- Walker legs are detached into `Workspace/<EntityId>_Legs` as a `Model` carrying `EntityId`, enabling consistent hit detection and remote resolution.
+- `CombatConfig.Targeting.lockFacingHalfAngleDeg` now controls driver lock break threshold (currently `70`).
+- `walker_biped` config now includes sprint spread controls (`weaponSprintSpreadStartFrac`, `weaponSprintSpreadMinDeg`, `weaponSprintSpreadMaxDeg`, `weaponSprintSpreadExponent`).
+- Heavy vehicle config now supports gunner spread multipliers (`gunnerUnlockedSpreadMultiplier`, `gunnerAutoAimSpreadMultiplier`).
+
+**Non-blocking follow-ups:**
+- Run a focused multi-walker bandwidth/profile pass with 2-4 active walkers to verify final recv/send budget under sustained combat.
+- Document the finalized walker replication model (server pose authority + client visual interpolation roles) in the vehicle docs to prevent future regressions.
 
 ### Pass 9 Build Delta
 **Built as designed:**
@@ -175,6 +202,9 @@
 - **Pass 8 Design:** Complete 2026-02-23. Biped walker movement — separate WalkerServer, WASD+mouse, IK procedural legs, body secondary motion, head rotation, remote IK.
 - **Pass 8 Build (emergency):** Complete 2026-02-24. Walker movement built + extensive polish. See pass-8 build delta below.
 - **Pass 9 Design:** Complete 2026-02-24. Walker combat — chin blaster weapon, head CFrame for muzzle origin, client fire input + HUD, model authoring (WeaponMount on head).
+- **Pass 9 Build:** Complete 2026-02-24. Walker combat built by Codex. Burst weapon, RMB zoom, splash, red bolts. Shields removed from walker. See pass 9 build delta above.
+- **Pass 9.5 Design:** Complete 2026-02-24. Bugfix stabilization — 6 bugs across walker, targeting, turrets, sound, vehicles.
+- **Pass 9.5 Build:** Complete 2026-02-24. Bugfix stabilization delivered with authoritative walker replication/sync polish, lock/weapon correctness fixes, turret/driven-part remote parity, and network tuning. See pass 9.5 build delta above.
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `vehicle-idea-locked.md`, `attribute-reference.md`, `golden-tests.md`, `state.md`

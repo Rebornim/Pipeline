@@ -37,6 +37,9 @@ local smoothedLockScreenPos: Vector2? = nil
 local smoothedLeadScreenPos: Vector2? = nil
 local smoothedVisualLeadPoint: Vector3? = nil
 local lastRenderTimestamp: number = 0
+local lockReadyCandidateEntityId: string? = nil
+local lockReadyCandidateStartTime: number = 0
+local lockReadyVisibleUntil: number = 0
 
 local MIN_SAMPLE_DT = 1 / 60
 local VELOCITY_SMOOTH_ALPHA = 0.2
@@ -44,6 +47,14 @@ local LOCK_UI_SMOOTH_RATE = 14
 local LOCK_UI_DEADZONE_PX = 2.5
 local LEAD_WORLD_SMOOTH_RATE = 12
 local LEAD_WORLD_DEADZONE_STUDS = 0.35
+local LOCK_READY_SHOW_DELAY = 0.03
+local LOCK_READY_HIDE_GRACE = 0.16
+
+local function resetLockReadyUiState()
+	lockReadyCandidateEntityId = nil
+	lockReadyCandidateStartTime = 0
+	lockReadyVisibleUntil = 0
+end
 
 local function isPlayerTargetId(targetId: string): boolean
 	return string.sub(targetId, 1, #PLAYER_TARGET_PREFIX) == PLAYER_TARGET_PREFIX
@@ -545,6 +556,7 @@ local function onRenderStepped()
 	if turretModel == nil or weaponMount == nil or attackerEntityId == nil or lockRange == nil then
 		candidateEntityId = nil
 		candidateModel = nil
+		resetLockReadyUiState()
 		CombatHUD.showLockReady(false)
 		CombatHUD.showLockReticle(false)
 		CombatHUD.showLeadingIndicator(false)
@@ -554,11 +566,24 @@ local function onRenderStepped()
 
 	updateLockCandidate(camera, turretModel, weaponMount, lockRange)
 	if lockedEntityId == nil then
-		CombatHUD.showLockReady(candidateEntityId ~= nil)
+		local activeCandidateId = candidateEntityId
+		if activeCandidateId ~= nil then
+			if lockReadyCandidateEntityId ~= activeCandidateId then
+				lockReadyCandidateEntityId = activeCandidateId
+				lockReadyCandidateStartTime = now
+			elseif (now - lockReadyCandidateStartTime) >= LOCK_READY_SHOW_DELAY then
+				lockReadyVisibleUntil = now + LOCK_READY_HIDE_GRACE
+			end
+		else
+			lockReadyCandidateEntityId = nil
+			lockReadyCandidateStartTime = 0
+		end
+		CombatHUD.showLockReady(lockReadyVisibleUntil > now)
 		CombatHUD.showLockReticle(false)
 		CombatHUD.showLeadingIndicator(false)
 		resetHudSmoothing()
 	else
+		resetLockReadyUiState()
 		CombatHUD.showLockReady(false)
 		updateLockedHud(camera, turretModel, weaponMount, dt)
 	end
@@ -679,6 +704,7 @@ function TargetingClient.onSeatExit()
 	lockedAttackerEntityId = nil
 	table.clear(velocitySampleByModel)
 	resetHudSmoothing()
+	resetLockReadyUiState()
 	lastRenderTimestamp = 0
 	CombatHUD.showLockReady(false)
 	CombatHUD.showLockReticle(false)

@@ -287,13 +287,25 @@ function speeder_default.createController(
 			local s = Instance.new("Sound")
 			s.SoundId = assetId
 			s.Name = "Veh_" .. name .. suffix
-			s.Looped = false
+			s.Looped = true
 			s.Volume = 0
 			s.RollOffMode = Enum.RollOffMode.InverseTapered
 			s.RollOffMinDistance = rolloffMin
 			s.RollOffMaxDistance = rolloffMax
 			s.SoundGroup = soundGroup
 			s.Parent = targetPart
+			local function applyLoopTrim()
+				if s.TimeLength > 0.1 then
+					pcall(function()
+						s.LoopRegion = NumberRange.new(0.02, s.TimeLength - 0.02)
+					end)
+				end
+			end
+			if s.IsLoaded then
+				applyLoopTrim()
+			else
+				s.Loaded:Once(applyLoopTrim)
+			end
 			return s
 		end
 
@@ -314,37 +326,17 @@ function speeder_default.createController(
 		if not active.IsPlaying and not pair.crossfading then
 			active.PlaybackSpeed = targetPitch
 			active.Volume = targetVol
+			active.TimePosition = 0
 			active:Play()
 		end
 
-		if active.IsPlaying and active.TimeLength > 0.5 then
-			local remaining = active.TimeLength - active.TimePosition
-			if remaining <= LOOP_CROSSFADE and not pair.crossfading then
-				pair.crossfading = true
-				pair.crossfadeStart = tick()
-				standby.PlaybackSpeed = targetPitch
-				standby.Volume = 0
-				standby.TimePosition = 0
-				standby:Play()
-			end
+		if standby.IsPlaying then
+			standby:Stop()
 		end
-
-		if pair.crossfading then
-			local elapsed = tick() - pair.crossfadeStart
-			local blend = math.clamp(elapsed / LOOP_CROSSFADE, 0, 1)
-			active.Volume = targetVol * (1 - blend)
-			active.PlaybackSpeed = targetPitch
-			standby.Volume = targetVol * blend
-			standby.PlaybackSpeed = targetPitch
-			if blend >= 1 then
-				active:Stop()
-				pair.activeIsA = not pair.activeIsA
-				pair.crossfading = false
-			end
-		else
-			active.Volume = targetVol
-			active.PlaybackSpeed = targetPitch
-		end
+		pair.crossfading = false
+		pair.crossfadeStart = 0
+		active.Volume = targetVol
+		active.PlaybackSpeed = targetPitch
 	end
 
 	local function destroyLoopPair(pair: LoopPair?)

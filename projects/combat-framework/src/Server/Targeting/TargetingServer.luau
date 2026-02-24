@@ -132,25 +132,25 @@ local function findTaggedDescendant(model: Model, tagName: string, className: st
 	return nil
 end
 
-local function getPlayerTurretContext(player: Player): (string?, HealthState?, BasePart?)
+local function getPlayerTurretContext(player: Player): (string?, HealthState?, BasePart?, boolean?)
 	local character = player.Character
 	if character == nil then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
 	local seatPart = humanoid.SeatPart
 	if seatPart == nil then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 	local isTurretSeat = CollectionService:HasTag(seatPart, "TurretSeat") or CollectionService:HasTag(seatPart, "ArtillerySeat")
 	local isDriverSeat = CollectionService:HasTag(seatPart, "DriverSeat")
 	if not isTurretSeat and not isDriverSeat then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
 	local turretModel: Model? = nil
@@ -168,18 +168,18 @@ local function getPlayerTurretContext(player: Player): (string?, HealthState?, B
 		end
 	end
 	if turretModel == nil then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
 	local entityIdAttr = turretModel:GetAttribute("EntityId")
 	if type(entityIdAttr) ~= "string" then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
 	local attackerEntityId = entityIdAttr
 	local attackerHealthState = HealthManager.getHealth(attackerEntityId)
 	if attackerHealthState == nil or not HealthManager.isAlive(attackerEntityId) then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
 	-- Scope weapon mount search to the gunner's station folder (if in one)
@@ -193,10 +193,12 @@ local function getPlayerTurretContext(player: Player): (string?, HealthState?, B
 	end
 	local weaponMount = findTaggedDescendant(mountSearchScope :: Model, "WeaponMount", "BasePart")
 	if weaponMount == nil then
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	end
 
-	return attackerEntityId, attackerHealthState, weaponMount :: BasePart
+	-- Driver seats keep a forward-screen lock arc; turret/gunner seats use mount clamp + LOS only.
+	local applyFacingConstraint = isDriverSeat
+	return attackerEntityId, attackerHealthState, weaponMount :: BasePart, applyFacingConstraint
 end
 
 local function getEffectiveLockRange(attackerHealthState: HealthState): number?
@@ -214,6 +216,17 @@ local function getEffectiveLockRange(attackerHealthState: HealthState): number?
 		return nil
 	end
 	return weaponConfig.lockRange
+end
+
+local function getLockFacingHalfAngleRad(): number
+	local targeting = CombatConfig.Targeting
+	if type(targeting) == "table" then
+		local configured = (targeting :: any).lockFacingHalfAngleDeg
+		if type(configured) == "number" and configured > 0 and configured < 180 then
+			return math.rad(configured)
+		end
+	end
+	return math.rad(90)
 end
 
 local function estimateAssemblyVelocity(targetModel: Model): Vector3
@@ -334,7 +347,8 @@ local function validateLockCandidate(
 	attackerHealthState: HealthState,
 	weaponMount: BasePart,
 	targetEntityId: string,
-	rangeMultiplier: number
+	rangeMultiplier: number,
+	applyFacingConstraint: boolean?
 ): (boolean, string?)
 	if targetEntityId == attackerEntityId then
 		return false, "self"
@@ -386,12 +400,28 @@ local function validateLockCandidate(
 	if distance <= 1e-4 then
 		return false, "distance"
 	end
+	local toTargetUnit = toTarget.Unit
 
 	if distance > lockRange * rangeMultiplier then
 		return false, "range"
 	end
 
-	if not isDirectionWithinMountArc(weaponMount, toTarget.Unit) then
+	if applyFacingConstraint ~= false then
+		local facingForward = weaponMount.CFrame.LookVector
+		if CollectionService:HasTag(attackerHealthState.instance, "VehicleEntity") then
+			local attackerPrimary = attackerHealthState.instance.PrimaryPart
+			if attackerPrimary ~= nil then
+				facingForward = attackerPrimary.CFrame.LookVector
+			end
+		end
+		local facingThreshold = getLockFacingHalfAngleRad()
+		local facingAngle = math.acos(math.clamp(facingForward:Dot(toTargetUnit), -1, 1))
+		if facingAngle > facingThreshold then
+			return false, "arc"
+		end
+	end
+
+	if not isDirectionWithinMountArc(weaponMount, toTargetUnit) then
 		return false, "arc"
 	end
 
@@ -433,12 +463,13 @@ local function onRequestLock(player: Player, rawPayload: any)
 		return
 	end
 
-	local attackerEntityId, attackerHealthState, weaponMount = getPlayerTurretContext(player)
+	local attackerEntityId, attackerHealthState, weaponMount, applyFacingConstraint = getPlayerTurretContext(player)
 	if attackerEntityId == nil or attackerHealthState == nil or weaponMount == nil then
 		return
 	end
 
-	local ok, reason = validateLockCandidate(attackerEntityId, attackerHealthState, weaponMount, targetEntityId, 1)
+	local ok, reason =
+		validateLockCandidate(attackerEntityId, attackerHealthState, weaponMount, targetEntityId, 1, applyFacingConstraint)
 	if not ok then
 		if reason == "friendly" then
 			return
@@ -482,8 +513,10 @@ local function runValidationTick()
 	for attackerEntityId, lockState in pairs(locksByEntityId) do
 		local attackerHealthState: HealthState?
 		local weaponMount: BasePart?
+		local applyFacingConstraint: boolean? = true
 		if lockState.player ~= nil then
-			local currentEntityId, playerHealthState, playerWeaponMount = getPlayerTurretContext(lockState.player)
+			local currentEntityId, playerHealthState, playerWeaponMount, playerFacingConstraint =
+				getPlayerTurretContext(lockState.player)
 			if currentEntityId == nil or playerHealthState == nil or playerWeaponMount == nil then
 				clearLockInternal(attackerEntityId, "seat", "broken")
 				continue
@@ -494,6 +527,7 @@ local function runValidationTick()
 			end
 			attackerHealthState = playerHealthState
 			weaponMount = playerWeaponMount
+			applyFacingConstraint = playerFacingConstraint
 		else
 			attackerHealthState = HealthManager.getHealth(attackerEntityId)
 			if attackerHealthState ~= nil then
@@ -513,7 +547,8 @@ local function runValidationTick()
 			attackerHealthState,
 			weaponMount,
 			lockState.targetEntityId,
-			1
+			1,
+			applyFacingConstraint
 		)
 		if not ok then
 			clearLockInternal(attackerEntityId, reason or "invalid", "broken")

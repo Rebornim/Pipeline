@@ -59,12 +59,25 @@ local activeLegParts: {
 	rightFoot: BasePart?,
 }? = nil
 local activeRayParams: RaycastParams? = nil
-local activeDriverSeat: Seat? = nil
+local activeDriverSeat: BasePart? = nil
 local seatCharacterOffset: CFrame? = nil
+local seatOffsetNeedsRecalc: boolean = false
 local ikPrevPosition: Vector3? = nil
 local smoothedBodyPos: Vector3? = nil
 local lastWrittenPos: Vector3? = nil
 local serverTargetPos: Vector3? = nil
+type LegVisualState = {
+	source: BasePart,
+	visual: BasePart,
+}
+type LegPoseSnapshot = {
+	time: number,
+	poses: { [BasePart]: CFrame },
+}
+local legVisualStateByPart: { [BasePart]: LegVisualState } = {}
+local legSourceTransparency: { [BasePart]: number } = {}
+local legVisualsFolder: Folder? = nil
+local legPoseSnapshots: { LegPoseSnapshot } = {}
 
 local inputAccumulator: number = 0
 local savedMouseBehavior: Enum.MouseBehavior? = nil
@@ -85,7 +98,10 @@ local HEAD_TURN_STOP_THRESHOLD = 0.08 -- rad/s to stop (hysteresis)
 local HEAD_STOP_COOLDOWN = 1.5 -- min seconds between head stop sounds
 local lastHeadStopTick: number = 0
 local previousGaitActive: boolean = false
+local previousGaitSide: string = "left"
 local settleStepsRemaining: number = 0
+local previousFootLiftSeq: number? = nil
+local previousFootPlantSeq: number? = nil
 
 -- Walker weapon state
 local activeVehicleHasWeapon: boolean = false
@@ -111,6 +127,11 @@ local walkerZoomBlend: number = 0
 local walkerCrosshairSmoothedPos: Vector2? = nil
 local WALKER_CROSSHAIR_SMOOTH_RATE = 14
 local WALKER_CROSSHAIR_DEADZONE_PX = 2.0
+local WALKER_AIM_SEND_RATE = 30
+local WALKER_AIM_SEND_REFRESH = 0.2
+local WALKER_AIM_SEND_ANGLE_EPS = math.rad(0.35)
+local lastWalkerAimSendTick: number = 0
+local lastWalkerAimDirection: Vector3? = nil
 
 local lastSentThrottle: number = 0
 local lastSentStrafe: number = 0
@@ -118,6 +139,9 @@ local lastSentSteerX: number = 0
 local lastSentTick: number = 0
 local INPUT_REFRESH_INTERVAL = 1.0
 local INPUT_STEER_DEADBAND = 0.02
+local LEG_VISUAL_INTERP_DELAY = 1 / 24
+local LEG_VISUAL_SERVER_POS_EPS = 0.002
+local LEG_VISUAL_SERVER_ANGLE_EPS = math.rad(0.08)
 
 local function destroyFireSoundPool()
 	for _, sound in ipairs(fireSoundPool) do
@@ -267,6 +291,201 @@ local function computeWalkerAimDirection(aimYaw: number): Vector3
 	return Vector3.new(flat.X * cosE, sinE, flat.Z * cosE).Unit
 end
 
+local function findWalkerLegsFolder(model: Model, entityIdOverride: string?): Instance?
+	local entityId = entityIdOverride
+	if type(entityId) ~= "string" or entityId == "" then
+		local attr = model:GetAttribute("EntityId")
+		if type(attr) == "string" and attr ~= "" then
+			entityId = attr
+		end
+	end
+	if type(entityId) == "string" and entityId ~= "" then
+		local byEntityId = Workspace:FindFirstChild(entityId .. "_Legs")
+		if byEntityId ~= nil then
+			return byEntityId
+		end
+	end
+	return Workspace:FindFirstChild(model.Name .. "_Legs")
+end
+
+local function ensureLegVisualsFolder(): Folder
+	if legVisualsFolder ~= nil and legVisualsFolder.Parent ~= nil then
+		return legVisualsFolder
+	end
+	local existing = Workspace:FindFirstChild("CombatWalkerLocalLegVisuals")
+	if existing ~= nil and existing:IsA("Folder") then
+		legVisualsFolder = existing
+		return existing
+	end
+	local folder = Instance.new("Folder")
+	folder.Name = "CombatWalkerLocalLegVisuals"
+	folder.Parent = Workspace
+	legVisualsFolder = folder
+	return folder
+end
+
+local function clearLegVisualSmoothing()
+	for sourcePart, transparency in pairs(legSourceTransparency) do
+		pcall(function()
+			sourcePart.LocalTransparencyModifier = transparency
+		end)
+	end
+	table.clear(legSourceTransparency)
+	for _, state in pairs(legVisualStateByPart) do
+		if state.visual.Parent ~= nil then
+			state.visual:Destroy()
+		end
+	end
+	table.clear(legVisualStateByPart)
+	if legVisualsFolder ~= nil and legVisualsFolder.Parent ~= nil and #legVisualsFolder:GetChildren() == 0 then
+		legVisualsFolder:Destroy()
+	end
+	legVisualsFolder = nil
+	table.clear(legPoseSnapshots)
+end
+
+local function getCFrameAngleDelta(a: CFrame, b: CFrame): number
+	local lookDot = math.clamp(a.LookVector:Dot(b.LookVector), -1, 1)
+	local upDot = math.clamp(a.UpVector:Dot(b.UpVector), -1, 1)
+	local lookAngle = math.acos(lookDot)
+	local upAngle = math.acos(upDot)
+	return math.max(lookAngle, upAngle)
+end
+
+local function primeLegVisualState(part: BasePart)
+	local cf = part.CFrame
+	if legSourceTransparency[part] == nil then
+		legSourceTransparency[part] = part.LocalTransparencyModifier
+	end
+	part.LocalTransparencyModifier = 1
+	local visual = part:Clone()
+	for _, desc in ipairs(visual:GetDescendants()) do
+		if desc:IsA("Script") or desc:IsA("LocalScript") or desc:IsA("ModuleScript") then
+			desc:Destroy()
+		end
+	end
+	visual.Anchored = true
+	visual.CanCollide = false
+	visual.CanQuery = false
+	visual.CanTouch = false
+	visual.Massless = true
+	visual.CFrame = cf
+	visual.Parent = ensureLegVisualsFolder()
+	legVisualStateByPart[part] = {
+		source = part,
+		visual = visual,
+	}
+end
+
+local function captureLegSnapshot(now: number)
+	local poses: { [BasePart]: CFrame } = {}
+	local count = 0
+	for sourcePart, state in pairs(legVisualStateByPart) do
+		if sourcePart.Parent ~= nil and state.visual.Parent ~= nil then
+			poses[sourcePart] = sourcePart.CFrame
+			count += 1
+		end
+	end
+	if count == 0 then
+		return
+	end
+
+	local previousSnapshot = legPoseSnapshots[#legPoseSnapshots]
+	if previousSnapshot ~= nil then
+		local changed = false
+		for sourcePart, nextCF in pairs(poses) do
+			local previousCF = previousSnapshot.poses[sourcePart]
+			if previousCF == nil then
+				changed = true
+				break
+			end
+			local posDelta = (nextCF.Position - previousCF.Position).Magnitude
+			local angleDelta = getCFrameAngleDelta(nextCF, previousCF)
+			if posDelta > LEG_VISUAL_SERVER_POS_EPS or angleDelta > LEG_VISUAL_SERVER_ANGLE_EPS then
+				changed = true
+				break
+			end
+		end
+		if not changed then
+			return
+		end
+	end
+
+	table.insert(legPoseSnapshots, {
+		time = now,
+		poses = poses,
+	})
+	while #legPoseSnapshots > 4 do
+		table.remove(legPoseSnapshots, 1)
+	end
+end
+
+local function resolveLegSnapshotWindow(renderTime: number): (LegPoseSnapshot, LegPoseSnapshot, number)
+	local snapshotCount = #legPoseSnapshots
+	if snapshotCount == 1 then
+		local single = legPoseSnapshots[1]
+		return single, single, 1
+	end
+
+	local firstSnapshot = legPoseSnapshots[1]
+	local latestSnapshot = legPoseSnapshots[snapshotCount]
+	if renderTime <= firstSnapshot.time then
+		return firstSnapshot, firstSnapshot, 1
+	end
+	if renderTime >= latestSnapshot.time then
+		local previous = legPoseSnapshots[snapshotCount - 1]
+		return previous, latestSnapshot, 1
+	end
+
+	for index = 1, snapshotCount - 1 do
+		local older = legPoseSnapshots[index]
+		local newer = legPoseSnapshots[index + 1]
+		if renderTime >= older.time and renderTime <= newer.time then
+			local duration = math.max(1 / 240, newer.time - older.time)
+			local alpha = math.clamp((renderTime - older.time) / duration, 0, 1)
+			return older, newer, alpha
+		end
+	end
+
+	local fallback = latestSnapshot
+	return fallback, fallback, 1
+end
+
+local function smoothDriverLegVisuals(_dt: number)
+	for sourcePart, state in pairs(legVisualStateByPart) do
+		if sourcePart.Parent == nil or state.visual.Parent == nil then
+			legVisualStateByPart[sourcePart] = nil
+		end
+	end
+	if next(legVisualStateByPart) == nil then
+		return
+	end
+
+	local now = tick()
+	captureLegSnapshot(now)
+	if #legPoseSnapshots == 0 then
+		return
+	end
+
+	local renderTime = now - LEG_VISUAL_INTERP_DELAY
+	local olderSnapshot, newerSnapshot, alpha = resolveLegSnapshotWindow(renderTime)
+	for sourcePart, state in pairs(legVisualStateByPart) do
+		local olderCF = olderSnapshot.poses[sourcePart]
+		local newerCF = newerSnapshot.poses[sourcePart]
+		local visualCF: CFrame
+		if olderCF ~= nil and newerCF ~= nil then
+			visualCF = olderCF:Lerp(newerCF, alpha)
+		elseif newerCF ~= nil then
+			visualCF = newerCF
+		elseif olderCF ~= nil then
+			visualCF = olderCF
+		else
+			visualCF = sourcePart.CFrame
+		end
+		state.visual.CFrame = visualCF
+	end
+end
+
 local function updateWalkerCrosshairPosition(model: Model, aimDirection: Vector3, dt: number)
 	local camera = Workspace.CurrentCamera
 	if camera == nil then
@@ -289,7 +508,7 @@ local function updateWalkerCrosshairPosition(model: Model, aimDirection: Vector3
 		walkerAimRayParams.IgnoreWater = true
 	end
 	local filterList: { Instance } = { model }
-	local legsFolder = Workspace:FindFirstChild(model.Name .. "_Legs")
+	local legsFolder = findWalkerLegsFolder(model, nil)
 	if legsFolder ~= nil then
 		table.insert(filterList, legsFolder)
 	end
@@ -393,8 +612,8 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 		if desc:IsA("BasePart") and CollectionService:HasTag(desc, "WalkerHead") then
 			activeHeadPart = desc :: BasePart
 		end
-		if desc:IsA("Seat") and CollectionService:HasTag(desc, "DriverSeat") then
-			activeDriverSeat = desc :: Seat
+		if (desc:IsA("Seat") or desc:IsA("VehicleSeat")) and CollectionService:HasTag(desc, "DriverSeat") then
+			activeDriverSeat = desc :: BasePart
 		end
 	end
 
@@ -416,21 +635,27 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 		end
 	end
 
-	-- Capture character offset relative to PrimaryPart for smooth rider positioning.
-	-- Anchor HRP to prevent Roblox character replication (we position it ourselves).
+	-- Capture character offset relative to seat for stable rider positioning.
+	-- Keep seat weld active (no anchoring), but suppress humanoid self-movement.
+	seatOffsetNeedsRecalc = true
 	if model.PrimaryPart ~= nil then
 		local character = localPlayer.Character
 		if character ~= nil then
 			local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
 			if hrp ~= nil then
-				seatCharacterOffset = model.PrimaryPart.CFrame:Inverse() * hrp.CFrame
-				hrp.Anchored = true
+				if activeDriverSeat ~= nil and activeDriverSeat.Parent ~= nil then
+					seatCharacterOffset = (activeDriverSeat :: BasePart).CFrame:Inverse() * hrp.CFrame
+				else
+					seatCharacterOffset = model.PrimaryPart.CFrame:Inverse() * hrp.CFrame
+				end
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
 			end
 		end
 	end
 
 	-- Find leg parts (server reparents them to Workspace/<name>_Legs)
-	local legsFolder = Workspace:FindFirstChild(model.Name .. "_Legs")
+	local legsFolder = findWalkerLegsFolder(model, entityId)
 	if legsFolder == nil then
 		-- Fallback: try inside model (in case server hasn't reparented yet)
 		legsFolder = model
@@ -450,6 +675,20 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 			rightLower = rightLegFolder:FindFirstChild("LowerLeg") :: BasePart?,
 			rightFoot = rightLegFolder:FindFirstChild("Foot") :: BasePart?,
 		}
+		clearLegVisualSmoothing()
+		local legs = activeLegParts
+		if legs.leftStrut1 ~= nil then primeLegVisualState(legs.leftStrut1 :: BasePart) end
+		if legs.leftStrut2 ~= nil then primeLegVisualState(legs.leftStrut2 :: BasePart) end
+		if legs.leftUpper ~= nil then primeLegVisualState(legs.leftUpper :: BasePart) end
+		if legs.leftLower ~= nil then primeLegVisualState(legs.leftLower :: BasePart) end
+		if legs.leftFoot ~= nil then primeLegVisualState(legs.leftFoot :: BasePart) end
+		if legs.rightStrut1 ~= nil then primeLegVisualState(legs.rightStrut1 :: BasePart) end
+		if legs.rightStrut2 ~= nil then primeLegVisualState(legs.rightStrut2 :: BasePart) end
+		if legs.rightUpper ~= nil then primeLegVisualState(legs.rightUpper :: BasePart) end
+		if legs.rightLower ~= nil then primeLegVisualState(legs.rightLower :: BasePart) end
+		if legs.rightFoot ~= nil then primeLegVisualState(legs.rightFoot :: BasePart) end
+	else
+		clearLegVisualSmoothing()
 	end
 
 	-- Create IK state and raycast params
@@ -549,7 +788,12 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 	headTurning = false
 	lastHeadStopTick = 0
 	previousGaitActive = false
+	previousGaitSide = "left"
 	settleStepsRemaining = 0
+	local footLiftSeqAttr = model:GetAttribute("WalkerAudioFootLiftSeq")
+	local footPlantSeqAttr = model:GetAttribute("WalkerAudioFootPlantSeq")
+	previousFootLiftSeq = if type(footLiftSeqAttr) == "number" then math.max(0, math.floor(footLiftSeqAttr + 0.5)) else nil
+	previousFootPlantSeq = if type(footPlantSeqAttr) == "number" then math.max(0, math.floor(footPlantSeqAttr + 0.5)) else nil
 	if model.PrimaryPart ~= nil then
 		activeProfileController = SoundProfileLoader.createController(model, model.PrimaryPart, config.maxSpeed, true)
 	end
@@ -735,14 +979,27 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 			local zoomFovOffset = -WALKER_ZOOM_FOV_REDUCTION * walkerZoomBlend
 			VehicleCamera.setExternalFOVOffset(zoomFovOffset)
 			CombatHUD.setZoomVignette(walkerZoomBlend)
-			if not freelookActive then
-				local aimDirection = computeWalkerAimDirection(aimYaw)
-				frameAimDirection = aimDirection
-				updateWalkerCrosshairPosition(mdl, aimDirection, dt)
-				if updateTurretAimRemote ~= nil then
-					updateTurretAimRemote:FireServer(aimDirection)
-				end
-				local mousePressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+				if not freelookActive then
+					local aimDirection = computeWalkerAimDirection(aimYaw)
+					frameAimDirection = aimDirection
+					updateWalkerCrosshairPosition(mdl, aimDirection, dt)
+					if updateTurretAimRemote ~= nil then
+						local nowAim = tick()
+						local sinceLastAimSend = nowAim - lastWalkerAimSendTick
+						local interval = 1 / WALKER_AIM_SEND_RATE
+						local shouldSend = lastWalkerAimDirection == nil
+						if (not shouldSend) and lastWalkerAimDirection ~= nil then
+							local dot = math.clamp((lastWalkerAimDirection :: Vector3):Dot(aimDirection), -1, 1)
+							local angle = math.acos(dot)
+							shouldSend = angle >= WALKER_AIM_SEND_ANGLE_EPS
+						end
+						if sinceLastAimSend >= interval and (shouldSend or sinceLastAimSend >= WALKER_AIM_SEND_REFRESH) then
+							updateTurretAimRemote:FireServer(aimDirection)
+							lastWalkerAimSendTick = nowAim
+							lastWalkerAimDirection = aimDirection
+						end
+					end
+					local mousePressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 				local justPressed = mousePressed and not walkerFireButtonHeld
 				if justPressed then
 					local nowFire = tick()
@@ -763,104 +1020,61 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 				walkerFireButtonHeld = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 			end
 		end
-		if not activeVehicleHasWeapon then
-			walkerZoomBlend = 0
-			VehicleCamera.setExternalFOVOffset(0)
-			CombatHUD.setZoomVignette(0)
-		end
-
-		-- IK leg animation
-		if activeIKState ~= nil and activeLegParts ~= nil and activeRayParams ~= nil and mdl.PrimaryPart ~= nil then
-			-- Smooth body position: detect server updates vs our own writes
-			local rawBodyPos = mdl.PrimaryPart.CFrame.Position
-			if lastWrittenPos ~= nil and (rawBodyPos - (lastWrittenPos :: Vector3)).Magnitude > 0.05 then
-				-- Raw differs from what we wrote = server replication arrived
-				serverTargetPos = rawBodyPos
-			elseif serverTargetPos == nil then
-				serverTargetPos = rawBodyPos
+			if not activeVehicleHasWeapon then
+				walkerZoomBlend = 0
+				VehicleCamera.setExternalFOVOffset(0)
+				CombatHUD.setZoomVignette(0)
 			end
-			-- Continuously smooth toward server target between updates
-			if smoothedBodyPos == nil then
-				smoothedBodyPos = serverTargetPos :: Vector3
-			else
-				local alpha = 1 - math.exp(-15 * dt)
-				smoothedBodyPos = (smoothedBodyPos :: Vector3):Lerp(serverTargetPos :: Vector3, alpha)
+
+			-- Pilot-side render smoothing over authoritative server pose (no local IK synthesis).
+			local torsoCF: CFrame? = nil
+			if mdl.PrimaryPart ~= nil then
+				local rawBodyCF = mdl.PrimaryPart.CFrame
+				local rawBodyPos = rawBodyCF.Position
+				if lastWrittenPos ~= nil and (rawBodyPos - (lastWrittenPos :: Vector3)).Magnitude > 0.02 then
+					serverTargetPos = rawBodyPos
+				elseif serverTargetPos == nil then
+					serverTargetPos = rawBodyPos
+				end
+				if smoothedBodyPos == nil then
+					smoothedBodyPos = serverTargetPos :: Vector3
+				else
+					local bodyAlpha = 1 - math.exp(-18 * dt)
+					smoothedBodyPos = (smoothedBodyPos :: Vector3):Lerp(serverTargetPos :: Vector3, bodyAlpha)
+				end
+
+				local bodyHeadingAttr = mdl:GetAttribute("VehicleHeading")
+				local bodyHeading = if type(bodyHeadingAttr) == "number" then bodyHeadingAttr else 0
+				local targetAimYawAttr = mdl:GetAttribute("WalkerAimYaw")
+				local targetAimYaw = if type(targetAimYawAttr) == "number" then targetAimYawAttr else bodyHeading
+				if smoothedAimYaw == nil then
+					smoothedAimYaw = targetAimYaw
+				end
+				local yawDelta = targetAimYaw - (smoothedAimYaw :: number)
+				yawDelta = ((yawDelta + math.pi) % (math.pi * 2)) - math.pi
+				local headLagSpeed = 3
+				smoothedAimYaw = (smoothedAimYaw :: number) + yawDelta * (1 - math.exp(-headLagSpeed * dt))
+
+					local headingForTilt = bodyHeading
+					local horizontalForward = Vector3.new(rawBodyCF.LookVector.X, 0, rawBodyCF.LookVector.Z)
+					if horizontalForward.Magnitude > 1e-4 then
+						local unitForward = horizontalForward.Unit
+						headingForTilt = math.atan2(-unitForward.X, -unitForward.Z)
+					end
+					local headingFrame = CFrame.new(rawBodyPos) * CFrame.Angles(0, headingForTilt, 0)
+					local tiltFrame = headingFrame:Inverse() * rawBodyCF
+					local _, tiltPitchRaw, tiltRollRaw = tiltFrame:ToEulerAnglesYXZ()
+					local tiltPitch = math.clamp(tiltPitchRaw, math.rad(-35), math.rad(35))
+					local tiltRoll = math.clamp(tiltRollRaw, math.rad(-35), math.rad(35))
+					torsoCF = CFrame.new(smoothedBodyPos :: Vector3)
+						* CFrame.Angles(0, smoothedAimYaw :: number, 0)
+						* CFrame.Angles(tiltPitch, 0, tiltRoll)
+				mdl.PrimaryPart.CFrame = torsoCF
+				lastWrittenPos = smoothedBodyPos :: Vector3
 			end
-			local bodyPos = smoothedBodyPos :: Vector3
-			local moveHeading = mdl:GetAttribute("VehicleHeading")
-			if type(moveHeading) ~= "number" then
-				moveHeading = 0
-			end
-			local bodyCFrame = CFrame.new(bodyPos) * CFrame.Angles(0, moveHeading :: number, 0)
 
-			-- Estimate velocity from position delta (gives correct direction for reverse/strafe)
-			local prevPos = ikPrevPosition or bodyPos
-			local vel = if dt > 0.001 then (bodyPos - prevPos) / dt else Vector3.zero
-			vel = Vector3.new(vel.X, 0, vel.Z) -- horizontal only
-			-- Clamp to prevent spikes from server CFrame jumps
-			local sprintMaxSpd = cfg.sprintMaxSpeed or 62.5
-			local maxVel = math.max(cfg.maxSpeed or 25, sprintMaxSpd) * 1.5
-			if vel.Magnitude > maxVel then
-				vel = vel.Unit * maxVel
-			end
-			ikPrevPosition = bodyPos
-
-			local gaitPhaseAttr = mdl:GetAttribute("WalkerGaitPhase") or 0
-			local gaitSideAttr = mdl:GetAttribute("WalkerGaitSide") or "left"
-			local gaitActiveAttr = mdl:GetAttribute("WalkerGaitActive") or false
-			local sprintFracAttr = mdl:GetAttribute("WalkerSprintFrac") or 0
-
-			local modBodyCF, lStrut1CF, lStrut2CF, lUpperCF, lLowerCF, lFootCF, rStrut1CF, rStrut2CF, rUpperCF, rLowerCF, rFootCF, leftJustPlanted, rightJustPlanted, leftJustLifted, rightJustLifted =
-				WalkerIK.update(activeIKState, bodyCFrame, vel, cfg, dt, activeRayParams, gaitPhaseAttr, gaitSideAttr, gaitActiveAttr, sprintFracAttr)
-
-			-- Position leg parts (reparented to Workspace, free from PrimaryPart cascade)
-			local legs = activeLegParts :: {
-				leftStrut1: BasePart?,
-				leftStrut2: BasePart?,
-				leftUpper: BasePart?,
-				leftLower: BasePart?,
-				leftFoot: BasePart?,
-				rightStrut1: BasePart?,
-				rightStrut2: BasePart?,
-				rightUpper: BasePart?,
-				rightLower: BasePart?,
-				rightFoot: BasePart?,
-			}
-			if legs.leftStrut1 ~= nil then legs.leftStrut1.CFrame = lStrut1CF end
-			if legs.leftStrut2 ~= nil then legs.leftStrut2.CFrame = lStrut2CF end
-			if legs.leftUpper ~= nil then legs.leftUpper.CFrame = lUpperCF end
-			if legs.leftLower ~= nil then legs.leftLower.CFrame = lLowerCF end
-			if legs.leftFoot ~= nil then legs.leftFoot.CFrame = lFootCF end
-			if legs.rightStrut1 ~= nil then legs.rightStrut1.CFrame = rStrut1CF end
-			if legs.rightStrut2 ~= nil then legs.rightStrut2.CFrame = rStrut2CF end
-			if legs.rightUpper ~= nil then legs.rightUpper.CFrame = rUpperCF end
-			if legs.rightLower ~= nil then legs.rightLower.CFrame = rLowerCF end
-			if legs.rightFoot ~= nil then legs.rightFoot.CFrame = rFootCF end
-
-			-- Cockpit: torso gets tilt from sway/lean/terrain, head stays level
-			local modPos = modBodyCF.Position
-
-			-- Smooth aim yaw for heavy cockpit feel
-			if smoothedAimYaw == nil then
-				smoothedAimYaw = aimYaw
-			end
-			local aimDelta = aimYaw - (smoothedAimYaw :: number)
-			-- Wrap to shortest angle
-			aimDelta = ((aimDelta + math.pi) % (math.pi * 2)) - math.pi
-			local headLagSpeed = 3
-			smoothedAimYaw = (smoothedAimYaw :: number) + aimDelta * (1 - math.exp(-headLagSpeed * dt))
-			local visualAimYaw = smoothedAimYaw :: number
-
-			-- Extract pitch/roll from secondary motion offset
-			local tiltCF = bodyCFrame:Inverse() * modBodyCF
-			local _, tiltPitch, tiltRoll = tiltCF:ToEulerAnglesYXZ()
-			-- Torso: aim + tilt
-			local torsoCF = CFrame.new(modPos) * CFrame.Angles(0, visualAimYaw, 0) * CFrame.Angles(tiltPitch, 0, tiltRoll)
-			mdl.PrimaryPart.CFrame = torsoCF
-			lastWrittenPos = modPos
-			-- Head: aim only, stays vertical (no tilt)
-			if activeHeadPart ~= nil and activeHeadBaseOffset ~= nil then
-				local headBaseCF = CFrame.new(modPos) * CFrame.Angles(0, visualAimYaw, 0)
+			if activeHeadPart ~= nil and activeHeadBaseOffset ~= nil and torsoCF ~= nil then
+				local headBaseCF = CFrame.new((torsoCF :: CFrame).Position) * CFrame.Angles(0, smoothedAimYaw :: number, 0)
 				local nextHeadCFrame = headBaseCF * (activeHeadBaseOffset :: CFrame)
 				activeHeadPart.CFrame = nextHeadCFrame
 				for _, follower in ipairs(activeHeadFollowerOffsets) do
@@ -869,53 +1083,94 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 					end
 				end
 				applyLocalWalkerMountAim(nextHeadCFrame, frameAimDirection)
+			elseif activeHeadPart ~= nil then
+				applyLocalWalkerMountAim(activeHeadPart.CFrame, frameAimDirection)
 			end
+			smoothDriverLegVisuals(dt)
 
-			-- Smooth the seated character: position from the smoothed cockpit CFrame
-			-- so the player moves at render rate, not the 20Hz server replication.
-			if seatCharacterOffset ~= nil then
-				local character = localPlayer.Character
-				if character ~= nil then
-					local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-					if hrp ~= nil then
-						hrp.CFrame = torsoCF * (seatCharacterOffset :: CFrame)
+				if seatOffsetNeedsRecalc and activeDriverSeat ~= nil then
+					local character = localPlayer.Character
+					if character ~= nil then
+						local humanoid = character:FindFirstChildOfClass("Humanoid")
+						local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+						if humanoid ~= nil and hrp ~= nil and humanoid.SeatPart == activeDriverSeat then
+							seatCharacterOffset = (activeDriverSeat :: BasePart).CFrame:Inverse() * hrp.CFrame
+							seatOffsetNeedsRecalc = false
+						end
 					end
 				end
-			end
 
-			-- Sound: foot lift → plant, settle tracking
-			if activeProfileController ~= nil then
-				-- Detect gait stop → arm settle counter for next 2 foot plants
-				local currentGaitActive = gaitActiveAttr == true
-				if previousGaitActive and not currentGaitActive then
-					settleStepsRemaining = 2
+				if seatCharacterOffset ~= nil then
+					local character = localPlayer.Character
+					if character ~= nil then
+						local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+						local anchorCF: CFrame? = nil
+						if activeDriverSeat ~= nil and activeDriverSeat.Parent ~= nil then
+							anchorCF = (activeDriverSeat :: BasePart).CFrame
+						elseif torsoCF ~= nil then
+							anchorCF = torsoCF :: CFrame
+						end
+						if hrp ~= nil and anchorCF ~= nil then
+							local targetRootCF = (anchorCF :: CFrame) * (seatCharacterOffset :: CFrame)
+							if (hrp.Position - targetRootCF.Position).Magnitude > 0.1 then
+								hrp.CFrame = targetRootCF
+							end
+						end
+					end
 				end
-				previousGaitActive = currentGaitActive
 
-				if leftJustLifted then
-					activeProfileController:onEvent("foot_lift")
-				end
-				if rightJustLifted then
-					activeProfileController:onEvent("foot_lift")
-				end
-				if leftJustPlanted then
-					if settleStepsRemaining > 0 then
-						settleStepsRemaining -= 1
-						activeProfileController:onEvent("settle_plant")
+				if activeProfileController ~= nil then
+					local gaitActiveAttr = mdl:GetAttribute("WalkerGaitActive") == true
+					local footLiftSeqAttrNow = mdl:GetAttribute("WalkerAudioFootLiftSeq")
+					local footPlantSeqAttrNow = mdl:GetAttribute("WalkerAudioFootPlantSeq")
+					if type(footLiftSeqAttrNow) == "number" and type(footPlantSeqAttrNow) == "number" then
+						local liftSeq = math.max(0, math.floor(footLiftSeqAttrNow + 0.5))
+						local plantSeq = math.max(0, math.floor(footPlantSeqAttrNow + 0.5))
+						if previousFootLiftSeq == nil then
+							previousFootLiftSeq = liftSeq
+						end
+						if previousFootPlantSeq == nil then
+							previousFootPlantSeq = plantSeq
+						end
+						local liftDelta = math.max(0, liftSeq - (previousFootLiftSeq :: number))
+						local plantDelta = math.max(0, plantSeq - (previousFootPlantSeq :: number))
+						if liftDelta > 0 then
+							for _ = 1, math.min(liftDelta, 4) do
+								activeProfileController:onEvent("foot_lift")
+							end
+						end
+						if plantDelta > 0 then
+							local plantEvent = if gaitActiveAttr then "foot_plant" else "settle_plant"
+							for _ = 1, math.min(plantDelta, 4) do
+								activeProfileController:onEvent(plantEvent)
+							end
+						end
+						previousFootLiftSeq = liftSeq
+						previousFootPlantSeq = plantSeq
 					else
-						activeProfileController:onEvent("foot_plant")
+						-- Fallback for legacy walkers without audio sequence attrs.
+						local gaitSideAttr = mdl:GetAttribute("WalkerGaitSide")
+						local currentGaitSide = if type(gaitSideAttr) == "string" then gaitSideAttr else "left"
+						if previousGaitActive and not gaitActiveAttr then
+							settleStepsRemaining = 2
+						end
+						if gaitActiveAttr and previousGaitSide ~= currentGaitSide then
+							activeProfileController:onEvent("foot_lift")
+							if settleStepsRemaining > 0 then
+								settleStepsRemaining -= 1
+								activeProfileController:onEvent("settle_plant")
+							else
+								activeProfileController:onEvent("foot_plant")
+							end
+						end
+						previousGaitActive = gaitActiveAttr
+						previousGaitSide = currentGaitSide
 					end
-				end
-				if rightJustPlanted then
-					if settleStepsRemaining > 0 then
-						settleStepsRemaining -= 1
-						activeProfileController:onEvent("settle_plant")
-					else
-						activeProfileController:onEvent("foot_plant")
-					end
-				end
 
-				-- Head turn tracking: detect rotation delta
+					local replicatedAimYaw = mdl:GetAttribute("WalkerAimYaw")
+				local visualAimYaw = if type(smoothedAimYaw) == "number"
+					then smoothedAimYaw :: number
+					else (if type(replicatedAimYaw) == "number" then replicatedAimYaw else aimYaw)
 				local aimYawRate = 0
 				if previousAimYaw ~= nil and dt > 0.001 then
 					local delta = visualAimYaw - (previousAimYaw :: number)
@@ -923,13 +1178,11 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 					aimYawRate = math.abs(delta / dt)
 				end
 				previousAimYaw = visualAimYaw
-
 				if aimYawRate > HEAD_TURN_START_THRESHOLD and not headTurning then
 					headTurning = true
 					activeProfileController:onEvent("head_turning")
 				elseif aimYawRate <= HEAD_TURN_STOP_THRESHOLD and headTurning then
 					headTurning = false
-					-- Always stop the loop; only play the stop sound with cooldown
 					activeProfileController:onEvent("head_loop_stop")
 					local now = tick()
 					if (now - lastHeadStopTick) >= HEAD_STOP_COOLDOWN then
@@ -938,7 +1191,6 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 					end
 				end
 
-				-- Build frame state and update profile
 				local speedAttr = mdl:GetAttribute("VehicleSpeed")
 				local currentSpeed: number = if type(speedAttr) == "number" then speedAttr else 0
 				local hullHP = mdl:GetAttribute("HullHP")
@@ -969,7 +1221,6 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 				}
 				activeProfileController:update(dt, frameState)
 			end
-		end
 
 		-- Send input
 		inputAccumulator += dt
@@ -1051,16 +1302,10 @@ function WalkerClient.deactivate(): ()
 	headTurning = false
 	lastHeadStopTick = 0
 	previousGaitActive = false
+	previousGaitSide = "left"
 	settleStepsRemaining = 0
-
-	-- Unanchor HRP so character physics/replication resumes normally
-	local character = localPlayer.Character
-	if character ~= nil then
-		local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-		if hrp ~= nil then
-			hrp.Anchored = false
-		end
-	end
+	previousFootLiftSeq = nil
+	previousFootPlantSeq = nil
 
 	VehicleCamera.deactivate()
 	restoreMouse()
@@ -1087,8 +1332,10 @@ function WalkerClient.deactivate(): ()
 	table.clear(activeWeaponMountStates)
 	activeDriverSeat = nil
 	seatCharacterOffset = nil
+	seatOffsetNeedsRecalc = false
 	activeIKState = nil
 	activeLegParts = nil
+	clearLegVisualSmoothing()
 	activeRayParams = nil
 	ikPrevPosition = nil
 	smoothedBodyPos = nil
@@ -1110,6 +1357,8 @@ function WalkerClient.deactivate(): ()
 	walkerBurstInterval = 0
 	walkerZoomBlend = 0
 	walkerCrosshairSmoothedPos = nil
+	lastWalkerAimSendTick = 0
+	lastWalkerAimDirection = nil
 	lastSentThrottle = 0
 	lastSentStrafe = 0
 	lastSentSteerX = 0

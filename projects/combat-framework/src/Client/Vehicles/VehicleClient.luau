@@ -272,6 +272,52 @@ local function resolveVehicleConfig(instance: Model): VehicleConfig?
 	return resolved :: any
 end
 
+local function resolveDriverWeaponId(vehicleModel: Model, config: VehicleConfig): string?
+	local configId = vehicleModel:GetAttribute("ConfigId")
+	if type(configId) ~= "string" or configId == "" then
+		configId = config.entityConfigId
+	end
+	if type(configId) ~= "string" or configId == "" then
+		return nil
+	end
+
+	local entityConfig = CombatConfig.Entities[configId]
+	if entityConfig == nil then
+		return nil
+	end
+	local weaponId = entityConfig.weaponId
+	if type(weaponId) == "string" and weaponId ~= "" then
+		return weaponId
+	end
+	return nil
+end
+
+local function hasDriverWeaponMount(vehicleModel: Model): boolean
+	local mountCount = vehicleModel:GetAttribute("WeaponMountCount")
+	if type(mountCount) == "number" then
+		return mountCount > 0
+	end
+
+	for _, descendant in ipairs(vehicleModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and CollectionService:HasTag(descendant, "WeaponMount") then
+			local insideStationFolder = false
+			local current: Instance? = descendant.Parent
+			while current ~= nil and current ~= vehicleModel do
+				if current:IsA("Folder") then
+					insideStationFolder = true
+					break
+				end
+				current = current.Parent
+			end
+			if not insideStationFolder then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 local function findVehicleModelFromSeat(seat: BasePart): Model?
 	local current: Instance? = seat
 	while current ~= nil do
@@ -858,19 +904,9 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 	CombatHUD.showVehicleCursor(true)
 	updateSpeedHud()
 
-	-- Check if vehicle has a weapon
-	local weaponClassAttr = vehicleModel:GetAttribute("EffectiveWeaponClass")
-	if type(weaponClassAttr) ~= "string" or weaponClassAttr == "" then
-		-- Fallback: check entity config
-		local configIdAttr = vehicleModel:GetAttribute("ConfigId")
-		if type(configIdAttr) == "string" then
-			local entityConfig = CombatConfig.Entities[configIdAttr]
-			if entityConfig ~= nil and entityConfig.weaponId ~= nil then
-				weaponClassAttr = entityConfig.weaponId
-			end
-		end
-	end
-	activeVehicleHasWeapon = type(weaponClassAttr) == "string" and weaponClassAttr ~= ""
+	local driverWeaponId = resolveDriverWeaponId(vehicleModel, config)
+	local hasDriverMount = hasDriverWeaponMount(vehicleModel)
+	activeVehicleHasWeapon = driverWeaponId ~= nil and hasDriverMount
 	if activeVehicleHasWeapon then
 		CombatHUD.showCrosshair(true)
 		local ammoMax = vehicleModel:GetAttribute("WeaponAmmoMax")
@@ -907,7 +943,11 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 		-- showCrosshair(false) also hides cursorDot; restore it for vehicle steering
 		CombatHUD.showVehicleCursor(true)
 	end
-	buildVehicleFireSoundPool()
+	if activeVehicleHasWeapon then
+		buildVehicleFireSoundPool()
+	else
+		destroyVehicleFireSoundPool()
+	end
 end
 
 local function onSeatChanged(humanoid: Humanoid)

@@ -647,7 +647,8 @@ local function createVisualPartsFromTemplate(
 	projectileId: string,
 	boltColor: Color3?,
 	damageType: string?,
-	fireSound: string?
+	fireSound: string?,
+	skipWhizForShooter: boolean?
 ): (BasePart, BasePart?)
 	local visualProfile = getVisualProfileForDamageType(damageType)
 	local templateFolder = getProjectileTemplateFolder()
@@ -674,7 +675,9 @@ local function createVisualPartsFromTemplate(
 	applyProjectilePartVisualProfile(boltPart, visualProfile, true)
 	boltPart.Parent = ensureBoltFolder()
 	applyBoltVisualColor(boltPart, boltColor)
-	playWhizSound(boltPart, fireSound)
+	if not skipWhizForShooter then
+		playWhizSound(boltPart, fireSound)
+	end
 
 	local bulletPart: BasePart? = nil
 	local bulletTemplate = templateFolder:FindFirstChild("Bullet")
@@ -869,7 +872,7 @@ local function onProjectileFired(payload: ProjectileFiredPayload)
 	end
 	local boltColor = if typeof(payload.boltColor) == "Color3" then (payload.boltColor :: Color3) else nil
 
-	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor, damageType, fireSound)
+	local boltPart, bulletPart = createVisualPartsFromTemplate(payload.projectileId, boltColor, damageType, fireSound, isLocalShot)
 	attachSmokeTrail(boltPart, damageType)
 
 	activeBolts[payload.projectileId] = {

@@ -410,6 +410,9 @@ CombatConfig.Vehicles = {
 		boostDuration = 0,
 		boostCooldown = 0,
 		canCrossWater = false,
+		-- Gunner-seat accuracy tuning (spread multipliers; lower = tighter grouping)
+		gunnerUnlockedSpreadMultiplier = 0.55,
+		gunnerAutoAimSpreadMultiplier = 0.7,
 	},
 	walker_biped = {
 		vehicleClass = "walker_biped",
@@ -443,10 +446,15 @@ CombatConfig.Vehicles = {
 		sprintSwayAmplitude = 10,
 		-- Lean: more aggressive forward pitch
 		sprintLeanAngle = 12,
-		-- Turn: restricted at speed (momentum)
-		sprintTurnSpeed = 15,
-		-- Feet slightly more centered (narrower stance at speed)
-		sprintFootInwardBias = 1.5,
+			-- Turn: restricted at speed (momentum)
+			sprintTurnSpeed = 15,
+			-- Weapon handling: very inaccurate while sprinting (server-authoritative).
+			weaponSprintSpreadStartFrac = 0.55,
+			weaponSprintSpreadMinDeg = 0.8,
+			weaponSprintSpreadMaxDeg = 3.5,
+			weaponSprintSpreadExponent = 1.6,
+			-- Feet slightly more centered (narrower stance at speed)
+			sprintFootInwardBias = 1.5,
 		-- Head arc (degrees relative to body forward)
 		headYawMin = -55,
 		headYawMax = 55,
@@ -550,6 +558,9 @@ CombatConfig.DefaultShieldRegenDelay = 3
 CombatConfig.LockOnScanRadius = 20
 CombatConfig.LockValidationInterval = 0.2
 CombatConfig.LockBreakRange = 1.0
+CombatConfig.Targeting = {
+	lockFacingHalfAngleDeg = 70,
+}
 CombatConfig.VehicleInputRate = 20
 CombatConfig.VehicleStopThreshold = 0.5
 CombatConfig.VehicleCollisionRayCount = 3

@@ -64,7 +64,7 @@ type DrivenPartState = {
 
 type DrivenRigState = {
 	mount: BasePart,
-	mountNeutralAimFrame: CFrame,
+	linkedMounts: { BasePart },
 	drivenParts: { DrivenPartState },
 }
 
@@ -211,10 +211,7 @@ local function getMuzzleLocalOffsets(weaponMount: BasePart): { Vector3 }
 	return offsets
 end
 
-local function collectFireNodes(entityModel: Model): { FireNode }
-	local nodes: { FireNode } = {}
-
-	-- Pre-collect gunner station folders (folders containing TurretSeat/ArtillerySeat)
+local function collectGunnerStationFolders(entityModel: Model): { [Instance]: boolean }
 	local stationFolders: { [Instance]: boolean } = {}
 	for _, child in ipairs(entityModel:GetChildren()) do
 		if child:IsA("Folder") then
@@ -226,6 +223,13 @@ local function collectFireNodes(entityModel: Model): { FireNode }
 			end
 		end
 	end
+	return stationFolders
+end
+
+local function collectFireNodes(entityModel: Model): { FireNode }
+	local nodes: { FireNode } = {}
+
+	local stationFolders = collectGunnerStationFolders(entityModel)
 
 	local mounts = findTaggedDescendants(entityModel, "WeaponMount", "BasePart")
 	for _, mountInstance in ipairs(mounts) do
@@ -617,20 +621,24 @@ end
 local function collectDrivenRigState(scope: Instance): DrivenRigState?
 	local mountCandidates: { Instance } = {}
 	local isModelScope = scope:IsA("Model")
+	local stationFolders: { [Instance]: boolean } = {}
+	if isModelScope then
+		stationFolders = collectGunnerStationFolders(scope :: Model)
+	end
 	for _, descendant in ipairs(scope:GetDescendants()) do
 		if CollectionService:HasTag(descendant, "WeaponMount") and descendant:IsA("BasePart") then
 			-- When scope is the entity model (driver), skip mounts inside station folders
 			if isModelScope then
-				local insideFolder = false
+				local insideStation = false
 				local current: Instance? = descendant.Parent
 				while current ~= nil and current ~= scope do
-					if current:IsA("Folder") then
-						insideFolder = true
+					if stationFolders[current] then
+						insideStation = true
 						break
 					end
 					current = current.Parent
 				end
-				if insideFolder then
+				if insideStation then
 					continue
 				end
 			end
@@ -646,10 +654,26 @@ local function collectDrivenRigState(scope: Instance): DrivenRigState?
 	end
 
 	local mount = mountInstance :: BasePart
+	local linkedMounts: { BasePart } = {}
+	for index = 2, #mountCandidates do
+		local linked = mountCandidates[index]
+		if linked:IsA("BasePart") then
+			table.insert(linkedMounts, linked)
+		end
+	end
 	local drivenParts: { DrivenPartState } = {}
 	local seen: { [BasePart]: boolean } = { [mount] = true }
+	for _, linkedMount in ipairs(linkedMounts) do
+		seen[linkedMount] = true
+	end
 
 	local rigFolder = scope:FindFirstChild("TurretRig")
+	if rigFolder == nil and not scope:IsA("Model") then
+		local scopeModel = scope:FindFirstAncestorOfClass("Model")
+		if scopeModel ~= nil then
+			rigFolder = scopeModel:FindFirstChild("TurretRig")
+		end
+	end
 	if rigFolder ~= nil then
 		local drivenPartsFolder = rigFolder:FindFirstChild("DrivenParts")
 		if drivenPartsFolder ~= nil then
@@ -670,7 +694,7 @@ local function collectDrivenRigState(scope: Instance): DrivenRigState?
 
 	return {
 		mount = mount,
-		mountNeutralAimFrame = WeaponRig.getNeutralAimFrame(mount),
+		linkedMounts = linkedMounts,
 		drivenParts = drivenParts,
 	}
 end
@@ -683,6 +707,12 @@ local function getOrRefreshDrivenRigState(stationKey: string, scope: Instance): 
 		if state.mount.Parent == nil then
 			needsRebuild = true
 		else
+			for _, linkedMount in ipairs(state.linkedMounts) do
+				if linkedMount.Parent == nil then
+					needsRebuild = true
+					break
+				end
+			end
 			for _, driven in ipairs(state.drivenParts) do
 				if driven.part.Parent == nil then
 					needsRebuild = true
@@ -736,6 +766,19 @@ local function applyAimToRig(stationKey: string, scope: Instance, desiredDirecti
 	end
 
 	mount.CFrame = WeaponRig.getAimFrame(mount, clampedDirection)
+	for index = #drivenState.linkedMounts, 1, -1 do
+		local linkedMount = drivenState.linkedMounts[index]
+		if linkedMount.Parent == nil then
+			table.remove(drivenState.linkedMounts, index)
+		else
+			local linkedNeutral = getRotatingNeutralFrame(linkedMount)
+			local linkedDirection =
+				WeaponRig.clampDirectionToMountLimits(linkedMount, linkedNeutral, clampedDirection)
+			if linkedDirection.Magnitude > 1e-4 then
+				linkedMount.CFrame = WeaponRig.getAimFrame(linkedMount, linkedDirection)
+			end
+		end
+	end
 
 	for index = #drivenState.drivenParts, 1, -1 do
 		local driven = drivenState.drivenParts[index]
@@ -795,6 +838,73 @@ local function applyDirectionalSpread(direction: Vector3, spreadDegrees: number)
 	local pitch = (math.random() * 2 - 1) * spreadRadians
 	local lookFrame = CFrame.lookAt(Vector3.zero, direction.Unit)
 	return (lookFrame * CFrame.Angles(pitch, yaw, 0)).LookVector.Unit
+end
+
+local function getWalkerSprintSpreadDegrees(entityModel: Model): number
+	local sprintFracRaw = entityModel:GetAttribute("WalkerSprintFrac")
+	if type(sprintFracRaw) ~= "number" then
+		return 0
+	end
+	local sprintFrac = math.clamp(sprintFracRaw, 0, 1)
+	if sprintFrac <= 0 then
+		return 0
+	end
+
+	local vehicleCategoryRaw = entityModel:GetAttribute("VehicleCategory")
+	if type(vehicleCategoryRaw) ~= "string" or vehicleCategoryRaw == "" then
+		return 0
+	end
+	local vehicleConfig = (CombatConfig.Vehicles :: any)[vehicleCategoryRaw]
+	if type(vehicleConfig) ~= "table" or vehicleConfig.vehicleClass ~= "walker_biped" then
+		return 0
+	end
+
+	local startFrac = if type(vehicleConfig.weaponSprintSpreadStartFrac) == "number"
+		then math.clamp(vehicleConfig.weaponSprintSpreadStartFrac, 0, 0.99)
+		else 0.15
+	local minSpreadDeg = if type(vehicleConfig.weaponSprintSpreadMinDeg) == "number"
+		then math.max(0, vehicleConfig.weaponSprintSpreadMinDeg)
+		else 8
+	local maxSpreadDeg = if type(vehicleConfig.weaponSprintSpreadMaxDeg) == "number"
+		then math.max(minSpreadDeg, vehicleConfig.weaponSprintSpreadMaxDeg)
+		else 26
+	local spreadExponent = if type(vehicleConfig.weaponSprintSpreadExponent) == "number"
+		then math.max(0.2, vehicleConfig.weaponSprintSpreadExponent)
+		else 1.25
+
+	if sprintFrac <= startFrac then
+		return 0
+	end
+	local t = math.clamp((sprintFrac - startFrac) / math.max(1e-4, 1 - startFrac), 0, 1)
+	return minSpreadDeg + (maxSpreadDeg - minSpreadDeg) * (t ^ spreadExponent)
+end
+
+local function getHeavyGunnerSpreadMultipliers(entityModel: Model, stationScope: Instance?): (number, number)
+	if stationScope == nil or stationScope == entityModel then
+		return 1, 1
+	end
+
+	local vehicleCategoryRaw = entityModel:GetAttribute("VehicleCategory")
+	if type(vehicleCategoryRaw) ~= "string" or vehicleCategoryRaw == "" then
+		vehicleCategoryRaw = entityModel:GetAttribute("VehicleConfigId")
+	end
+	if type(vehicleCategoryRaw) ~= "string" or vehicleCategoryRaw == "" then
+		return 1, 1
+	end
+
+	local vehicleConfig = (CombatConfig.Vehicles :: any)[vehicleCategoryRaw]
+	if type(vehicleConfig) ~= "table" or vehicleConfig.vehicleClass ~= "heavy" then
+		return 1, 1
+	end
+
+	local unlockedMultiplier = if type(vehicleConfig.gunnerUnlockedSpreadMultiplier) == "number"
+		then math.clamp(vehicleConfig.gunnerUnlockedSpreadMultiplier, 0, 4)
+		else 0.55
+	local autoAimMultiplier = if type(vehicleConfig.gunnerAutoAimSpreadMultiplier) == "number"
+		then math.clamp(vehicleConfig.gunnerAutoAimSpreadMultiplier, 0, 4)
+		else unlockedMultiplier
+
+	return unlockedMultiplier, autoAimMultiplier
 end
 
 local function resolveWeaponConfig(entityModel: Model, baseWeaponConfig: WeaponConfig): WeaponConfig
@@ -1127,14 +1237,23 @@ local function fireSingleProjectile(
 	local originFrame = WeaponRig.getAimFrame(fireNode.mount, clampedDirection)
 	local fireOrigin = originFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
 	local resolvedDirection = clampedDirection
+	local unlockedSpread = if type(weaponConfig.unlockedSpread) == "number" then weaponConfig.unlockedSpread else nil
+	local autoAimSpread = if type(weaponConfig.autoAimSpread) == "number" then weaponConfig.autoAimSpread else nil
+	local gunnerUnlockedMult, gunnerAutoMult = getHeavyGunnerSpreadMultipliers(entityModel, stationScope)
+	if unlockedSpread ~= nil then
+		unlockedSpread = math.max(0, unlockedSpread * gunnerUnlockedMult)
+	end
+	if autoAimSpread ~= nil then
+		autoAimSpread = math.max(0, autoAimSpread * gunnerAutoMult)
+	end
 
 	if applyAimSpread then
-		if lockState ~= nil and type(weaponConfig.autoAimSpread) == "number" then
+		if lockState ~= nil and autoAimSpread ~= nil then
 			local autoAimDirection = TargetingServer.computeLeadDirection(
 				fireOrigin,
 				lockState.targetEntityId,
 				weaponConfig.projectileSpeed,
-				weaponConfig.autoAimSpread
+				autoAimSpread
 			)
 			if autoAimDirection ~= nil then
 				local autoClampedDirection =
@@ -1147,12 +1266,12 @@ local function fireSingleProjectile(
 						"[P4_AUTO_AIM] entity=%s target=%s spread=%.2f",
 						entityId,
 						lockState.targetEntityId,
-						weaponConfig.autoAimSpread
+						autoAimSpread
 					))
 				end
 			end
-		elseif lockState == nil and type(weaponConfig.unlockedSpread) == "number" and weaponConfig.unlockedSpread > 0 then
-			local spreadDirection = applyDirectionalSpread(resolvedDirection, weaponConfig.unlockedSpread)
+		elseif lockState == nil and unlockedSpread ~= nil and unlockedSpread > 0 then
+			local spreadDirection = applyDirectionalSpread(resolvedDirection, unlockedSpread)
 			local spreadClampedDirection =
 				WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, spreadDirection)
 			if spreadClampedDirection.Magnitude >= 1e-4 then
@@ -1160,6 +1279,18 @@ local function fireSingleProjectile(
 				local spreadOriginFrame = WeaponRig.getAimFrame(fireNode.mount, resolvedDirection)
 				fireOrigin = spreadOriginFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
 			end
+		end
+	end
+
+	local sprintSpread = getWalkerSprintSpreadDegrees(entityModel)
+	if sprintSpread > 0 then
+		local sprintDirection = applyDirectionalSpread(resolvedDirection, sprintSpread)
+		local sprintClampedDirection =
+			WeaponRig.clampDirectionToMountLimits(fireNode.mount, neutralAimFrame, sprintDirection)
+		if sprintClampedDirection.Magnitude >= 1e-4 then
+			resolvedDirection = sprintClampedDirection
+			local sprintOriginFrame = WeaponRig.getAimFrame(fireNode.mount, resolvedDirection)
+			fireOrigin = sprintOriginFrame:PointToWorldSpace(fireNode.muzzleLocalOffset)
 		end
 	end
 
