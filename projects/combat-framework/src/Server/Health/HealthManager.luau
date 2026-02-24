@@ -317,22 +317,19 @@ local function findEntityIdFromInstance(instance: Instance): string?
 	return nil
 end
 
-local function applyTurretDeathExplosion(state: HealthStateInternal, explosionSeat: Seat?, occupantHumanoids: { Humanoid })
-	if explosionSeat == nil then
-		return
-	end
-
-	local damageRadius = math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
-	local visualRadius = math.max(
-		damageRadius,
-		readConfigNumber("TurretDeathExplosionVisualRadius", damageRadius > 0 and damageRadius * 1.35 or 30)
-	)
-	local maxDamage = math.max(0, readConfigNumber("TurretDeathExplosionDamage", 220))
+local function applyDeathExplosionDamage(
+	state: HealthStateInternal,
+	center: Vector3,
+	occupantHumanoids: { Humanoid },
+	damageRadius: number,
+	maxDamage: number,
+	visualRadius: number,
+	logTag: string
+)
 	if damageRadius <= 0 or maxDamage <= 0 then
 		return
 	end
 
-	local center = explosionSeat.Position
 	local explosionVisual = Instance.new("Explosion")
 	explosionVisual.Position = center
 	explosionVisual.BlastRadius = visualRadius
@@ -402,12 +399,51 @@ local function applyTurretDeathExplosion(state: HealthStateInternal, explosionSe
 
 	print(
 		string.format(
-			"[P1_TURRET_EXPLOSION] entity=%s damageRadius=%.1f visualRadius=%.1f maxDamage=%.1f",
+			"[%s] entity=%s damageRadius=%.1f visualRadius=%.1f maxDamage=%.1f",
+			logTag,
 			state.entityId,
 			damageRadius,
 			visualRadius,
 			maxDamage
 		)
+	)
+end
+
+local function applyTurretDeathExplosion(state: HealthStateInternal, center: Vector3, occupantHumanoids: { Humanoid })
+	local damageRadius = math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
+	local visualRadius = math.max(
+		damageRadius,
+		readConfigNumber("TurretDeathExplosionVisualRadius", damageRadius > 0 and damageRadius * 1.35 or 30)
+	)
+	local maxDamage = math.max(0, readConfigNumber("TurretDeathExplosionDamage", 220))
+	applyDeathExplosionDamage(
+		state,
+		center,
+		occupantHumanoids,
+		damageRadius,
+		maxDamage,
+		visualRadius,
+		"P1_TURRET_EXPLOSION"
+	)
+end
+
+local function applyVehicleDeathExplosion(state: HealthStateInternal, center: Vector3, occupantHumanoids: { Humanoid })
+	local fallbackRadius = readConfigNumber("TurretDeathExplosionRadius", 22)
+	local fallbackDamage = readConfigNumber("TurretDeathExplosionDamage", 220)
+	local damageRadius = math.max(0, readConfigNumber("VehicleDeathExplosionRadius", fallbackRadius))
+	local visualRadius = math.max(
+		damageRadius,
+		readConfigNumber("VehicleDeathExplosionVisualRadius", damageRadius > 0 and damageRadius * 1.35 or fallbackRadius)
+	)
+	local maxDamage = math.max(0, readConfigNumber("VehicleDeathExplosionDamage", fallbackDamage))
+	applyDeathExplosionDamage(
+		state,
+		center,
+		occupantHumanoids,
+		damageRadius,
+		maxDamage,
+		visualRadius,
+		"VEHICLE_EXPLOSION"
 	)
 end
 
@@ -417,6 +453,25 @@ local function destroyEntity(state: HealthStateInternal)
 	end
 
 	state.state = CombatEnums.EntityState.Destroyed
+
+	-- Collect all seats and seated occupants before callback cleanup can unseat/move them.
+	local allOccupantHumanoids: { Humanoid } = {}
+	local firstSeatPart: BasePart? = nil
+	local firstOccupiedSeatPart: BasePart? = nil
+	for _, descendant in ipairs(state.instance:GetDescendants()) do
+		if descendant:IsA("Seat") or descendant:IsA("VehicleSeat") then
+			if firstSeatPart == nil then
+				firstSeatPart = descendant :: BasePart
+			end
+			if descendant.Occupant ~= nil then
+				if firstOccupiedSeatPart == nil then
+					firstOccupiedSeatPart = descendant :: BasePart
+				end
+				table.insert(allOccupantHumanoids, descendant.Occupant)
+			end
+		end
+	end
+
 	if destroyCallback ~= nil then
 		local ok, callbackErr = pcall(destroyCallback, state.entityId)
 		if not ok then
@@ -424,31 +479,46 @@ local function destroyEntity(state: HealthStateInternal)
 		end
 	end
 
-	-- Collect all seated occupants before unseat/cleanup
-	local allOccupantHumanoids: { Humanoid } = {}
-	local explosionSeat: Seat? = nil
-	for _, descendant in ipairs(state.instance:GetDescendants()) do
-		if (descendant:IsA("Seat") or descendant:IsA("VehicleSeat")) and descendant.Occupant ~= nil then
-			table.insert(allOccupantHumanoids, descendant.Occupant)
-			if explosionSeat == nil then
-				explosionSeat = descendant :: Seat
-			end
+	local isVehicleEntity = CollectionService:HasTag(state.instance, "VehicleEntity")
+	local center: Vector3
+	if isVehicleEntity then
+		if firstSeatPart ~= nil then
+			center = firstSeatPart.Position
+		elseif state.instance.PrimaryPart ~= nil then
+			center = state.instance.PrimaryPart.Position
+		else
+			center = state.instance:GetPivot().Position
 		end
+	elseif firstOccupiedSeatPart ~= nil then
+		center = firstOccupiedSeatPart.Position
+	elseif state.instance.PrimaryPart ~= nil then
+		center = state.instance.PrimaryPart.Position
+	else
+		center = state.instance:GetPivot().Position
 	end
+
+	if isVehicleEntity then
+		applyVehicleDeathExplosion(state, center, allOccupantHumanoids)
+	elseif firstOccupiedSeatPart ~= nil then
+		applyTurretDeathExplosion(state, center, allOccupantHumanoids)
+	end
+
 	-- Unseat all occupants
 	for _, humanoid in ipairs(allOccupantHumanoids) do
 		humanoid.Sit = false
 	end
-	applyTurretDeathExplosion(state, explosionSeat, allOccupantHumanoids)
 
 	state.partStates = collectAndHideParts(state.instance)
 	state.promptStates = collectAndDisablePrompts(state.instance)
 
 	local _, destroyedRemote = getRemotes()
+	local payloadExplosionRadius = if isVehicleEntity
+		then math.max(0, readConfigNumber("VehicleDeathExplosionRadius", readConfigNumber("TurretDeathExplosionRadius", 22)))
+		else math.max(0, readConfigNumber("TurretDeathExplosionRadius", 22))
 	local destroyPayload: EntityDestroyedPayload = {
 		entityId = state.entityId,
-		explosionPosition = if explosionSeat ~= nil then explosionSeat.Position else state.instance:GetPivot().Position,
-		explosionRadius = readConfigNumber("TurretDeathExplosionRadius", 22),
+		explosionPosition = center,
+		explosionRadius = payloadExplosionRadius,
 	}
 	destroyedRemote:FireAllClients(destroyPayload)
 	print(string.format("[P1_DESTROYED] entity=%s tick=%.3f", state.entityId, tick()))

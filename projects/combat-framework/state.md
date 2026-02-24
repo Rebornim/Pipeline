@@ -11,6 +11,8 @@
 - Added server-side driven-part aiming so remote players see turret/barrel motion, not just local clients.
 - Suppressed local-shooter whiz audio for projectile visuals.
 - Fixed heavy-vehicle phantom driver fire by gating vehicle crosshair/fire path to actual driver-weapon context only.
+- Fixed a walker respawn visibility regression where legs could remain hidden after pilot death until re-entry.
+- Added server-authoritative vehicle death AoE damage for all `VehicleEntity` classes (including walkers).
 
 **Deviations from design:**
 - Replaced the original client-side smoothing-only approach with authoritative server walker pose solves (`WalkerIKServer`) and attribute-driven remote playback to eliminate persistent driver/observer divergence.
@@ -18,6 +20,7 @@
 - Lock facing-break behavior was finalized as context-aware: enforced for driver-seat forward-screen flow, skipped for gunner/turret seats where mount arc limits already govern lock validity.
 - Additional stabilization beyond the 6 planned bugs: walker driver damage shielding while seated, walker leg hitbox consistency after respawn, heavy/speeder engine-loop continuity fixes, turret barrel lag/pivot corrections, and lock-ready HUD debounce to stop flicker.
 - Added replication/network tuning during stabilization (walker aim RPC throttling/deadband, sprint attribute quantization, reduced unnecessary CFrame writes) to lower per-walker bandwidth without removing visual parity goals.
+- Vehicle explosion AoE was implemented in shared health destruction flow and intentionally kept turret explosion behavior occupant-gated for backward compatibility.
 
 **New runtime contracts:**
 - Walker instances now replicate `WalkerDriverUserId`, `WalkerAudioFootLiftSeq`, and `WalkerAudioFootPlantSeq` for remote rider/audio correctness.
@@ -25,10 +28,12 @@
 - `CombatConfig.Targeting.lockFacingHalfAngleDeg` now controls driver lock break threshold (currently `70`).
 - `walker_biped` config now includes sprint spread controls (`weaponSprintSpreadStartFrac`, `weaponSprintSpreadMinDeg`, `weaponSprintSpreadMaxDeg`, `weaponSprintSpreadExponent`).
 - Heavy vehicle config now supports gunner spread multipliers (`gunnerUnlockedSpreadMultiplier`, `gunnerAutoAimSpreadMultiplier`).
+- Added `CombatConfig.VehicleDeathExplosionRadius`, `CombatConfig.VehicleDeathExplosionDamage`, and `CombatConfig.VehicleDeathExplosionVisualRadius`.
 
 **Non-blocking follow-ups:**
 - Run a focused multi-walker bandwidth/profile pass with 2-4 active walkers to verify final recv/send budget under sustained combat.
 - Document the finalized walker replication model (server pose authority + client visual interpolation roles) in the vehicle docs to prevent future regressions.
+- Tune vehicle death explosion radius/damage by class if heavy and walker balance diverge in larger playtests.
 
 ### Pass 9 Build Delta
 **Built as designed:**

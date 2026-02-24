@@ -706,6 +706,11 @@ CombatConfig.TurretDeathExplosionShakeDuration = 0.55
 CombatConfig.TurretDeathExplosionParticleScale = 1.8
 CombatConfig.TurretDeathExplosionParticleEmitMultiplier = 2.2
 
+-- Vehicle destruction explosion tuning (applies to all VehicleEntity classes, including walkers).
+CombatConfig.VehicleDeathExplosionRadius = 30
+CombatConfig.VehicleDeathExplosionDamage = 220
+CombatConfig.VehicleDeathExplosionVisualRadius = 30
+
 -- Temporary testing toggle.
 CombatConfig.FriendlyFireEnabled = true
 CombatConfig.TestHarnessEnabled = false

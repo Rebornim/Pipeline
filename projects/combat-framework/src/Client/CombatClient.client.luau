@@ -666,6 +666,15 @@ local function onEntityRespawned(payload)
 			end
 		end
 	end
+	local walkerLegsModel = Workspace:FindFirstChild(payload.entityId .. "_Legs")
+	if walkerLegsModel ~= nil then
+		for _, descendant in ipairs(walkerLegsModel:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Transparency = 0
+				descendant.LocalTransparencyModifier = 0
+			end
+		end
+	end
 
 	destroyOverheatWorldEffect(payload.entityId)
 	CombatHUD.onEntityRespawned(payload)

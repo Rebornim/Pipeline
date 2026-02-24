@@ -594,6 +594,22 @@ local function onExitAction(_name: string, inputState: Enum.UserInputState, _inp
 	return Enum.ContextActionResult.Sink
 end
 
+local function isLocalPilotStillValid(): boolean
+	local driverSeat = activeDriverSeat
+	if driverSeat == nil or driverSeat.Parent == nil then
+		return false
+	end
+	local character = localPlayer.Character
+	if character == nil then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil or humanoid.Health <= 0 then
+		return false
+	end
+	return humanoid.SeatPart == driverSeat
+end
+
 function WalkerClient.activate(model: Model, entityId: string, config: VehicleConfig): ()
 	if activeEntityId == entityId then
 		return
@@ -829,6 +845,10 @@ function WalkerClient.activate(model: Model, entityId: string, config: VehicleCo
 	local sendInterval = 1 / getInputRate()
 	renderConnection = RunService.RenderStepped:Connect(function(dt)
 		if activeEntityId == nil or activeModel == nil then
+			return
+		end
+		if not isLocalPilotStillValid() then
+			WalkerClient.deactivate()
 			return
 		end
 
