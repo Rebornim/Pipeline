@@ -133,9 +133,16 @@ local function validateConfigContracts(): boolean
 				hasFailure = true
 			end
 
-			if vehicleConfig.vehicleClass ~= "walker_biped" then
+			if vehicleConfig.vehicleClass ~= "walker_biped" and vehicleConfig.vehicleClass ~= "fighter" then
 				if type(vehicleConfig.hoverHeight) ~= "number" or vehicleConfig.hoverHeight <= 0 then
 					warn(string.format("[VALIDATE] Vehicle '%s' hoverHeight must be > 0", vehicleId))
+					hasFailure = true
+				end
+			end
+
+			if vehicleConfig.vehicleClass == "fighter" then
+				if type(vehicleConfig.minSpeed) ~= "number" or vehicleConfig.minSpeed <= 0 then
+					warn(string.format("[VALIDATE] Fighter '%s' minSpeed must be > 0", vehicleId))
 					hasFailure = true
 				end
 			end
@@ -329,8 +336,9 @@ function StartupValidator.validate(): { ValidatedEntity }
 		end
 
 		local isWalker = vehicleConfig.vehicleClass == "walker_biped"
+		local isFighter = vehicleConfig.vehicleClass == "fighter"
 
-		if not isWalker then
+		if not isWalker and not isFighter then
 			local hoverPoints = collectTaggedDescendants(model, "HoverPoint", "BasePart")
 			if vehicleConfig.vehicleClass == "light" or vehicleConfig.vehicleClass == "heavy" then
 				if #hoverPoints < 4 then
@@ -380,6 +388,22 @@ function StartupValidator.validate(): { ValidatedEntity }
 			end
 		end
 
+		if isFighter then
+			if type(vehicleConfig.minSpeed) ~= "number" or vehicleConfig.minSpeed <= 0 then
+				fail(modelName, "Fighter config minSpeed must be > 0")
+				invalidVehicleModels[model] = true
+				continue
+			end
+
+			local explosionPoint = findTaggedDescendant(model, "ExplosionPoint", nil)
+			if explosionPoint == nil then
+				explosionPoint = model:FindFirstChild("ExplosionPoint", true)
+			end
+			if explosionPoint == nil then
+				warn(string.format("[VALIDATE] Fighter '%s' has no ExplosionPoint (optional in pass 10)", modelName))
+			end
+		end
+
 		if model.PrimaryPart == nil then
 			fail(modelName, "VehicleEntity must have PrimaryPart set")
 			invalidVehicleModels[model] = true
@@ -390,6 +414,17 @@ function StartupValidator.validate(): { ValidatedEntity }
 			fail(modelName, "VehicleEntity PrimaryPart must be Anchored")
 			invalidVehicleModels[model] = true
 			continue
+		end
+
+		if isFighter then
+			local bodyVelocity = model.PrimaryPart:FindFirstChildOfClass("BodyVelocity")
+			if bodyVelocity == nil then
+				warn(string.format("[VALIDATE] Fighter '%s' missing BodyVelocity on PrimaryPart (server will create one)", modelName))
+			end
+			local bodyGyro = model.PrimaryPart:FindFirstChildOfClass("BodyGyro")
+			if bodyGyro == nil then
+				warn(string.format("[VALIDATE] Fighter '%s' missing BodyGyro on PrimaryPart (server will create one)", modelName))
+			end
 		end
 
 		local forwardYawOffset = model:GetAttribute("ForwardYawOffset")

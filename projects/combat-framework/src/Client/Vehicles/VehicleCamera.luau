@@ -34,6 +34,9 @@ local smoothedHeight: number? = nil
 local smoothedLookAhead: number? = nil
 local smoothedCollisionDistance: number? = nil
 local lastRawPosition: Vector3? = nil
+local isFighterMode = false
+local smoothedShipCFrame: CFrame? = nil
+local smoothedCameraPos: Vector3? = nil
 local cameraConnection: RBXScriptConnection? = nil
 local savedCameraType: Enum.CameraType? = nil
 local savedFieldOfView: number? = nil
@@ -179,6 +182,84 @@ local function stepCamera(dt: number)
 
 	local clampedDt = math.clamp(dt, MIN_DT, MAX_DT)
 	local primaryPart = vehicleModel.PrimaryPart
+
+	if isFighterMode then
+		local targetCF = if primaryPart ~= nil then primaryPart.CFrame else vehicleModel:GetPivot()
+		local orientLag = config.fighterCameraOrientLag
+		if type(orientLag) ~= "number" or orientLag <= 0 then
+			orientLag = 8
+		end
+		if smoothedShipCFrame == nil then
+			smoothedShipCFrame = targetCF
+		else
+			smoothedShipCFrame = (smoothedShipCFrame :: CFrame):Lerp(targetCF, computeAlpha(orientLag, clampedDt))
+		end
+		local smoothCF = smoothedShipCFrame :: CFrame
+		local shipFwd = smoothCF.LookVector
+		local shipUp = smoothCF.UpVector
+		local shipPos = smoothCF.Position
+		local speedAttribute = vehicleModel:GetAttribute("VehicleSpeed")
+		local speed = if type(speedAttribute) == "number" then math.max(0, speedAttribute) else 0
+		local speedFrac = math.clamp(speed / math.max(1, config.maxSpeed), 0, 1)
+
+		----------------------------------------------------------------
+		-- CAMERA POSITION (behind + above in smoothed ship frame)
+		----------------------------------------------------------------
+		local desiredCamPos = shipPos - shipFwd * config.cameraDistance + shipUp * config.cameraHeight
+		if smoothedCameraPos == nil then
+			smoothedCameraPos = desiredCamPos
+		else
+			smoothedCameraPos = (smoothedCameraPos :: Vector3):Lerp(desiredCamPos, computeAlpha(12, clampedDt))
+		end
+
+		----------------------------------------------------------------
+		-- COLLISION AVOIDANCE
+		----------------------------------------------------------------
+		local minDist = math.max(config.cameraDistance * 0.6, 6)
+		local allowedDist = measureAllowedCameraDistance(shipPos, smoothedCameraPos :: Vector3, vehicleModel, minDist)
+		local camDir = (smoothedCameraPos :: Vector3) - shipPos
+		if camDir.Magnitude > 0.01 and camDir.Magnitude > allowedDist then
+			smoothedCameraPos = shipPos + camDir.Unit * allowedDist
+		end
+
+			----------------------------------------------------------------
+			-- LOOK TARGET (ahead of ship in smoothed orientation)
+			----------------------------------------------------------------
+			local lookAhead = config.fighterCameraLookAhead or 15
+			local aimHeight = config.fighterCameraAimHeight
+			if type(aimHeight) ~= "number" then
+				aimHeight = config.cameraHeight * 0.55
+			end
+			local aimHeightSpeedBoost = config.fighterCameraAimHeightSpeedBoost
+			if type(aimHeightSpeedBoost) ~= "number" then
+				aimHeightSpeedBoost = config.cameraHeight * 0.32
+			end
+			aimHeight += aimHeightSpeedBoost * speedFrac
+			local desiredLookTarget = shipPos + shipFwd * lookAhead + shipUp * aimHeight
+		local lookAt = currentLookAtPosition
+		if lookAt == nil then
+			lookAt = desiredLookTarget
+		else
+			lookAt = lookAt:Lerp(desiredLookTarget, computeAlpha(10, clampedDt))
+		end
+		currentLookAtPosition = lookAt
+		currentCameraPosition = smoothedCameraPos
+
+		----------------------------------------------------------------
+		-- BUILD CAMERA CFRAME
+		-- Up vector = smoothed ship up (full follow through all orientations)
+		----------------------------------------------------------------
+		camera.CFrame = CFrame.lookAt(smoothedCameraPos :: Vector3, lookAt, shipUp)
+
+		----------------------------------------------------------------
+		-- SPEED FOV
+		----------------------------------------------------------------
+		local baseFov = savedFieldOfView or camera.FieldOfView
+		local speedFov = speedFrac * SPEED_FOV_MAX
+		camera.FieldOfView += (baseFov + speedFov + externalFOVOffset - camera.FieldOfView) * computeAlpha(8.5, clampedDt)
+		return
+	end
+
 	local rawPosition = if primaryPart ~= nil then primaryPart.Position else vehicleModel:GetPivot().Position
 	local derivedVelocity = Vector3.zero
 	if lastRawPosition ~= nil then
@@ -508,6 +589,7 @@ function VehicleCamera.activate(vehicleModel: Model, config: VehicleConfig): ()
 
 	activeVehicleModel = vehicleModel
 	activeConfig = config
+	isFighterMode = config.vehicleClass == "fighter"
 
 	local heading = vehicleModel:GetAttribute("VehicleHeading")
 	if type(heading) ~= "number" then
@@ -526,6 +608,13 @@ function VehicleCamera.activate(vehicleModel: Model, config: VehicleConfig): ()
 	lastRawPosition = nil
 	currentCameraPosition = nil
 	currentLookAtPosition = nil
+	smoothedShipCFrame = nil
+	smoothedCameraPos = nil
+	if isFighterMode then
+		local startCF = if vehicleModel.PrimaryPart ~= nil then vehicleModel.PrimaryPart.CFrame else vehicleModel:GetPivot()
+		smoothedShipCFrame = startCF
+		smoothedCameraPos = startCF.Position - startCF.LookVector * config.cameraDistance + startCF.UpVector * config.cameraHeight
+	end
 	activeLeanInput = 0
 	smoothedLeanMagnitude = 0
 	smoothedLeanDirection = 0
@@ -561,8 +650,11 @@ function VehicleCamera.deactivate(): ()
 
 	activeVehicleModel = nil
 	activeConfig = nil
+	isFighterMode = false
 	currentCameraPosition = nil
 	currentLookAtPosition = nil
+	smoothedShipCFrame = nil
+	smoothedCameraPos = nil
 	smoothedHeading = nil
 	smoothedSpeed = 0
 	smoothedAnchorPosition = nil

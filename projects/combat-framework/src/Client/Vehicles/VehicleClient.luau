@@ -21,6 +21,7 @@ local TargetingClient = require(clientRoot:WaitForChild("Targeting"):WaitForChil
 local VehicleCamera = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleCamera"))
 local VehicleVisualSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("VehicleVisualSmoother"))
 local WalkerClient = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("WalkerClient"))
+local FighterClient = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("FighterClient"))
 local RemoteVehicleSmoother = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("RemoteVehicleSmoother"))
 local SoundProfileLoader = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("SoundProfiles"):WaitForChild("SoundProfileLoader"))
 local SoundProfileTypes = require(clientRoot:WaitForChild("Vehicles"):WaitForChild("SoundProfiles"):WaitForChild("SoundProfileTypes"))
@@ -960,12 +961,27 @@ local function onSeatChanged(humanoid: Humanoid)
 				local config = resolveVehicleConfig(vehicleModel)
 				if config ~= nil then
 					-- Route walkers to WalkerClient
-					if config.vehicleClass == "walker_biped" then
+					if config.vehicleClass == "fighter" then
 						if activeVehicleEntityId ~= nil then
 							exitVehicleMode()
 						end
+						if WalkerClient.isActive() then
+							WalkerClient.deactivate()
+						end
+						FighterClient.activate(vehicleModel, entityId, config)
+						return
+					elseif config.vehicleClass == "walker_biped" then
+						if activeVehicleEntityId ~= nil then
+							exitVehicleMode()
+						end
+						if FighterClient.isActive() then
+							FighterClient.deactivate()
+						end
 						WalkerClient.activate(vehicleModel, entityId, config)
 						return
+					end
+					if FighterClient.isActive() then
+						FighterClient.deactivate()
 					end
 					enterVehicleMode(entityId, vehicleModel, config)
 					return
@@ -975,6 +991,10 @@ local function onSeatChanged(humanoid: Humanoid)
 	end
 
 	-- Deactivate walker if active
+	if FighterClient.isActive() then
+		FighterClient.deactivate()
+	end
+
 	if WalkerClient.isActive() then
 		WalkerClient.deactivate()
 	end
@@ -1005,6 +1025,7 @@ function VehicleClient.init(remotesFolder: Folder): ()
 	fireWeaponRemote = remotesFolder:WaitForChild("FireWeapon") :: RemoteEvent
 	updateTurretAimRemote = remotesFolder:WaitForChild("UpdateTurretAim") :: RemoteEvent
 	WalkerClient.init(remotesFolder)
+	FighterClient.init(remotesFolder)
 
 	if characterAddedConnection == nil then
 		characterAddedConnection = localPlayer.CharacterAdded:Connect(bindCharacter)

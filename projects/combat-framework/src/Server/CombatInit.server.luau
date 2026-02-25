@@ -17,6 +17,7 @@ local TargetingServer = require(serverRoot:WaitForChild("Targeting"):WaitForChil
 local TestHarnessRunner = require(serverRoot:WaitForChild("TestHarness"):WaitForChild("Runner"))
 local VehicleServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("VehicleServer"))
 local WalkerServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("WalkerServer"))
+local FighterServer = require(serverRoot:WaitForChild("Vehicles"):WaitForChild("FighterServer"))
 local WeaponServer = require(serverRoot:WaitForChild("Weapons"):WaitForChild("WeaponServer"))
 
 type ValidatedEntity = CombatTypes.ValidatedEntity
@@ -187,6 +188,7 @@ TargetingServer.init(remotesFolder)
 WeaponServer.init(remotesFolder)
 VehicleServer.init(remotesFolder)
 WalkerServer.init(remotesFolder)
+FighterServer.init(remotesFolder)
 if harnessEnabled then
 	TestHarnessRunner.setup()
 end
@@ -195,10 +197,12 @@ HealthManager.setRespawnCallback(function(entityId: string)
 	WeaponServer.resetEntity(entityId)
 	VehicleServer.onEntityRespawned(entityId)
 	WalkerServer.onEntityRespawned(entityId)
+	FighterServer.onEntityRespawned(entityId)
 end)
 HealthManager.setDestroyCallback(function(entityId: string)
 	VehicleServer.onEntityDestroyed(entityId)
 	WalkerServer.onEntityDestroyed(entityId)
+	FighterServer.onEntityDestroyed(entityId)
 end)
 
 local validatedEntities: { ValidatedEntity } = StartupValidator.validate()
@@ -227,7 +231,9 @@ for _, validatedEntity in ipairs(validatedEntities) do
 			local vehicleConfig = CombatConfig.Vehicles[vehicleConfigId]
 			local driverSeat = findDriverSeat(validatedEntity.instance)
 			if driverSeat ~= nil then
-				if type(vehicleConfig) == "table" and vehicleConfig.vehicleClass == "walker_biped" then
+				if type(vehicleConfig) == "table" and vehicleConfig.vehicleClass == "fighter" then
+					FighterServer.registerFighter(entityId, validatedEntity.instance, vehicleConfigId, driverSeat)
+				elseif type(vehicleConfig) == "table" and vehicleConfig.vehicleClass == "walker_biped" then
 					WalkerServer.registerWalker(entityId, validatedEntity.instance, driverSeat)
 				else
 					local hoverPoints = collectHoverPoints(validatedEntity.instance)

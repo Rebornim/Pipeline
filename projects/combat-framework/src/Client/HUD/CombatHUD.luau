@@ -19,6 +19,7 @@ local hpFrame: Frame? = nil
 local hpLabel: TextLabel? = nil
 local speedFrame: Frame? = nil
 local speedLabel: TextLabel? = nil
+local speedContextText = ""
 local shieldFrame: Frame? = nil
 local shieldFill: Frame? = nil
 local shieldLabel: TextLabel? = nil
@@ -801,11 +802,26 @@ function CombatHUD.showSpeed(visible: boolean)
 	if speedFrame ~= nil then
 		speedFrame.Visible = visible
 	end
+	if not visible then
+		speedContextText = ""
+	end
+end
+
+function CombatHUD.setSpeedContext(context: string?)
+	if type(context) == "string" then
+		speedContextText = context
+	else
+		speedContextText = ""
+	end
 end
 
 function CombatHUD.setSpeed(speed: number)
 	if speedLabel ~= nil then
-		speedLabel.Text = string.format("Speed: %d", math.floor(speed + 0.5))
+		local speedText = string.format("Speed: %d", math.floor(speed + 0.5))
+		if speedContextText ~= "" then
+			speedText ..= " | " .. speedContextText
+		end
+		speedLabel.Text = speedText
 	end
 end
 

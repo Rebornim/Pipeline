@@ -27,6 +27,15 @@ local WALKER_HEAD_TURN_STOP_THRESHOLD = 0.08
 local WALKER_HEAD_STOP_COOLDOWN = 1.5
 local WALKER_SETTLE_STEP_COUNT = 2
 local WALKER_REMOTE_HEAD_LAG_RATE = 3.0
+local FIGHTER_REP_POS_X = "FighterRepPosX"
+local FIGHTER_REP_POS_Y = "FighterRepPosY"
+local FIGHTER_REP_POS_Z = "FighterRepPosZ"
+local FIGHTER_REP_LOOK_X = "FighterRepLookX"
+local FIGHTER_REP_LOOK_Y = "FighterRepLookY"
+local FIGHTER_REP_LOOK_Z = "FighterRepLookZ"
+local FIGHTER_REP_UP_X = "FighterRepUpX"
+local FIGHTER_REP_UP_Y = "FighterRepUpY"
+local FIGHTER_REP_UP_Z = "FighterRepUpZ"
 
 type PartPair = {
 	source: BasePart,
@@ -83,6 +92,7 @@ type RemoteVehicleEntry = {
 	destroyConnection: RBXScriptConnection?,
 	-- Walker-specific (nil for speeders)
 	isWalker: boolean,
+	isFighter: boolean,
 	walkerIKState: WalkerIK.WalkerIKState?,
 	walkerConfig: any?,
 	walkerLegParts: WalkerLegParts?,
@@ -108,6 +118,10 @@ type RemoteVehicleEntry = {
 	walkerPreviousHpFraction: number,
 	walkerPreviousFootLiftSeq: number?,
 	walkerPreviousFootPlantSeq: number?,
+	inlineEngineLoop: Sound?,
+	lastSourcePrimaryCFrame: CFrame?,
+	lastReplicatedFighterCFrame: CFrame?,
+	sourceStallTime: number,
 }
 
 local LOCAL_PLAYER = Players.LocalPlayer
@@ -550,12 +564,63 @@ local function getMaxSpeedForModel(model: Model): number
 	return 120
 end
 
+local function readFighterReplicatedCFrame(model: Model): CFrame?
+	local px = model:GetAttribute(FIGHTER_REP_POS_X)
+	local py = model:GetAttribute(FIGHTER_REP_POS_Y)
+	local pz = model:GetAttribute(FIGHTER_REP_POS_Z)
+	local lx = model:GetAttribute(FIGHTER_REP_LOOK_X)
+	local ly = model:GetAttribute(FIGHTER_REP_LOOK_Y)
+	local lz = model:GetAttribute(FIGHTER_REP_LOOK_Z)
+	local ux = model:GetAttribute(FIGHTER_REP_UP_X)
+	local uy = model:GetAttribute(FIGHTER_REP_UP_Y)
+	local uz = model:GetAttribute(FIGHTER_REP_UP_Z)
+	if type(px) ~= "number" or type(py) ~= "number" or type(pz) ~= "number" then
+		return nil
+	end
+	if type(lx) ~= "number" or type(ly) ~= "number" or type(lz) ~= "number" then
+		return nil
+	end
+	if type(ux) ~= "number" or type(uy) ~= "number" or type(uz) ~= "number" then
+		return nil
+	end
+
+	local look = Vector3.new(lx, ly, lz)
+	local up = Vector3.new(ux, uy, uz)
+	if look.Magnitude <= 1e-3 or up.Magnitude <= 1e-3 then
+		return nil
+	end
+
+	return CFrame.lookAt(Vector3.new(px, py, pz), Vector3.new(px, py, pz) + look.Unit, up.Unit)
+end
+
 local function createSoundController(entry: RemoteVehicleEntry)
-	if entry.soundController ~= nil then return end
+	if entry.soundController ~= nil or entry.inlineEngineLoop ~= nil then
+		return
+	end
 	local clonePrimary = entry.visualClone.PrimaryPart
-	if clonePrimary == nil then return end
+	if clonePrimary == nil then
+		return
+	end
 	local ms = getMaxSpeedForModel(entry.sourceModel)
 	entry.soundController = SoundProfileLoader.createController(entry.sourceModel, clonePrimary, ms, false)
+	if entry.soundController == nil and entry.isFighter then
+		local fighterSounds = CombatConfig.FighterSounds
+		local engineLoop = if type(fighterSounds) == "table" then (fighterSounds :: any).engineLoop else nil
+		if type(engineLoop) == "string" and engineLoop ~= "" and engineLoop ~= "rbxassetid://0" then
+			local sound = Instance.new("Sound")
+			sound.Name = "RemoteFighterEngineLoop"
+			sound.SoundId = engineLoop
+			sound.Looped = true
+			sound.Volume = 0.22
+			sound.PlaybackSpeed = 0.9
+			sound.RollOffMode = Enum.RollOffMode.InverseTapered
+			sound.RollOffMinDistance = 80
+			sound.RollOffMaxDistance = 2400
+			sound.Parent = clonePrimary
+			sound:Play()
+			entry.inlineEngineLoop = sound
+		end
+	end
 	if entry.isWalker then
 		resetWalkerAudioState(entry)
 	end
@@ -568,6 +633,10 @@ local function destroySoundController(entry: RemoteVehicleEntry)
 		end
 		entry.soundController:destroy()
 		entry.soundController = nil
+	end
+	if entry.inlineEngineLoop ~= nil then
+		entry.inlineEngineLoop:Destroy()
+		entry.inlineEngineLoop = nil
 	end
 	if entry.isWalker then
 		entry.walkerHeadTurning = false
@@ -893,6 +962,7 @@ local function activateEntry(model: Model): RemoteVehicleEntry?
 		soundController = nil,
 		destroyConnection = nil,
 		isWalker = false,
+		isFighter = false,
 		walkerIKState = nil,
 		walkerConfig = nil,
 		walkerLegParts = nil,
@@ -918,6 +988,10 @@ local function activateEntry(model: Model): RemoteVehicleEntry?
 		walkerPreviousHpFraction = 1,
 		walkerPreviousFootLiftSeq = nil,
 		walkerPreviousFootPlantSeq = nil,
+		inlineEngineLoop = nil,
+		lastSourcePrimaryCFrame = nil,
+		lastReplicatedFighterCFrame = nil,
+		sourceStallTime = 0,
 	}
 	hideSource(model, entry)
 
@@ -925,7 +999,9 @@ local function activateEntry(model: Model): RemoteVehicleEntry?
 	local vehicleCategory = model:GetAttribute("VehicleCategory")
 	if type(vehicleCategory) == "string" then
 		local vehConfig = (CombatConfig.Vehicles :: any)[vehicleCategory]
-		if type(vehConfig) == "table" and vehConfig.vehicleClass == "walker_biped" then
+		if type(vehConfig) == "table" and vehConfig.vehicleClass == "fighter" then
+			entry.isFighter = true
+		elseif type(vehConfig) == "table" and vehConfig.vehicleClass == "walker_biped" then
 			entry.isWalker = true
 			entry.walkerConfig = vehConfig
 			-- IK state created on-demand when occupied (not at activation)
@@ -1112,9 +1188,18 @@ local function stepAll(dt: number)
 		end
 
 		local sourceCFrame = sourcePrimary.CFrame
+		if entry.isFighter then
+			local replicatedCFrame = readFighterReplicatedCFrame(model)
+			if replicatedCFrame ~= nil then
+				entry.lastReplicatedFighterCFrame = replicatedCFrame
+				sourceCFrame = replicatedCFrame
+			end
+		end
 		local anyOccupied = hasAnyOccupant(model)
 		local justBecameOccupied = anyOccupied and not entry.walkerWasOccupied
-		if entry.isWalker and anyOccupied then
+		if entry.isFighter then
+			entry.smoothedCFrame = sourceCFrame
+		elseif entry.isWalker and anyOccupied then
 			-- Occupied walkers prioritize authority over smoothing so observers stay in sync.
 			entry.smoothedCFrame = sourceCFrame
 		else
@@ -1211,8 +1296,18 @@ local function stepAll(dt: number)
 				if entry.isWalker then
 					updateWalkerSoundEvents(entry, dt)
 				end
-				local speedAttr = model:GetAttribute("VehicleSpeed")
-				local speed: number = if type(speedAttr) == "number" then speedAttr else 0
+				local speed: number
+				if entry.isFighter then
+					local speedAttr = model:GetAttribute("VehicleSpeed")
+					if type(speedAttr) == "number" then
+						speed = math.max(0, speedAttr)
+					else
+						speed = if sourcePrimary ~= nil then sourcePrimary.AssemblyLinearVelocity.Magnitude else 0
+					end
+				else
+					local speedAttr = model:GetAttribute("VehicleSpeed")
+					speed = if type(speedAttr) == "number" then speedAttr else 0
+				end
 				local ms = getMaxSpeedForModel(model)
 				local hullHP = model:GetAttribute("HullHP")
 				local maxHP = model:GetAttribute("MaxHullHP")
@@ -1233,6 +1328,18 @@ local function stepAll(dt: number)
 					dt = dt,
 				}
 				entry.soundController:update(dt, frameState)
+			elseif entry.inlineEngineLoop ~= nil and entry.isFighter then
+				local speed: number
+				local speedAttr = model:GetAttribute("VehicleSpeed")
+				if type(speedAttr) == "number" then
+					speed = math.max(0, speedAttr)
+				else
+					speed = if sourcePrimary ~= nil then sourcePrimary.AssemblyLinearVelocity.Magnitude else 0
+				end
+				local maxSpeed = getMaxSpeedForModel(model)
+				local speedFrac = if maxSpeed > 0 then math.clamp(speed / maxSpeed, 0, 1) else 0
+				entry.inlineEngineLoop.PlaybackSpeed = 0.85 + speedFrac * 0.55
+				entry.inlineEngineLoop.Volume = 0.15 + speedFrac * 0.22
 			end
 
 		local currentSet: { [Model]: boolean } = {}

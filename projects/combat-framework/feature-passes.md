@@ -1,7 +1,7 @@
 # Feature Passes: Combat Framework
 
 **Based on:** idea-locked.md + vehicle-idea-locked.md
-**Date:** 2026-02-21 (revised — artillery emplacement added as pass 7, passes 7+ renumbered)
+**Date:** 2026-02-25 (revised — vehicle client-authority conversion added as pass 11, passes 11+ renumbered)
 
 ---
 
@@ -216,7 +216,26 @@ Fighters fly with Battlefront 2 controls. Mouse aims, W/S controls speed, A/D ro
 
 ---
 
-## Pass 11: Fighter Combat
+## Pass 11: Vehicle Client-Authority Conversion
+**Depends on:** Pass 10 (client-authoritative architecture proven on fighters)
+**What it includes:**
+- Convert speeder movement from server-authoritative CFrame writes to client-authoritative BodyMover physics (same architecture proven on fighters in pass 10)
+- Convert walker movement from server-authoritative CFrame writes to client-authoritative BodyMover physics
+- Server becomes lifecycle manager for all vehicles: creates BodyMovers, transfers network ownership to pilot, manages destroy/respawn
+- Client drives BodyVelocity + BodyGyro every render frame for all vehicle types
+- Speeder: hover physics (4-spring raycasts), collision, fall damage all move from VehicleServer to VehicleClient
+- Walker: body movement, gravity, slope blocking move to client. Gait oscillator stays server-side (drives remote IK replication). Server attribute replication simplified.
+- RemoteVehicleSmoother: Roblox physics replication handles remote smoothing for all vehicles — eliminate custom CFrame interpolation where possible
+- VehicleCamera: simplify vehicle camera branches (no multi-layer 20Hz compensation needed)
+- NO combat changes — combat stays server-authoritative for all platforms
+- NO new features — same movement behavior, just runs on client at 60Hz+ instead of server at 20Hz
+
+**After this pass, the system:**
+All vehicles (speeders, walkers, fighters) use client-authoritative BodyMover physics. Movement is buttery smooth at 60Hz+ with no "fall back and catch up" artifacts. Remote players see smooth movement via Roblox's built-in physics replication. Combat remains fully server-authoritative.
+
+---
+
+## Pass 12: Fighter Combat
 **Depends on:** Pass 10
 **What it includes:**
 - Pilot weapons: left click to fire, 1/2/3 to switch weapon types
@@ -233,8 +252,8 @@ Fighters are fully combat-capable. Pilots shoot lasers, switch to torpedoes, loc
 
 ---
 
-## Pass 12: Animated Parts
-**Depends on:** Passes 5-10 (platforms exist to test on)
+## Pass 13: Animated Parts
+**Depends on:** Passes 5-11 (platforms exist to test on)
 **What it includes:**
 - Animated external parts system: tagged parts tween between start/end CFrame positions
 - Interactive triggers: keybinds or physical buttons activate animations
@@ -248,8 +267,8 @@ Platforms have working animated parts. Pilots press keybinds to deploy landing g
 
 ---
 
-## Pass 13: Landing System
-**Depends on:** Passes 10, 12 (fighter flight + animated parts for landing gear)
+## Pass 14: Landing System
+**Depends on:** Passes 10, 13 (fighter flight + animated parts for landing gear)
 **What it includes:**
 - Developer-placed landing zones (invisible volumes):
   - Atmosphere zones (large, near planet surfaces)
@@ -265,7 +284,7 @@ Fighters can land at designated locations with animated landing gear. Ships can'
 
 ---
 
-## Pass 14: Transport + Cruiser Flight
+## Pass 15: Transport + Cruiser Flight
 **Depends on:** Pass 10
 **What it includes:**
 - Transport flight model: mouse controls yaw only (pitch ignored), E/Q altitude, W/S throttle
@@ -282,8 +301,8 @@ Three ship classes fly with distinct control schemes: fighters (mouse full), tra
 
 ---
 
-## Pass 15: Relative Motion + Ship Interiors
-**Depends on:** Pass 14
+## Pass 16: Relative Motion + Ship Interiors
+**Depends on:** Pass 15
 **What it includes:**
 - Relative motion: players on a moving ship move WITH the ship
 - Jump test: jump on moving ship → land in same spot relative to ship
@@ -297,8 +316,8 @@ Players walk around inside a moving cruiser without falling off or desyncing. Ju
 
 ---
 
-## Pass 16: Manned Weapons + Weapon Grouping
-**Depends on:** Passes 14, 15
+## Pass 17: Manned Weapons + Weapon Grouping
+**Depends on:** Passes 15, 16
 **What it includes:**
 - Manned weapons: gunner walks to weapon station → sit → camera moves to weapon viewpoint → aim → fire → F to exit
 - Weapon grouping: one player controls multiple guns (e.g., 4 turbolasers = one station)
@@ -313,8 +332,8 @@ The multi-crew combat loop works. Pilot flies a cruiser while gunners man weapon
 
 ---
 
-## Pass 17: Power Routing
-**Depends on:** Pass 16
+## Pass 18: Power Routing
+**Depends on:** Pass 17
 **What it includes:**
 - Squadrons-style 12-pip system: shields (8 max), engines (8 max), weapons (8 max), 12 total budget
 - Default: 4/4/4 (balanced). Pilot redistributes via keybinds.
@@ -328,8 +347,8 @@ Every pilot manages power distribution. Tactical depth for every piloted platfor
 
 ---
 
-## Pass 18: Capital Ship Flight + Repulsion
-**Depends on:** Passes 14, 15
+## Pass 19: Capital Ship Flight + Repulsion
+**Depends on:** Passes 15, 16
 **What it includes:**
 - Capital ship flight model: same as cruiser but larger/slower/even wider turning radius
 - 3rd person camera pulled way back (show entire capital ship)
@@ -341,8 +360,8 @@ Capital ships fly with appropriate weight and scale. Two capital ships approachi
 
 ---
 
-## Pass 19: Subsystem Framework
-**Depends on:** Pass 18
+## Pass 20: Subsystem Framework
+**Depends on:** Pass 19
 **What it includes:**
 - Targetable subsystems on capital ships: shield generator, hangar bay, weapon batteries, torpedo launchers, engines
 - Each subsystem has independent HP pool (does NOT correlate with hull HP)
@@ -363,8 +382,8 @@ Capital ships have targetable subsystems with strategic destruction effects. The
 
 ---
 
-## Pass 20: Hangars
-**Depends on:** Passes 11, 19
+## Pass 21: Hangars
+**Depends on:** Passes 12, 20
 **What it includes:**
 - Hangar launch: walk to console → proximity prompt → screen blacks out → spawn in fighter outside hangar
 - Hangar return: fly close → docking prompt → confirm → screen blacks out → teleported inside
@@ -376,8 +395,8 @@ Capital ships launch and recover fighters. Fighters return to dock, repair, and 
 
 ---
 
-## Pass 21: Ownership + Despawn
-**Depends on:** Passes 6, 11 (vehicles and ships must exist)
+## Pass 22: Ownership + Despawn
+**Depends on:** Passes 6, 12 (vehicles and ships must exist)
 **What it includes:**
 - Crew registry: board → join crew list. Leave when physically exit, die, or disconnect.
 - Owner-based persistence: stays while owner in same server
@@ -392,8 +411,8 @@ Unified ownership across ships and vehicles. Shared 2-limit. Persistence works. 
 
 ---
 
-## Pass 22: Scanning Station
-**Depends on:** Pass 19
+## Pass 23: Scanning Station
+**Depends on:** Pass 20
 **What it includes:**
 - Dedicated bridge crew seat
 - Scan enemy ship within sensor range (config-driven range, scan duration)
@@ -406,8 +425,8 @@ Capital ships have a dedicated intel role. Coordinated crews with active scanner
 
 ---
 
-## Pass 23: Upgrades
-**Depends on:** Passes 6, 11 (vehicles and ships with config)
+## Pass 24: Upgrades
+**Depends on:** Passes 6, 12 (vehicles and ships with config)
 **What it includes:**
 - 6 upgrade categories: Shields, Hull/Armor, Engines, Weapons (energy), Weapons (ordnance), Sensors
 - Tier structure: Mk I (base), Mk II, Mk III
@@ -421,8 +440,8 @@ Players upgrade individual components on ships and vehicles. Per-platform caps p
 
 ---
 
-## Pass 24: Vehicle Transport + Troop Deployment
-**Depends on:** Passes 8-9, 12, 14, 15 (walkers, animated parts, transport ships, relative motion)
+## Pass 25: Vehicle Transport + Troop Deployment
+**Depends on:** Passes 8-9, 13, 15, 16 (walkers, animated parts, transport ships, relative motion)
 **What it includes:**
 - Small vehicle transport: transport ship approaches ground vehicle, keybind snaps vehicle to predetermined carry position. Same keybind to deploy. Dead stop required.
 - Large vehicle transport: spawned at space station with transport ship, visually carried, interior not loaded until deployment. Dead stop to deploy.
@@ -434,8 +453,8 @@ Transport ships carry vehicles between planets. Transport walkers deploy troops 
 
 ---
 
-## Pass 25: Formation Autopilot (Not Committed)
-**Depends on:** Pass 14+
+## Pass 26: Formation Autopilot (Not Committed)
+**Depends on:** Pass 15+
 **What it includes:**
 - Escort ships maintain relative position to flagship via autopilot
 - Realistic maneuvering (turn, accelerate, reposition)
@@ -446,8 +465,8 @@ Fleets form up and move together. Escorts automatically maintain position.
 
 ---
 
-## Pass 26: Tractor Beams (Not Committed)
-**Depends on:** Pass 18
+## Pass 27: Tractor Beams (Not Committed)
+**Depends on:** Pass 19
 **What it includes:**
 - Capital ships emit tractor beam toward target
 - Gravitational pull draws target toward source

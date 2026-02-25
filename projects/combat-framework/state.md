@@ -1,7 +1,40 @@
 # Combat Framework — State
 
-## Current Stage: Pass 9.5 Build Complete — Ready for Pass 10 Design
-## Status: Pass 9.5 (Bugfix Stabilization) built and stabilized through multiplayer iteration, with network and replication polish layered on top of the original 6-bug scope.
+## Current Stage: Pass 10 Redesign Complete — Ready to Build
+## Status: Pass 10 fighter flight redesigned with client-authoritative BodyMover physics. Server simplified to lifecycle manager (network ownership + BodyMover creation). Client drives BodyVelocity/BodyGyro every render frame at 60Hz+. Pure CFrame multiplication for orientation. Roblox physics replication handles remote smoothing. Eliminates all 20Hz stepping artifacts.
+
+### Pass 10 Build Delta (Blocked / Redesign Handoff)
+**Built as designed:**
+- Added fighter config/entity/types and new modules: `FighterServer` + `FighterClient`.
+- Added server/client routing and validator integration for `vehicleClass == "fighter"`.
+- Added fighter camera branch in `VehicleCamera` and fighter paths in remote smoothing.
+- Added fighter model authoring placeholders/tags/attributes and initial preflight/playtest loop.
+
+**Observed failures (blocking):**
+- During acceleration + turning, fighter can invert unexpectedly and become difficult or impossible to recover.
+- Full-roll behavior causes control feel breakdown (reports of inverted/locked controls after inversion events).
+- Camera can snap/spaz during full rotations and inversion transitions.
+- Prior smoothing attempts oscillated between visible 20Hz stepping and unstable drift/rubber-band behavior.
+- Banking/roll behavior has been inconsistent across iterative patches and is not game-ready.
+
+**Short-term pitfalls encountered:**
+- Coupling between cursor direction math and control-direction math caused repeated sign regressions.
+- Auto-level and manual roll interactions created unwanted roll injection in some turn states.
+- Mixed orientation heuristics (local rotation, pitch clamps, bounce reorientation) produced fragile edge-case behavior.
+- Camera up-vector handling through full 360 rotation is sensitive and currently not robust.
+
+**Long-term concerns:**
+- Current pass-10 implementation trajectory is patch-heavy and brittle.
+- Flight, camera, and smoothing contracts are not cleanly separated enough for stable iteration.
+- Risk of recurring regressions is high without architectural reset (control law + orientation representation + camera frame model + network smoothing model).
+
+**User constraints for handoff/redesign:**
+- User will discuss requirements with Claude before planning starts.
+- No MCP testing unless user explicitly grants permission.
+- Goal is a new robust system design, not additional band-aid fixes on current approach.
+
+**Requested next action:**
+- Claude to run discovery with user first, then deliver a full redesign + migration plan for fighter flight/camera/networking.
 
 ### Pass 9.5 Build Delta
 **Built as designed:**
@@ -196,6 +229,7 @@
 - **Vehicle Idea:** Locked 2026-02-19. Custom vehicle system defined in vehicle-idea-locked.md. Shares architecture with ships. 4 vehicle classes (light speeder, heavy speeder, biped walker, quad walker). Hover physics, IK legs, CFrame-based movement.
 - **Roadmap Revision:** Complete 2026-02-19. Passes 5+ rebuilt for custom vehicle system. Walker split (pass 7 movement, pass 8 combat). Animated parts moved to pass 11 (before landing). 25 passes + optimization. AT-AT/AT-ST not configured during development — system supports walkers generically.
 - **Roadmap Revision 2:** 2026-02-21. Artillery emplacement added as pass 7 (indirect fire, parabolic projectiles, WASD aiming). Passes 7+ renumbered (+1). Walkers now passes 8-9, fighters 10-11, etc. 26 passes + optimization.
+- **Roadmap Revision 3:** 2026-02-25. Vehicle client-authority conversion added as pass 11 (convert speeders + walkers to same client-authoritative BodyMover architecture proven on fighters in pass 10). Passes 11+ renumbered (+1). Fighter combat now pass 12, animated parts 13, etc. 27 passes + optimization.
 - **Pass 5 Design:** Complete 2026-02-19. Speeder movement — CFrame velocity system, hover physics (4-spring raycasts), mouse steering, collision detection + damage, fall damage, 3rd person camera, VehicleEntity/DriverSeat/HoverPoint tagging, placeholder speeder, speed HUD. No combat.
 - **Pass 5 Build:** Failed 2026-02-19. 6 coupled failures: inverted steering, camera side-rotation/jitter, random airborne launches, harness grounded=0. Root causes: heading sign convention, camera tracking tilted model frame, hover physics averaging only over grounded rays. Fix plan archived at `archive/pass-5/pass-5-fix-plan.md`.
 - **Pass 5 Recovery/Debug:** Iterated 2026-02-20. Post-fix baseline accepted by user for continued testing; remaining work is polish/tuning and deferred hull-damage model follow-up.
@@ -210,6 +244,9 @@
 - **Pass 9 Build:** Complete 2026-02-24. Walker combat built by Codex. Burst weapon, RMB zoom, splash, red bolts. Shields removed from walker. See pass 9 build delta above.
 - **Pass 9.5 Design:** Complete 2026-02-24. Bugfix stabilization — 6 bugs across walker, targeting, turrets, sound, vehicles.
 - **Pass 9.5 Build:** Complete 2026-02-24. Bugfix stabilization delivered with authoritative walker replication/sync polish, lock/weapon correctness fixes, turret/driven-part remote parity, and network tuning. See pass 9.5 build delta above.
+- **Pass 10 Design:** Complete 2026-02-24. Fighter flight — initial design with 7 build steps.
+- **Pass 10 Build:** Attempted 2026-02-25. BLOCKED — inversion/camera/control instability. Vector decomposition (safeLookAt) caused gimbal lock. Pitch clamping fought local-frame rotation. Camera degenerated near inversions. See pass 10 build delta above.
+- **Pass 10 Redesign:** Complete 2026-02-25. First redesign was pure CFrame multiplication (still server-authoritative). Second redesign changed to client-authoritative BodyMover physics based on analysis of a proven smooth ship system. Server simplified to lifecycle manager (~200 lines vs ~924). Client drives BodyVelocity + BodyGyro every render frame. SetNetworkOwner gives pilot client physics authority. Roblox handles remote replication. 8 build steps, 4 golden tests, 20-point verification.
 
 ## Context Files
 - Read: `feature-passes.md`, `idea-locked.md`, `vehicle-idea-locked.md`, `attribute-reference.md`, `golden-tests.md`, `state.md`

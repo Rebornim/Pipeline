@@ -303,3 +303,38 @@ Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13,
 Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13, Pass 5 Tests 14-16, Pass 6 Tests 17-19, Pass 8 Tests 20-22, Pass 9 Tests 23-25. Stabilization fixes must NOT break existing combat, vehicle, or walker behavior.
 
 ---
+
+## Pass 10: Fighter Flight
+
+### Test 30: Fighter Forward Flight
+- **Added in:** Pass 10
+- **Setup:** Fighter (empire, fighter config, minSpeed=80, maxSpeed=400) at altitude Y=150. Player in PilotSeat.
+- **Action:** Press W for 3 seconds. Release. Press S for 2 seconds.
+- **Expected:** Speed increases from 80 toward 400 (W). Maintains speed on release. Decreases toward 80 (S). Never goes below 80. Fighter moves forward continuously.
+- **Pass condition:** `[P10_SPEED]` shows speed increasing/decreasing correctly. Speed never < 80 while piloted.
+
+### Test 31: Fighter Turning + Full Loop
+- **Added in:** Pass 10 (updated in redesign)
+- **Setup:** Fighter in flight at speed 150.
+- **Action:** Move mouse right (hold), then left. Then pitch up continuously until completing a full vertical loop.
+- **Expected:** Yaw works smoothly. Full vertical loop completes with no control inversion, no gimbal lock, no camera snap. Controls remain consistent through all orientations.
+- **Pass condition:** `[P10_ORIENT]` shows pitch passing through 90, 180 (inverted), 270, 360. No errors. Camera smooth throughout.
+
+### Test 32: Fighter Roll + Auto-Level
+- **Added in:** Pass 10
+- **Setup:** Fighter in flight at speed 150.
+- **Action:** Hold A (roll left) for 1 second. Release all input. Wait 3 seconds.
+- **Expected:** Ship rolls left while A held. On release, auto-levels gradually back to wings-level (within autoLevelDeadzone). Auto-level rate matches config (30 deg/sec).
+- **Pass condition:** `[P10_ORIENT]` roll angle returns toward 0 after A release. Roll stabilizes within +/-5 degrees of level.
+
+### Test 33: Ground Collision
+- **Added in:** Pass 10
+- **Setup:** Fighter in flight at altitude Y=100, heading downward (nose pitched toward ground).
+- **Action:** Fly into terrain.
+- **Expected:** Fighter bounces off terrain surface. Does NOT go underground. Speed reduces. Pitch corrected upward.
+- **Pass condition:** `[P10_COLLISION]` fires. Fighter Y position never below terrain + collisionRadius.
+
+### Regression Tests
+Re-run Pass 1 Tests 1-4, Pass 2 Tests 5-6, Pass 3 Tests 7-9, Pass 4 Tests 10-13, Pass 5 Tests 14-16, Pass 6 Tests 17-19, Pass 8 Tests 20-22, Pass 9 Tests 23-25, Pass 9.5 Tests 26-29. Fighter additions must NOT affect turret, speeder, walker, or artillery behavior. Key regression risks: VehicleInput remote handler changes, CombatInit routing, VehicleClient routing.
+
+---
