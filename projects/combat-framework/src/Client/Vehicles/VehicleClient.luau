@@ -177,6 +177,18 @@ local function readBoolAttribute(instance: Instance, name: string): boolean?
 	if type(raw) == "boolean" then
 		return raw
 	end
+	if type(raw) == "number" then
+		return raw ~= 0
+	end
+	if type(raw) == "string" then
+		local normalized = string.lower(string.match(raw, "^%s*(.-)%s*$") or "")
+		if normalized == "true" or normalized == "1" or normalized == "yes" or normalized == "on" then
+			return true
+		end
+		if normalized == "false" or normalized == "0" or normalized == "no" or normalized == "off" then
+			return false
+		end
+	end
 	return nil
 end
 
@@ -215,6 +227,7 @@ local function resolveVehicleConfig(instance: Model): VehicleConfig?
 	end
 
 	local percentModifiers: { { string } } = {
+		{ "VehicleMinSpeedMod", "minSpeed" },
 		{ "VehicleMaxSpeedMod", "maxSpeed" },
 		{ "VehicleAccelerationMod", "acceleration" },
 		{ "VehicleDecelerationMod", "deceleration" },
@@ -246,13 +259,73 @@ local function resolveVehicleConfig(instance: Model): VehicleConfig?
 		{ "VehicleLeanBankAngleMod", "leanBankAngle" },
 		{ "VehicleLeanTurnRateMod", "leanTurnRate" },
 		{ "VehicleLeanSpeedPenaltyMod", "leanSpeedPenalty" },
+		{ "VehicleFighterYawRateMod", "yawRate" },
+		{ "VehicleFighterPitchRateMod", "pitchRate" },
+		{ "VehicleFighterRollRateMod", "rollRate" },
+		{ "VehicleFighterTurnScaleMinMod", "turnRateSpeedScaleMin" },
+		{ "VehicleFighterTurnScaleMaxMod", "turnRateSpeedScaleMax" },
+		{ "VehicleFighterAngularResponsivenessMod", "angularResponsiveness" },
+		{ "VehicleFighterAutoBankMaxAngleMod", "autoBankMaxAngle" },
+		{ "VehicleFighterAutoBankYawRefMod", "autoBankYawRateRef" },
+		{ "VehicleFighterAutoBankRateMod", "autoBankRate" },
+		{ "VehicleFighterMouseSensitivityMod", "fighterMouseSensitivity" },
+		{ "VehicleFighterMouseRangeXMod", "fighterMouseRangeX" },
+		{ "VehicleFighterMouseRangeYMod", "fighterMouseRangeY" },
+		{ "VehicleFighterMouseAutoCenterMod", "fighterMouseAutoCenter" },
+		{ "VehicleFighterMouseDeadzoneMod", "fighterMouseDeadzone" },
+		{ "VehicleFighterMouseCenterReturnRadiusMod", "fighterMouseCenterReturnRadius" },
+		{ "VehicleFighterCursorLagRateMod", "fighterCursorLagRate" },
+		{ "VehicleFighterInputExpoMod", "fighterInputExpo" },
+		{ "VehicleFighterThrottleSpoolUpMod", "fighterThrottleSpoolUp" },
+		{ "VehicleFighterThrottleSpoolDownMod", "fighterThrottleSpoolDown" },
+		{ "VehicleFighterThrottleDeadzoneMod", "fighterThrottleDeadzone" },
+		{ "VehicleFighterForceVelocityGainMod", "fighterForceVelocityGain" },
+		{ "VehicleFighterForceMaxAccelMod", "fighterForceMaxAccel" },
+		{ "VehicleFighterYawAccelLimitMod", "fighterYawRateAccelLimit" },
+		{ "VehicleFighterPitchAccelLimitMod", "fighterPitchRateAccelLimit" },
+		{ "VehicleFighterRollAccelLimitMod", "fighterRollRateAccelLimit" },
+		{ "VehicleFighterAngularDampingMod", "fighterAngularDamping" },
+		{ "VehicleFighterVelocityAlignRateMod", "fighterVelocityAlignRate" },
+		{ "VehicleFighterVelocityDirAlignBaseMod", "fighterVelocityDirAlignBase" },
+		{ "VehicleFighterVelocityDirAlignTurnBoostMod", "fighterVelocityDirAlignTurnBoost" },
+		{ "VehicleFighterTurnAlignBoostMod", "fighterTurnAlignBoost" },
+		{ "VehicleFighterTurnSpeedPenaltyMod", "fighterTurnSpeedPenalty" },
+		{ "VehicleFighterSideSlipDampingMod", "fighterSideSlipDamping" },
+		{ "VehicleFighterTurnSlipDampingBoostMod", "fighterTurnSlipDampingBoost" },
+		{ "VehicleFighterVerticalSlipDampingMod", "fighterVerticalSlipDamping" },
+		{ "VehicleFighterTurnVerticalDampingBoostMod", "fighterTurnVerticalDampingBoost" },
+		{ "VehicleFighterTurnEnergyLossMod", "fighterTurnEnergyLoss" },
+		{ "VehicleFighterForwardAccelLimitMod", "fighterForwardAccelLimit" },
+		{ "VehicleFighterForwardDecelLimitMod", "fighterForwardDecelLimit" },
+		{ "VehicleFighterInducedDragMod", "fighterInducedDrag" },
+		{ "VehicleFighterWorldGravityMod", "fighterWorldGravity" },
+		{ "VehicleFighterLiftCoefficientMod", "fighterLiftCoefficient" },
+		{ "VehicleFighterBaseDragMod", "fighterBaseDrag" },
+		{ "VehicleFighterVisualYawRateGainMod", "fighterVisualYawRateGain" },
+		{ "VehicleFighterVisualPitchRateGainMod", "fighterVisualPitchRateGain" },
+		{ "VehicleFighterVisualYawAccelGainMod", "fighterVisualYawAccelGain" },
+		{ "VehicleFighterVisualPitchAccelGainMod", "fighterVisualPitchAccelGain" },
+		{ "VehicleFighterVisualSlipYawGainMod", "fighterVisualSlipYawGain" },
+		{ "VehicleFighterVisualSlipPitchGainMod", "fighterVisualSlipPitchGain" },
+		{ "VehicleFighterVisualRollRateGainMod", "fighterVisualRollRateGain" },
+		{ "VehicleFighterVisualResponseMod", "fighterVisualResponse" },
+		{ "VehicleFighterVisualYawMaxMod", "fighterVisualYawMax" },
+		{ "VehicleFighterVisualPitchMaxMod", "fighterVisualPitchMax" },
+		{ "VehicleFighterVisualRollMaxMod", "fighterVisualRollMax" },
+		{ "VehicleFighterTakeoffHeightMod", "fighterTakeoffHeight" },
+		{ "VehicleFighterTakeoffDurationMod", "fighterTakeoffDuration" },
+		{ "VehicleFighterCameraRollFollowMod", "fighterCameraRollFollow" },
+		{ "VehicleFighterCameraAimHeightMod", "fighterCameraAimHeight" },
+		{ "VehicleFighterCameraAimHeightSpeedBoostMod", "fighterCameraAimHeightSpeedBoost" },
+		{ "VehicleFighterCameraLookAheadMod", "fighterCameraLookAhead" },
+		{ "VehicleFighterCameraOrientLagMod", "fighterCameraOrientLag" },
 	}
 
 	for _, entry in ipairs(percentModifiers) do
 		local attrName = entry[1]
 		local configKey = entry[2]
 		local mod = readNumberAttribute(instance, attrName)
-		if mod ~= nil then
+		if mod ~= nil and type(resolved[configKey]) == "number" then
 			resolved[configKey] = applyPercentModifier(resolved[configKey], mod, 0)
 		end
 	end
@@ -268,6 +341,10 @@ local function resolveVehicleConfig(instance: Model): VehicleConfig?
 	local leanEnabled = readBoolAttribute(instance, "VehicleLeanEnabled")
 	if leanEnabled ~= nil then
 		resolved.leanEnabled = leanEnabled
+	end
+	local fighterUseForceFlight = readBoolAttribute(instance, "VehicleFighterUseForceFlight")
+	if fighterUseForceFlight ~= nil then
+		resolved.fighterUseForceFlight = fighterUseForceFlight
 	end
 
 	return resolved :: any
@@ -816,6 +893,7 @@ local function enterVehicleMode(entityId: string, vehicleModel: Model, config: V
 				isGrounded = true,
 				throttle = lastSentThrottle,
 				steerInput = lastSentSteerX,
+				isLanding = false,
 				isLocal = true,
 				dt = dt,
 			}

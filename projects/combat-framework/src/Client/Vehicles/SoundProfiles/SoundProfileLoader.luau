@@ -12,6 +12,9 @@ type ProfileModule = SoundProfileTypes.ProfileModule
 local SoundProfileLoader = {}
 
 local DEFAULT_PROFILE = "speeder_default"
+local FIGHTER_PROFILE = "fighter_default"
+local WALKER_PROFILE = "walker_biped"
+local HEAVY_PROFILE = "heavy_default"
 
 -- Cache resolved profile modules to avoid repeated requires
 local profileCache: { [string]: ProfileModule? } = {}
@@ -39,17 +42,39 @@ local function resolveProfile(profileName: string): ProfileModule?
 	return profileModule
 end
 
+local function inferProfileName(sourceModel: Model): string
+	local explicit = sourceModel:GetAttribute("SoundProfile")
+	if type(explicit) == "string" and explicit ~= "" then
+		return explicit
+	end
+
+	local category = sourceModel:GetAttribute("VehicleCategory")
+	if type(category) ~= "string" then
+		category = sourceModel:GetAttribute("VehicleConfigId")
+	end
+	if type(category) == "string" then
+		local normalized = string.lower(category)
+		if string.find(normalized, "fighter", 1, true) ~= nil then
+			return FIGHTER_PROFILE
+		end
+		if string.find(normalized, "walker", 1, true) ~= nil then
+			return WALKER_PROFILE
+		end
+		if string.find(normalized, "heavy", 1, true) ~= nil then
+			return HEAVY_PROFILE
+		end
+	end
+
+	return DEFAULT_PROFILE
+end
+
 function SoundProfileLoader.createController(
 	sourceModel: Model,
 	targetPart: BasePart,
 	maxSpeed: number,
 	isLocal: boolean
 ): ProfileController?
-	-- Read SoundProfile attribute from the source model
-	local profileName = sourceModel:GetAttribute("SoundProfile")
-	if type(profileName) ~= "string" or profileName == "" then
-		return nil
-	end
+	local profileName = inferProfileName(sourceModel)
 
 	local profileModule = resolveProfile(profileName)
 	if profileModule == nil then

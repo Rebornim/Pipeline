@@ -182,6 +182,13 @@ end
 local remotesFolder = createRemotesFolder()
 local harnessEnabled = TestHarnessRunner.isEnabled() or Workspace:GetAttribute("CombatTestHarnessEnabled") == true
 
+if Workspace.StreamingEnabled then
+	warn(
+		"[COMBAT_INIT] WARNING: StreamingEnabled is true. Fighter flight requires StreamingEnabled = false in place settings. Fighters may behave incorrectly."
+	)
+end
+print(string.format("[P10F_S6] streaming_enabled=%s", tostring(Workspace.StreamingEnabled)))
+
 HealthManager.init(remotesFolder)
 ProjectileServer.init(remotesFolder)
 TargetingServer.init(remotesFolder)

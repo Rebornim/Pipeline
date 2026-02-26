@@ -18,6 +18,11 @@ type FighterRuntimeState = CombatTypes.FighterRuntimeState
 type FighterRuntimeStateInternal = FighterRuntimeState & {
 	prompt: ProximityPrompt?,
 	lastReplicationTick: number,
+	hasPilotedOnce: boolean,
+	lastOwnershipVerifyTick: number,
+	lastOccupantSeenTick: number,
+	pilotSeatMissingSince: number,
+	exitRequestedAt: number,
 }
 
 type FighterSpawnData = {
@@ -38,15 +43,13 @@ local exitConnection: RBXScriptConnection? = nil
 local playerRemovingConnection: RBXScriptConnection? = nil
 local heartbeatConnection: RBXScriptConnection? = nil
 
-local FIGHTER_REP_POS_X = "FighterRepPosX"
-local FIGHTER_REP_POS_Y = "FighterRepPosY"
-local FIGHTER_REP_POS_Z = "FighterRepPosZ"
-local FIGHTER_REP_LOOK_X = "FighterRepLookX"
-local FIGHTER_REP_LOOK_Y = "FighterRepLookY"
-local FIGHTER_REP_LOOK_Z = "FighterRepLookZ"
-local FIGHTER_REP_UP_X = "FighterRepUpX"
-local FIGHTER_REP_UP_Y = "FighterRepUpY"
-local FIGHTER_REP_UP_Z = "FighterRepUpZ"
+local FIGHTER_CRASH_DEFAULT_SPEED = 85
+local FIGHTER_CRASH_MIN_HEADING_INTO_SURFACE = 0.35
+local FIGHTER_CRASH_MIN_PROBE_DISTANCE = 4
+local FIGHTER_CRASH_MAX_PROBE_DISTANCE = 40
+local FIGHTER_OCCUPANT_GRACE_SECONDS = 1.5
+local FIGHTER_EXIT_GRACE_SECONDS = 1.0
+local FIGHTER_TELEMETRY_RATE = 15
 
 local function writeFighterTelemetry(state: FighterRuntimeStateInternal)
 	local primaryPart = state.primaryPart
@@ -54,23 +57,11 @@ local function writeFighterTelemetry(state: FighterRuntimeStateInternal)
 		return
 	end
 
-	local cf = primaryPart.CFrame
-	local pos = cf.Position
-	local look = cf.LookVector
-	local up = cf.UpVector
+	local look = primaryPart.CFrame.LookVector
 	local speed = primaryPart.AssemblyLinearVelocity.Magnitude
 
 	state.instance:SetAttribute("VehicleSpeed", speed)
 	state.instance:SetAttribute("VehicleHeading", math.atan2(-look.X, -look.Z))
-	state.instance:SetAttribute(FIGHTER_REP_POS_X, pos.X)
-	state.instance:SetAttribute(FIGHTER_REP_POS_Y, pos.Y)
-	state.instance:SetAttribute(FIGHTER_REP_POS_Z, pos.Z)
-	state.instance:SetAttribute(FIGHTER_REP_LOOK_X, look.X)
-	state.instance:SetAttribute(FIGHTER_REP_LOOK_Y, look.Y)
-	state.instance:SetAttribute(FIGHTER_REP_LOOK_Z, look.Z)
-	state.instance:SetAttribute(FIGHTER_REP_UP_X, up.X)
-	state.instance:SetAttribute(FIGHTER_REP_UP_Y, up.Y)
-	state.instance:SetAttribute(FIGHTER_REP_UP_Z, up.Z)
 end
 
 local function getVehicleConfig(vehicleConfigId: string): VehicleConfig?
@@ -147,14 +138,78 @@ local function resolveVehicleConfig(instance: Model, fallbackConfigId: string): 
 	end
 
 	local percentModifiers: { { string } } = {
+		{ "VehicleMinSpeedMod", "minSpeed" },
 		{ "VehicleMaxSpeedMod", "maxSpeed" },
 		{ "VehicleAccelerationMod", "acceleration" },
 		{ "VehicleDecelerationMod", "deceleration" },
+		{ "VehicleBoostSpeedMod", "boostSpeedMultiplier" },
+		{ "VehicleBoostDurationMod", "boostDuration" },
+		{ "VehicleBoostCooldownMod", "boostCooldown" },
 		{ "VehicleCollisionRadiusMod", "collisionRadius" },
 		{ "VehicleCollisionBounceMod", "collisionBounce" },
 		{ "VehicleCameraDistanceMod", "cameraDistance" },
 		{ "VehicleCameraHeightMod", "cameraHeight" },
 		{ "VehicleCameraLerpMod", "cameraLerpSpeed" },
+		{ "VehicleFighterYawRateMod", "yawRate" },
+		{ "VehicleFighterPitchRateMod", "pitchRate" },
+		{ "VehicleFighterRollRateMod", "rollRate" },
+		{ "VehicleFighterTurnScaleMinMod", "turnRateSpeedScaleMin" },
+		{ "VehicleFighterTurnScaleMaxMod", "turnRateSpeedScaleMax" },
+		{ "VehicleFighterAngularResponsivenessMod", "angularResponsiveness" },
+		{ "VehicleFighterAutoBankMaxAngleMod", "autoBankMaxAngle" },
+		{ "VehicleFighterAutoBankYawRefMod", "autoBankYawRateRef" },
+		{ "VehicleFighterAutoBankRateMod", "autoBankRate" },
+		{ "VehicleFighterMouseSensitivityMod", "fighterMouseSensitivity" },
+		{ "VehicleFighterMouseRangeXMod", "fighterMouseRangeX" },
+		{ "VehicleFighterMouseRangeYMod", "fighterMouseRangeY" },
+		{ "VehicleFighterMouseAutoCenterMod", "fighterMouseAutoCenter" },
+		{ "VehicleFighterMouseDeadzoneMod", "fighterMouseDeadzone" },
+		{ "VehicleFighterMouseCenterReturnRadiusMod", "fighterMouseCenterReturnRadius" },
+		{ "VehicleFighterCursorLagRateMod", "fighterCursorLagRate" },
+		{ "VehicleFighterInputExpoMod", "fighterInputExpo" },
+		{ "VehicleFighterThrottleSpoolUpMod", "fighterThrottleSpoolUp" },
+		{ "VehicleFighterThrottleSpoolDownMod", "fighterThrottleSpoolDown" },
+		{ "VehicleFighterThrottleDeadzoneMod", "fighterThrottleDeadzone" },
+		{ "VehicleFighterForceVelocityGainMod", "fighterForceVelocityGain" },
+		{ "VehicleFighterForceMaxAccelMod", "fighterForceMaxAccel" },
+		{ "VehicleFighterYawAccelLimitMod", "fighterYawRateAccelLimit" },
+		{ "VehicleFighterPitchAccelLimitMod", "fighterPitchRateAccelLimit" },
+		{ "VehicleFighterRollAccelLimitMod", "fighterRollRateAccelLimit" },
+		{ "VehicleFighterAngularDampingMod", "fighterAngularDamping" },
+		{ "VehicleFighterVelocityAlignRateMod", "fighterVelocityAlignRate" },
+		{ "VehicleFighterVelocityDirAlignBaseMod", "fighterVelocityDirAlignBase" },
+		{ "VehicleFighterVelocityDirAlignTurnBoostMod", "fighterVelocityDirAlignTurnBoost" },
+		{ "VehicleFighterTurnAlignBoostMod", "fighterTurnAlignBoost" },
+		{ "VehicleFighterTurnSpeedPenaltyMod", "fighterTurnSpeedPenalty" },
+		{ "VehicleFighterSideSlipDampingMod", "fighterSideSlipDamping" },
+		{ "VehicleFighterTurnSlipDampingBoostMod", "fighterTurnSlipDampingBoost" },
+		{ "VehicleFighterVerticalSlipDampingMod", "fighterVerticalSlipDamping" },
+		{ "VehicleFighterTurnVerticalDampingBoostMod", "fighterTurnVerticalDampingBoost" },
+		{ "VehicleFighterTurnEnergyLossMod", "fighterTurnEnergyLoss" },
+		{ "VehicleFighterForwardAccelLimitMod", "fighterForwardAccelLimit" },
+		{ "VehicleFighterForwardDecelLimitMod", "fighterForwardDecelLimit" },
+		{ "VehicleFighterInducedDragMod", "fighterInducedDrag" },
+		{ "VehicleFighterWorldGravityMod", "fighterWorldGravity" },
+		{ "VehicleFighterLiftCoefficientMod", "fighterLiftCoefficient" },
+		{ "VehicleFighterBaseDragMod", "fighterBaseDrag" },
+		{ "VehicleFighterVisualYawRateGainMod", "fighterVisualYawRateGain" },
+		{ "VehicleFighterVisualPitchRateGainMod", "fighterVisualPitchRateGain" },
+		{ "VehicleFighterVisualYawAccelGainMod", "fighterVisualYawAccelGain" },
+		{ "VehicleFighterVisualPitchAccelGainMod", "fighterVisualPitchAccelGain" },
+		{ "VehicleFighterVisualSlipYawGainMod", "fighterVisualSlipYawGain" },
+		{ "VehicleFighterVisualSlipPitchGainMod", "fighterVisualSlipPitchGain" },
+		{ "VehicleFighterVisualRollRateGainMod", "fighterVisualRollRateGain" },
+		{ "VehicleFighterVisualResponseMod", "fighterVisualResponse" },
+		{ "VehicleFighterVisualYawMaxMod", "fighterVisualYawMax" },
+		{ "VehicleFighterVisualPitchMaxMod", "fighterVisualPitchMax" },
+		{ "VehicleFighterVisualRollMaxMod", "fighterVisualRollMax" },
+		{ "VehicleFighterTakeoffHeightMod", "fighterTakeoffHeight" },
+		{ "VehicleFighterTakeoffDurationMod", "fighterTakeoffDuration" },
+		{ "VehicleFighterCameraRollFollowMod", "fighterCameraRollFollow" },
+		{ "VehicleFighterCameraAimHeightMod", "fighterCameraAimHeight" },
+		{ "VehicleFighterCameraAimHeightSpeedBoostMod", "fighterCameraAimHeightSpeedBoost" },
+		{ "VehicleFighterCameraLookAheadMod", "fighterCameraLookAhead" },
+		{ "VehicleFighterCameraOrientLagMod", "fighterCameraOrientLag" },
 	}
 
 	for _, entry in ipairs(percentModifiers) do
@@ -166,14 +221,17 @@ local function resolveVehicleConfig(instance: Model, fallbackConfigId: string): 
 		end
 	end
 
-	local minSpeedMod = readNumberAttribute(instance, "VehicleMinSpeedMod")
-	if minSpeedMod ~= nil and type(resolved.minSpeed) == "number" then
-		resolved.minSpeed = applyPercentModifier(resolved.minSpeed, minSpeedMod, 0)
-	end
-
 	local canCrossWater = readBoolAttribute(instance, "VehicleCanCrossWater")
 	if canCrossWater ~= nil then
 		resolved.canCrossWater = canCrossWater
+	end
+	local boostEnabled = readBoolAttribute(instance, "VehicleBoostEnabled")
+	if boostEnabled ~= nil then
+		resolved.boostEnabled = boostEnabled
+	end
+	local fighterUseForceFlight = readBoolAttribute(instance, "VehicleFighterUseForceFlight")
+	if fighterUseForceFlight ~= nil then
+		resolved.fighterUseForceFlight = fighterUseForceFlight
 	end
 
 	return resolved :: any
@@ -185,6 +243,210 @@ local function getFighterByPilot(player: Player): FighterRuntimeStateInternal?
 		return nil
 	end
 	return fightersByFighterId[fighterId]
+end
+
+local function isPilotCharacterStillSeatedInState(state: FighterRuntimeStateInternal): boolean
+	local pilot = state.pilot
+	if pilot == nil then
+		return false
+	end
+	local character = pilot.Character
+	if character == nil then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil then
+		return false
+	end
+	return humanoid.SeatPart == state.pilotSeat
+end
+
+local function zeroAssemblyMotion(part: BasePart)
+	part.AssemblyLinearVelocity = Vector3.zero
+	part.AssemblyAngularVelocity = Vector3.zero
+end
+
+local function disableFighterDrive(state: FighterRuntimeStateInternal)
+	state.bodyVelocity.MaxForce = Vector3.zero
+	state.bodyVelocity.Velocity = Vector3.zero
+	state.bodyGyro.MaxTorque = Vector3.zero
+	state.vectorForce.Enabled = false
+	state.vectorForce.Force = Vector3.zero
+	state.instance:SetAttribute("VehicleBoosting", false)
+end
+
+local function parkFighter(state: FighterRuntimeStateInternal)
+	disableFighterDrive(state)
+	pcall(function()
+		state.primaryPart:SetNetworkOwner(nil)
+	end)
+	zeroAssemblyMotion(state.primaryPart)
+	state.primaryPart.Anchored = true
+	writeFighterTelemetry(state)
+	if state.prompt ~= nil then
+		local oldPrompt = state.prompt
+		local parent = oldPrompt.Parent
+		local objectText = oldPrompt.ObjectText
+		local actionText = oldPrompt.ActionText
+		local maxDist = oldPrompt.MaxActivationDistance
+		local keyCode = oldPrompt.KeyboardKeyCode
+		local holdDuration = oldPrompt.HoldDuration
+		local requiresLOS = oldPrompt.RequiresLineOfSight
+
+		oldPrompt:Destroy()
+
+		local newPrompt = Instance.new("ProximityPrompt")
+		newPrompt.ObjectText = objectText
+		newPrompt.ActionText = actionText
+		newPrompt.MaxActivationDistance = maxDist
+		newPrompt.KeyboardKeyCode = keyCode
+		newPrompt.HoldDuration = holdDuration
+		newPrompt.RequiresLineOfSight = requiresLOS
+		newPrompt.Enabled = true
+		newPrompt.Parent = parent
+
+		state.prompt = newPrompt
+
+		table.insert(state.connections, newPrompt.Triggered:Connect(function(player: Player)
+			if state.pilot ~= nil then
+				return
+			end
+			if not HealthManager.isAlive(state.entityId) then
+				return
+			end
+			local character = player.Character
+			if character == nil then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid == nil then
+				return
+			end
+			if humanoid.Sit then
+				return
+			end
+			state.pilotSeat:Sit(humanoid)
+		end))
+
+		print(string.format(
+			"[P10_PROMPT] parkFighter recreated prompt parent=%s enabled=%s",
+			tostring(parent and parent:GetFullName() or "nil"),
+			tostring(newPrompt.Enabled)
+		))
+	end
+end
+
+local function releaseFighterMomentum(state: FighterRuntimeStateInternal)
+	disableFighterDrive(state)
+	pcall(function()
+		state.primaryPart:SetNetworkOwner(nil)
+	end)
+	state.primaryPart.Anchored = false
+	state.instance:SetAttribute("VehicleSpeed", state.primaryPart.AssemblyLinearVelocity.Magnitude)
+	state.instance:SetAttribute("VehicleHeading", nil)
+	if state.prompt ~= nil then
+		state.prompt.Enabled = true
+	end
+end
+
+local function getFighterCrashSpeedThreshold(state: FighterRuntimeStateInternal): number
+	local modelOverride = readNumberAttribute(state.instance, "VehicleFighterCrashSpeed")
+	if modelOverride ~= nil and modelOverride > 0 then
+		return modelOverride
+	end
+	local configThreshold = state.config.collisionDamageThreshold
+	if type(configThreshold) == "number" and configThreshold > 0 then
+		return configThreshold
+	end
+	return FIGHTER_CRASH_DEFAULT_SPEED
+end
+
+local function checkFighterCrash(state: FighterRuntimeStateInternal, dt: number)
+	if state.primaryPart.Anchored then
+		return
+	end
+	if not HealthManager.isAlive(state.entityId) then
+		return
+	end
+
+	local velocity = state.primaryPart.AssemblyLinearVelocity
+	local speed = velocity.Magnitude
+	local crashSpeed = getFighterCrashSpeedThreshold(state)
+	if speed < crashSpeed then
+		return
+	end
+
+	local direction = velocity.Unit
+	local lookaheadFrames = CombatConfig.VehicleCollisionLookahead
+	if type(lookaheadFrames) ~= "number" or lookaheadFrames <= 0 then
+		lookaheadFrames = 2.0
+	end
+	local collisionRadius = state.config.collisionRadius
+	if type(collisionRadius) ~= "number" or collisionRadius <= 0 then
+		collisionRadius = 5
+	end
+	local probeDistance = math.clamp(
+		speed * math.max(dt, 1 / 120) * lookaheadFrames + collisionRadius,
+		FIGHTER_CRASH_MIN_PROBE_DISTANCE,
+		FIGHTER_CRASH_MAX_PROBE_DISTANCE
+	)
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	local filter: { Instance } = { state.instance }
+	if state.pilot ~= nil and state.pilot.Character ~= nil then
+		table.insert(filter, state.pilot.Character)
+	end
+	rayParams.FilterDescendantsInstances = filter
+	rayParams.IgnoreWater = false
+
+	local hit = Workspace:Raycast(state.primaryPart.Position, direction * probeDistance, rayParams)
+	if hit == nil then
+		return
+	end
+	if hit.Instance == nil or not hit.Instance.CanCollide then
+		return
+	end
+
+	local headingIntoSurface = math.clamp(-hit.Normal:Dot(direction), 0, 1)
+	if headingIntoSurface < FIGHTER_CRASH_MIN_HEADING_INTO_SURFACE then
+		return
+	end
+	local impactSpeed = speed * headingIntoSurface
+	if impactSpeed < crashSpeed then
+		return
+	end
+
+	local faction = HealthManager.getFaction(state.entityId) or ""
+	print(string.format("[FIGHTER_CRASH] entity=%s speed=%.1f hit=%s", state.entityId, impactSpeed, hit.Instance:GetFullName()))
+	HealthManager.applyDamage(state.entityId, 99999, "impact", faction, hit.Position, true)
+end
+
+local function ensurePilotOwnership(state: FighterRuntimeStateInternal, now: number)
+	local pilot = state.pilot
+	if pilot == nil then
+		return
+	end
+	if (now - state.lastOwnershipVerifyTick) < 2.0 then
+		return
+	end
+	state.lastOwnershipVerifyTick = now
+
+	local ownerOk, currentOwner = pcall(function()
+		return state.primaryPart:GetNetworkOwner()
+	end)
+	if not ownerOk or currentOwner ~= pilot then
+		local ownerName = "nil"
+		if ownerOk and typeof(currentOwner) == "Instance" and (currentOwner :: Instance):IsA("Player") then
+			ownerName = (currentOwner :: Player).Name
+		end
+		-- Log only: do not reassert ownership, which can cause authority handoff stutters.
+		warn(string.format(
+			"[P10F2_S4] ownership_mismatch pilot=%s owner=%s (log_only, no_reassert)",
+			pilot.Name,
+			ownerName
+		))
+	end
 end
 
 local function setPilotCharacterControl(player: Player, enabled: boolean)
@@ -214,9 +476,11 @@ local function clearPilot(state: FighterRuntimeStateInternal)
 		setPilotCharacterControl(previousPilot, false)
 	end
 	state.pilot = nil
+	state.pilotSeatMissingSince = 0
 end
 
 local function updatePilotFromSeat(state: FighterRuntimeStateInternal)
+	local now = os.clock()
 	local occupant = state.pilotSeat.Occupant
 	if occupant ~= nil then
 		local character = occupant.Parent
@@ -230,15 +494,21 @@ local function updatePilotFromSeat(state: FighterRuntimeStateInternal)
 
 			state.pilot = player
 			pilotToFighterId[player] = state.fighterId
+			state.hasPilotedOnce = true
+			state.lastOccupantSeenTick = now
+			state.pilotSeatMissingSince = 0
+			state.exitRequestedAt = 0
 
 			local useForceFlight = state.config.fighterUseForceFlight == true
 			state.primaryPart.Anchored = false
+			zeroAssemblyMotion(state.primaryPart)
 			state.bodyVelocity.MaxForce = if useForceFlight then Vector3.zero else Vector3.new(math.huge, math.huge, math.huge)
 			state.bodyVelocity.Velocity = Vector3.zero
 			state.bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
 			state.bodyGyro.CFrame = state.primaryPart.CFrame
 			state.vectorForce.Force = Vector3.zero
 			state.vectorForce.Enabled = useForceFlight
+			state.instance:SetAttribute("VehicleBoosting", false)
 			local assemblyRoot = state.primaryPart.AssemblyRootPart or state.primaryPart
 			local ownerOk, ownerErr = pcall(function()
 				assemblyRoot:SetNetworkOwner(player)
@@ -256,23 +526,44 @@ local function updatePilotFromSeat(state: FighterRuntimeStateInternal)
 		end
 	end
 
-	if state.pilot ~= nil then
+	local hadPilot = state.pilot ~= nil
+	if hadPilot then
+		local hasRecentExitRequest = state.exitRequestedAt > 0 and (now - state.exitRequestedAt) <= FIGHTER_EXIT_GRACE_SECONDS
+		if not hasRecentExitRequest then
+			if isPilotCharacterStillSeatedInState(state) then
+				state.lastOccupantSeenTick = now
+				state.pilotSeatMissingSince = 0
+				return
+			end
+			if state.pilotSeatMissingSince <= 0 then
+				state.pilotSeatMissingSince = now
+				-- Safety: anchor immediately to prevent falling while grace period runs.
+				state.primaryPart.Anchored = true
+				-- Occupant signal fires only once, so schedule a retry after grace period.
+				task.delay(FIGHTER_OCCUPANT_GRACE_SECONDS + 0.1, function()
+					if fightersByFighterId[state.fighterId] == state and state.pilot ~= nil then
+						updatePilotFromSeat(state)
+					end
+				end)
+				return
+			end
+			if (now - state.pilotSeatMissingSince) < FIGHTER_OCCUPANT_GRACE_SECONDS then
+				return
+			end
+		end
+		local clearReason = if hasRecentExitRequest then "exit_request" else "occupant_signal"
+		local graceElapsed = if state.pilotSeatMissingSince > 0 then (now - state.pilotSeatMissingSince) else 0
+		print(string.format(
+			"[FIGHTER_PILOT] clear reason=%s entity=%s grace_elapsed=%.2f",
+			clearReason,
+			state.entityId,
+			graceElapsed
+		))
 		clearPilot(state)
-	end
-
-	state.bodyVelocity.MaxForce = Vector3.zero
-	state.bodyVelocity.Velocity = Vector3.zero
-	state.bodyGyro.MaxTorque = Vector3.zero
-	state.vectorForce.Enabled = false
-	state.vectorForce.Force = Vector3.zero
-	pcall(function()
-		state.primaryPart:SetNetworkOwner(nil)
-	end)
-	state.primaryPart.Anchored = true
-	writeFighterTelemetry(state)
-
-	if state.prompt ~= nil then
-		state.prompt.Enabled = true
+		state.exitRequestedAt = 0
+		parkFighter(state)
+	else
+		parkFighter(state)
 	end
 end
 
@@ -294,15 +585,7 @@ local function cleanupFighterState(state: FighterRuntimeStateInternal)
 		end
 	end
 
-	state.bodyVelocity.MaxForce = Vector3.zero
-	state.bodyVelocity.Velocity = Vector3.zero
-	state.bodyGyro.MaxTorque = Vector3.zero
-	state.vectorForce.Enabled = false
-	state.vectorForce.Force = Vector3.zero
-	pcall(function()
-		state.primaryPart:SetNetworkOwner(nil)
-	end)
-	state.primaryPart.Anchored = true
+	parkFighter(state)
 
 	if state.prompt ~= nil then
 		state.prompt:Destroy()
@@ -311,15 +594,7 @@ local function cleanupFighterState(state: FighterRuntimeStateInternal)
 
 	state.instance:SetAttribute("VehicleSpeed", nil)
 	state.instance:SetAttribute("VehicleHeading", nil)
-	state.instance:SetAttribute(FIGHTER_REP_POS_X, nil)
-	state.instance:SetAttribute(FIGHTER_REP_POS_Y, nil)
-	state.instance:SetAttribute(FIGHTER_REP_POS_Z, nil)
-	state.instance:SetAttribute(FIGHTER_REP_LOOK_X, nil)
-	state.instance:SetAttribute(FIGHTER_REP_LOOK_Y, nil)
-	state.instance:SetAttribute(FIGHTER_REP_LOOK_Z, nil)
-	state.instance:SetAttribute(FIGHTER_REP_UP_X, nil)
-	state.instance:SetAttribute(FIGHTER_REP_UP_Y, nil)
-	state.instance:SetAttribute(FIGHTER_REP_UP_Z, nil)
+	state.instance:SetAttribute("VehicleBoosting", nil)
 	fightersByEntityId[state.entityId] = nil
 	fightersByFighterId[state.fighterId] = nil
 end
@@ -453,6 +728,11 @@ function FighterServer.registerFighter(entityId: string, instance: Model, vehicl
 		connections = {},
 		prompt = nil,
 		lastReplicationTick = 0,
+		hasPilotedOnce = false,
+		lastOwnershipVerifyTick = 0,
+		lastOccupantSeenTick = 0,
+		pilotSeatMissingSince = 0,
+		exitRequestedAt = 0,
 	}
 
 	local prompt = pilotSeat:FindFirstChildOfClass("ProximityPrompt")
@@ -464,7 +744,7 @@ function FighterServer.registerFighter(entityId: string, instance: Model, vehicl
 	prompt.ActionText = "Pilot"
 	prompt.ObjectText = instance.Name
 	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = 16
+	prompt.MaxActivationDistance = 50
 	prompt.RequiresLineOfSight = false
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	state.prompt = prompt
@@ -482,6 +762,9 @@ function FighterServer.registerFighter(entityId: string, instance: Model, vehicl
 		end
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid == nil then
+			return
+		end
+		if humanoid.Sit then
 			return
 		end
 		pilotSeat:Sit(humanoid)
@@ -503,10 +786,13 @@ function FighterServer.init(remotesFolder: Folder): ()
 
 	if exitConnection == nil then
 		exitConnection = vehicleExitRemote.OnServerEvent:Connect(function(player: Player)
+			print(string.format("[P10_EXIT_SERVER] exit_remote received player=%s", player.Name))
 			local state = getFighterByPilot(player)
 			if state == nil then
 				return
 			end
+			state.exitRequestedAt = os.clock()
+			parkFighter(state)
 			local character = player.Character
 			if character == nil then
 				return
@@ -515,6 +801,11 @@ function FighterServer.init(remotesFolder: Folder): ()
 			if humanoid ~= nil then
 				humanoid.Sit = false
 			end
+			task.defer(function()
+				if fightersByFighterId[state.fighterId] == state then
+					updatePilotFromSeat(state)
+				end
+			end)
 		end)
 	end
 
@@ -524,32 +815,30 @@ function FighterServer.init(remotesFolder: Folder): ()
 			if state == nil then
 				return
 			end
+			print(string.format(
+				"[FIGHTER_PILOT] clear reason=%s entity=%s grace_elapsed=%.2f",
+				"player_removing",
+				state.entityId,
+				0
+			))
 			clearPilot(state)
-			state.bodyVelocity.MaxForce = Vector3.zero
-			state.bodyVelocity.Velocity = Vector3.zero
-			state.bodyGyro.MaxTorque = Vector3.zero
-			state.vectorForce.Enabled = false
-			state.vectorForce.Force = Vector3.zero
-			pcall(function()
-				state.primaryPart:SetNetworkOwner(nil)
-			end)
-			state.primaryPart.Anchored = true
-			writeFighterTelemetry(state)
+			parkFighter(state)
 		end)
 	end
 
 	if heartbeatConnection == nil then
-		heartbeatConnection = RunService.Heartbeat:Connect(function()
-			local replicationRate = CombatConfig.VehicleReplicationRateActive
-			if type(replicationRate) ~= "number" or replicationRate <= 0 then
-				replicationRate = 30
-			end
-			local writeInterval = 1 / math.clamp(replicationRate, 5, 60)
+		heartbeatConnection = RunService.Heartbeat:Connect(function(dt: number)
+			local writeInterval = 1 / FIGHTER_TELEMETRY_RATE
 			local now = os.clock()
 			for _, state in pairs(fightersByEntityId) do
 				if state.instance.Parent == nil or state.primaryPart.Parent == nil then
 					continue
 				end
+				checkFighterCrash(state, dt)
+				if not HealthManager.isAlive(state.entityId) then
+					continue
+				end
+				ensurePilotOwnership(state, now)
 				if state.pilot == nil then
 					continue
 				end

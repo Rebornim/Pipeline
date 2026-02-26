@@ -12,6 +12,7 @@ export type VehicleFrameState = {
 	isGrounded: boolean,
 	throttle: number,
 	steerInput: number,
+	isLanding: boolean,
 	isLocal: boolean,
 	dt: number,
 }

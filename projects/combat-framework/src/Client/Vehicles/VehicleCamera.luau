@@ -192,20 +192,26 @@ local function stepCamera(dt: number)
 		if smoothedShipCFrame == nil then
 			smoothedShipCFrame = targetCF
 		else
-			smoothedShipCFrame = (smoothedShipCFrame :: CFrame):Lerp(targetCF, computeAlpha(orientLag, clampedDt))
+			-- Separate position (high stiffness) from orientation (orientLag) so camera
+			-- stays on ship even when facing diverges from velocity (e.g. engine kill drift).
+			local posAlpha = computeAlpha(20, clampedDt)
+			local oriAlpha = computeAlpha(orientLag, clampedDt)
+			local smoothPos = (smoothedShipCFrame :: CFrame).Position:Lerp(targetCF.Position, posAlpha)
+			local smoothRot = (smoothedShipCFrame :: CFrame):Lerp(targetCF, oriAlpha).Rotation
+			smoothedShipCFrame = CFrame.new(smoothPos) * smoothRot
 		end
 		local smoothCF = smoothedShipCFrame :: CFrame
 		local shipFwd = smoothCF.LookVector
 		local shipUp = smoothCF.UpVector
 		local shipPos = smoothCF.Position
-		local speedAttribute = vehicleModel:GetAttribute("VehicleSpeed")
-		local speed = if type(speedAttribute) == "number" then math.max(0, speedAttribute) else 0
+		local speed = if primaryPart ~= nil then primaryPart.AssemblyLinearVelocity.Magnitude else 0
 		local speedFrac = math.clamp(speed / math.max(1, config.maxSpeed), 0, 1)
 
 		----------------------------------------------------------------
 		-- CAMERA POSITION (behind + above in smoothed ship frame)
 		----------------------------------------------------------------
-		local desiredCamPos = shipPos - shipFwd * config.cameraDistance + shipUp * config.cameraHeight
+		local fighterDist = math.max(0, config.cameraDistance + zoomOffset)
+		local desiredCamPos = shipPos - shipFwd * fighterDist + shipUp * config.cameraHeight
 		if smoothedCameraPos == nil then
 			smoothedCameraPos = desiredCamPos
 		else
